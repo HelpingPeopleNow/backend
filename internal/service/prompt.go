@@ -8,7 +8,7 @@ import (
 )
 
 // PromptService implements the application use cases (hexagon business logic).
-// It depends only on the ports.PromptRepository interface — never on an adapter.
+// It depends only on the port interface — never on an adapter.
 type PromptService struct {
 	repo ports.PromptRepository
 }
@@ -17,14 +17,14 @@ func NewPromptService(repo ports.PromptRepository) *PromptService {
 	return &PromptService{repo: repo}
 }
 
-func (s *PromptService) Create(title, content, category string) (*core.Prompt, error) {
+func (s *PromptService) Create(title, content, category string) (*core.PromptHelper, error) {
 	if title == "" {
 		return nil, fmt.Errorf("title is required")
 	}
 	if content == "" {
 		return nil, fmt.Errorf("content is required")
 	}
-	prompt := &core.Prompt{
+	prompt := &core.PromptHelper{
 		Title:    title,
 		Content:  content,
 		Category: category,
@@ -35,15 +35,15 @@ func (s *PromptService) Create(title, content, category string) (*core.Prompt, e
 	return prompt, nil
 }
 
-func (s *PromptService) GetByID(id uint) (*core.Prompt, error) {
+func (s *PromptService) GetByID(id uint) (*core.PromptHelper, error) {
 	return s.repo.GetByID(id)
 }
 
-func (s *PromptService) List() ([]core.Prompt, error) {
+func (s *PromptService) List() ([]core.PromptHelper, error) {
 	return s.repo.List()
 }
 
-func (s *PromptService) Update(id uint, title, content, category string) (*core.Prompt, error) {
+func (s *PromptService) Update(id uint, title, content, category string) (*core.PromptHelper, error) {
 	prompt, err := s.repo.GetByID(id)
 	if err != nil {
 		return nil, fmt.Errorf("prompt not found: %w", err)

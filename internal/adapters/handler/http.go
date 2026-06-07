@@ -32,8 +32,8 @@ type updateRequest struct {
 	Category string `json:"category,omitempty"`
 }
 
-// promptDTO is a flat JSON view of the domain entity (avoids exposing DB tags).
-type promptDTO struct {
+// promptHelperDTO is a flat JSON view of the domain entity.
+type promptHelperDTO struct {
 	ID        uint   `json:"id"`
 	Title     string `json:"title"`
 	Content   string `json:"content"`
@@ -42,8 +42,8 @@ type promptDTO struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
-func toDTO(p *core.Prompt) promptDTO {
-	return promptDTO{
+func toDTO(p *core.PromptHelper) promptHelperDTO {
+	return promptHelperDTO{
 		ID:        p.ID,
 		Title:     p.Title,
 		Content:   p.Content,
@@ -130,9 +130,9 @@ func (h *PromptHandler) list(w http.ResponseWriter) {
 		return
 	}
 	if prompts == nil {
-		prompts = []core.Prompt{}
+		prompts = []core.PromptHelper{}
 	}
-	dtos := make([]promptDTO, len(prompts))
+	dtos := make([]promptHelperDTO, len(prompts))
 	for i, p := range prompts {
 		dtos[i] = toDTO(&p)
 	}
