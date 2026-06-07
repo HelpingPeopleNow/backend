@@ -1,128 +1,119 @@
 # Backend
 
-A lightweight, zero-dependency Go backend service providing health check and greeting endpoints. Built with the Go 1.23 standard library only — no frameworks, no external dependencies.
+A Go REST API service with PostgreSQL persistence, hexagonal (ports & adapters) architecture, and full CRUD for **PromptHelper** resources. Built with Go 1.23 stdlib + GORM.
 
 ## Tech Stack
 
-| Layer       | Technology                    |
-|-------------|-------------------------------|
-| Language    | Go 1.23                       |
-| HTTP Router | `net/http` (stdlib)           |
-| Serialization | `encoding/json` (stdlib)    |
-| Container   | Alpine Linux 3.20             |
-| CI/CD       | GitHub Actions → GHCR         |
+| Layer            | Technology                    |
+|------------------|-------------------------------|
+| Language         | Go 1.23                       |
+| HTTP Router      | `net/http` (stdlib)           |
+| Serialization    | `encoding/json` (stdlib)      |
+| ORM              | GORM (gorm.io)                |
+| Database         | PostgreSQL 16 (via GORM)      |
+| Container        | Alpine Linux 3.20             |
+| CI/CD            | GitHub Actions → GHCR         |
 
-No third-party packages are used. The entire application runs on the Go standard library.
+## Architecture
 
-## Project Structure
+The backend follows **hexagonal architecture** (ports & adapters / DDD layers):
 
 ```
-.
-├── main.go                    # Entry point — routes, handlers, server startup
-├── go.mod                     # Module definition (go 1.23, zero dependencies)
-├── Dockerfile                 # Multi-stage Docker build (golang:1.23-alpine → alpine:3.20)
-├── .github/
-│   └── workflows/
-│       └── docker.yml         # CI/CD: build & push to ghcr.io on push/PR to main
-├── .gitignore
-└── README.md
+main.go
+  │
+  ├── database/           ← Infrastructure: DB connection + migrations
+  │   └── postgres.go
+  │
+  └── internal/
+      ├── core/           ← Domain layer: pure Go entities, zero dependencies
+      │   └── prompt.go
+      ├── ports/          ← Ports layer: interfaces the hexagon defines
+      │   └── repository.go
+      ├── service/        ← Application use cases: business logic
+      │   └── prompt.go
+      └── adapters/       ← Adapters layer: implementations of ports
+          ├── handler/
+          │   └── http.go       ← Inbound adapter (HTTP delivery)
+          └── repository/
+              └── gorm.go       ← Outbound adapter (GORM persistence)
 ```
+
+**Layering rules:**
+- `core` → zero imports from other packages
+- `ports` → depends only on `core`
+- `service` → depends on `ports` (never on adapters)
+- `adapters` → implements `ports`, uses `core`
 
 ## Endpoints
 
-### `GET /health`
+| Endpoint | Method | Body | Response |
+|----------|--------|------|----------|
+| `/health` | GET | — | `{"status": "ok"}` |
+| `/api/v1/hello` | GET | — | `{"message": "hello, keep going"}` (random from 10 phrases) |
+| `/api/v1/prompt-helpers` | GET | — | `[]` (list all prompt helpers) |
+| `/api/v1/prompt-helpers` | POST | `{"title":"...","content":"...","category":"..."}` | Created prompt helper |
+| `/api/v1/prompt-helpers/:id` | GET | — | Single prompt helper |
+| `/api/v1/prompt-helpers/:id` | PATCH | `{"title":"...","content":"...","category":"..."}` | Updated prompt helper |
+| `/api/v1/prompt-helpers/:id` | DELETE | — | `204 No Content` |
 
-Returns a simple health-check response.
+### PromptHelper Model
 
-**Response `200 OK`**
-```json
-{"status": "ok"}
-```
-
----
-
-### `GET /api/v1/hello`
-
-Returns a friendly greeting with a randomly selected motivational phrase.
-
-**Response `200 OK`**
-```json
-{"message": "hello, keep going"}
-```
-
-Available phrases are randomly chosen from: *keep going*, *you've got this*, *make it happen*, *stay curious*, *build something awesome*, *one step at a time*, *dream big*, *code on*, *never stop learning*, *be the change*.
+| Field | Type | Required |
+|-------|------|----------|
+| `id` | `uint` | Auto |
+| `title` | `string` | ✅ |
+| `content` | `string` | ✅ |
+| `category` | `string` | ❌ |
+| `created_at` | `datetime` | Auto |
+| `updated_at` | `datetime` | Auto |
 
 ## Getting Started
 
 ### Prerequisites
 
-- Go 1.23 or later
+- Go 1.23+ (or Docker)
+- PostgreSQL 16
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8081` | HTTP server port |
+| `DB_HOST` | `localhost` | PostgreSQL host |
+| `DB_PORT` | `5432` | PostgreSQL port |
+| `DB_USER` | `postgres` | Database user |
+| `DB_PASSWORD` | `postgres` | Database password |
+| `DB_NAME` | `helpingpeoplenow` | Database name |
+| `DB_SSLMODE` | `disable` | SSL mode |
 
 ### Run Locally
 
 ```bash
+# Ensure PostgreSQL is running, then:
 go run .
 ```
 
-The server starts on port `8081` by default. You can override the port with the `PORT` environment variable:
+### Run with Docker (standalone)
 
 ```bash
-PORT=9090 go run .
+docker build -t backend .
+docker run -d -p 8081:8081 \
+  -e DB_HOST=host.docker.internal \
+  --name backend backend
 ```
 
-### Build
+### Run with Docker Compose (recommended)
 
-```bash
-go build -o backend
-./backend
-```
+See [HelpingPeopleNow/infra](https://github.com/HelpingPeopleNow/infra) for the full stack setup including PostgreSQL.
 
 ### Test
 
 ```bash
 curl http://localhost:8081/health
 curl http://localhost:8081/api/v1/hello
-```
-
-## Docker Usage
-
-### Build the Image
-
-```bash
-docker build -t backend .
-```
-
-### Run the Container
-
-```bash
-docker run -d -p 8081:8081 --name backend backend
-```
-
-The container listens on port `8081` (exposed by the Dockerfile). Set the `PORT` environment variable to change it:
-
-```bash
-docker run -d -p 9090:9090 -e PORT=9090 --name backend backend
-```
-
-### Verify
-
-```bash
-curl http://localhost:8081/health
-curl http://localhost:8081/api/v1/hello
+curl http://localhost:8081/api/v1/prompt-helpers
 ```
 
 ## CI/CD
 
-A GitHub Actions workflow (`.github/workflows/docker.yml`) automatically builds and pushes a Docker image to the GitHub Container Registry (GHCR) on every push or pull request to the `main` branch.
-
-- **Trigger**: push or PR to `main`
-- **Registry**: `ghcr.io/HelpingPeopleNow/backend`
-- **Tags**: `latest` (on default branch), branch name, and commit SHA
-- **Caching**: GitHub Actions cache (`type=gha`) for faster subsequent builds
-- **On PR**: the image is built and cached but **not** pushed
-
-## Environment Variables
-
-| Variable | Default | Description          |
-|----------|---------|----------------------|
-| `PORT`   | `8081`  | HTTP server port     |
+A GitHub Actions workflow (`.github/workflows/docker.yml`) builds and pushes Docker images to `ghcr.io/HelpingPeopleNow/backend` on every push or PR to `main`. Tags: `latest`, branch name, commit SHA.
