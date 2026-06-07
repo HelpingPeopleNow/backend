@@ -5,10 +5,13 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/HelpingPeopleNow/backend/internal/core"
 	"github.com/HelpingPeopleNow/backend/internal/service"
 )
 
+// PromptHandler is the inbound adapter — translates HTTP into use-case calls.
 type PromptHandler struct {
 	svc *service.PromptService
 }
@@ -29,10 +32,30 @@ type updateRequest struct {
 	Category string `json:"category,omitempty"`
 }
 
+// promptDTO is a flat JSON view of the domain entity (avoids exposing DB tags).
+type promptDTO struct {
+	ID        uint   `json:"id"`
+	Title     string `json:"title"`
+	Content   string `json:"content"`
+	Category  string `json:"category"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+func toDTO(p *core.Prompt) promptDTO {
+	return promptDTO{
+		ID:        p.ID,
+		Title:     p.Title,
+		Content:   p.Content,
+		Category:  p.Category,
+		CreatedAt: p.CreatedAt.Format(time.RFC3339),
+		UpdatedAt: p.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
 func (h *PromptHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// Extract ID from path: /api/v1/prompts/ or /api/v1/prompts/123
 	parts := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/")
 	idStr := ""
 	if len(parts) > 0 {
@@ -88,7 +111,7 @@ func (h *PromptHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(prompt)
+	json.NewEncoder(w).Encode(toDTO(prompt))
 }
 
 func (h *PromptHandler) getByID(w http.ResponseWriter, id uint) {
@@ -97,7 +120,7 @@ func (h *PromptHandler) getByID(w http.ResponseWriter, id uint) {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
-	json.NewEncoder(w).Encode(prompt)
+	json.NewEncoder(w).Encode(toDTO(prompt))
 }
 
 func (h *PromptHandler) list(w http.ResponseWriter) {
@@ -107,9 +130,13 @@ func (h *PromptHandler) list(w http.ResponseWriter) {
 		return
 	}
 	if prompts == nil {
-		prompts = []domainPrompt{} // return [] not null
+		prompts = []core.Prompt{}
 	}
-	json.NewEncoder(w).Encode(prompts)
+	dtos := make([]promptDTO, len(prompts))
+	for i, p := range prompts {
+		dtos[i] = toDTO(&p)
+	}
+	json.NewEncoder(w).Encode(dtos)
 }
 
 func (h *PromptHandler) update(w http.ResponseWriter, r *http.Request, id uint) {
@@ -123,7 +150,7 @@ func (h *PromptHandler) update(w http.ResponseWriter, r *http.Request, id uint) 
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
 		return
 	}
-	json.NewEncoder(w).Encode(prompt)
+	json.NewEncoder(w).Encode(toDTO(prompt))
 }
 
 func (h *PromptHandler) delete(w http.ResponseWriter, id uint) {
@@ -132,14 +159,4 @@ func (h *PromptHandler) delete(w http.ResponseWriter, id uint) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// Avoid import cycle — re-declare the shape for JSON serialization in list.
-type domainPrompt struct {
-	ID        uint   `json:"id"`
-	Title     string `json:"title"`
-	Content   string `json:"content"`
-	Category  string `json:"category"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
 }

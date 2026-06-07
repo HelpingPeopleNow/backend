@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/HelpingPeopleNow/backend/internal/domain"
+	"github.com/HelpingPeopleNow/backend/internal/core"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
-// Connect initializes the GORM connection and auto-migrates models.
+// Connect initializes GORM and auto-migrates domain models.
 func Connect() (*gorm.DB, error) {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -34,8 +34,7 @@ func Connect() (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	// Auto-migrate domain models
-	if err := db.AutoMigrate(&domain.Prompt{}); err != nil {
+	if err := db.AutoMigrate(&core.Prompt{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate: %w", err)
 	}
 

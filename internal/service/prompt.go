@@ -3,27 +3,28 @@ package service
 import (
 	"fmt"
 
-	"github.com/HelpingPeopleNow/backend/internal/domain"
-	"github.com/HelpingPeopleNow/backend/internal/repository"
+	"github.com/HelpingPeopleNow/backend/internal/core"
+	"github.com/HelpingPeopleNow/backend/internal/ports"
 )
 
-// PromptService contains business logic for prompts (use cases).
+// PromptService implements the application use cases (hexagon business logic).
+// It depends only on the ports.PromptRepository interface — never on an adapter.
 type PromptService struct {
-	repo repository.PromptRepository
+	repo ports.PromptRepository
 }
 
-func NewPromptService(repo repository.PromptRepository) *PromptService {
+func NewPromptService(repo ports.PromptRepository) *PromptService {
 	return &PromptService{repo: repo}
 }
 
-func (s *PromptService) Create(title, content, category string) (*domain.Prompt, error) {
+func (s *PromptService) Create(title, content, category string) (*core.Prompt, error) {
 	if title == "" {
 		return nil, fmt.Errorf("title is required")
 	}
 	if content == "" {
 		return nil, fmt.Errorf("content is required")
 	}
-	prompt := &domain.Prompt{
+	prompt := &core.Prompt{
 		Title:    title,
 		Content:  content,
 		Category: category,
@@ -34,15 +35,15 @@ func (s *PromptService) Create(title, content, category string) (*domain.Prompt,
 	return prompt, nil
 }
 
-func (s *PromptService) GetByID(id uint) (*domain.Prompt, error) {
+func (s *PromptService) GetByID(id uint) (*core.Prompt, error) {
 	return s.repo.GetByID(id)
 }
 
-func (s *PromptService) List() ([]domain.Prompt, error) {
+func (s *PromptService) List() ([]core.Prompt, error) {
 	return s.repo.List()
 }
 
-func (s *PromptService) Update(id uint, title, content, category string) (*domain.Prompt, error) {
+func (s *PromptService) Update(id uint, title, content, category string) (*core.Prompt, error) {
 	prompt, err := s.repo.GetByID(id)
 	if err != nil {
 		return nil, fmt.Errorf("prompt not found: %w", err)

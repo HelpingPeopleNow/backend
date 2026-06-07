@@ -6,8 +6,8 @@ import (
 	"os"
 
 	"github.com/HelpingPeopleNow/backend/database"
-	"github.com/HelpingPeopleNow/backend/internal/handler"
-	"github.com/HelpingPeopleNow/backend/internal/repository"
+	"github.com/HelpingPeopleNow/backend/internal/adapters/handler"
+	"github.com/HelpingPeopleNow/backend/internal/adapters/repository"
 	"github.com/HelpingPeopleNow/backend/internal/service"
 )
 
@@ -19,28 +19,19 @@ func main() {
 	}
 	log.Println("Connected to PostgreSQL via GORM")
 
-	// ── DDD wiring: Repository → Service → Handler ────────
-	promptRepo := repository.NewGormPromptRepository(db)
-	promptSvc := service.NewPromptService(promptRepo)
-	promptH := handler.NewPromptHandler(promptSvc)
+	// ── Hexagonal wiring ───────────────────────────────────
+	// Outbound adapter → port implementation → use case → inbound adapter
+	promptRepo := repository.NewGormPromptRepository(db) // adapter implementing port
+	promptSvc := service.NewPromptService(promptRepo)     // use case depends on port
+	promptH := handler.NewPromptHandler(promptSvc)        // inbound adapter
 
 	// ── Router ─────────────────────────────────────────────
 	mux := http.NewServeMux()
-
-	// Health
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
-	})
-
-	// Hello (legacy)
+	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/api/v1/hello", helloHandler)
-
-	// Prompts CRUD
 	mux.Handle("/api/v1/prompts", promptH)
 	mux.Handle("/api/v1/prompts/", promptH)
 
-	// ── Start ──────────────────────────────────────────────
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8081"
