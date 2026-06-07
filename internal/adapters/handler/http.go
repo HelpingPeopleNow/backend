@@ -64,7 +64,7 @@ func (h *PromptHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		if idStr != "" && idStr != "prompts" {
+		if idStr != "" && idStr != "prompt-helpers" {
 			id, err := strconv.ParseUint(idStr, 10, 64)
 			if err != nil {
 				http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
