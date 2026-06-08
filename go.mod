@@ -1,6 +1,6 @@
 module github.com/HelpingPeopleNow/backend
 
-go 1.25.0
+go 1.24
 
 require (
 	gorm.io/driver/postgres v1.5.11
