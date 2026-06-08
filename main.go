@@ -52,7 +52,7 @@ func authMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Build request to auth service, forwarding the session cookie
-		authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://auth:8083/api/auth/session", nil)
+		authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://auth:8083/api/auth/get-session", nil)
 		if err != nil {
 			slog.Error("auth: failed to create request", "error", err)
 			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
