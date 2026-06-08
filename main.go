@@ -31,6 +31,8 @@ func main() {
 	mux.HandleFunc("/api/v1/hello", helloHandler)
 	mux.Handle("/api/v1/prompt-helpers", promptH)
 	mux.Handle("/api/v1/prompt-helpers/", promptH)
+	mux.Handle("/api/v1/prompts", promptH)
+	mux.Handle("/api/v1/prompts/", promptH)
 
 	port := os.Getenv("PORT")
 	if port == "" {
