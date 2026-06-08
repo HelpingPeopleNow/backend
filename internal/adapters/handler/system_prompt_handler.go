@@ -48,8 +48,8 @@ func (h *SystemPromptHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	// /api/v1/system-prompts/helper  → column = "helper"
 	parts := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/")
 	var col string
-	if len(parts) >= 4 && parts[3] != "" && parts[3] != "system-prompts" {
-		col = parts[3]
+	if len(parts) >= 5 && parts[4] != "" {
+		col = parts[4]
 	}
 
 	switch r.Method {
