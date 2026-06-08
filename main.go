@@ -39,6 +39,7 @@ func main() {
 	promptSvc := service.NewPromptService(promptRepo)     // use case depends on port
 	promptH := handler.NewPromptHandler(promptSvc)        // inbound adapter
 	sysPromptH := handler.NewSystemPromptHandler(db)      // direct GORM handler for column-based prompts
+	chatH := handler.NewChatHandler()                       // proxy to helper service
 
 	// ── Router ─────────────────────────────────────────────
 	mux := http.NewServeMux()
@@ -50,6 +51,7 @@ func main() {
 	mux.Handle("/api/v1/prompts/", promptH)
 	mux.Handle("/api/v1/system-prompts", sysPromptH)
 	mux.Handle("/api/v1/system-prompts/", sysPromptH)
+	mux.Handle("/api/v1/chat", chatH)
 
 	port := os.Getenv("PORT")
 	if port == "" {
