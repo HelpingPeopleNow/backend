@@ -91,7 +91,7 @@ func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col
 	}
 	columnName, ok := validCols[col]
 	if !ok {
-		http.Error(w, `{"error":"unknown column `+"`"+col+``. Valid: helper, frontend, backend"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"unknown column: `+col+`"}`, http.StatusBadRequest)
 		return
 	}
 
