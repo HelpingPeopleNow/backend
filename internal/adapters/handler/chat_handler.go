@@ -15,8 +15,14 @@ func NewChatHandler() *ChatHandler {
 	return &ChatHandler{}
 }
 
+type historyItem struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 type chatRequest struct {
-	Message string `json:"message"`
+	Message string       `json:"message"`
+	History []historyItem `json:"history,omitempty"`
 }
 
 type chatResponse struct {
@@ -46,11 +52,17 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		helperURL = "http://helpingpeoplenow-helper:8082"
 	}
 
-	body, _ := json.Marshal(map[string]string{"question": req.Message})
+	// Build the body with history
+	helperBody := map[string]any{
+		"question": req.Message,
+		"history":  req.History,
+	}
+	body, _ := json.Marshal(helperBody)
+
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Post(helperURL+"/api/v1/ask", "application/json", bytes.NewReader(body))
 	if err != nil {
-		http.Error(w, `{"error":"helper service unreachable: `+err.Error()+`"}`, http.StatusServiceUnavailable)
+		http.Error(w, `{"error":"helper service unreachable"}`, http.StatusServiceUnavailable)
 		return
 	}
 	defer resp.Body.Close()
