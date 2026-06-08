@@ -44,7 +44,6 @@ func main() {
 	// ── Router ─────────────────────────────────────────────
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
-	mux.HandleFunc("/api/v1/hello", helloHandler)
 	mux.Handle("/api/v1/prompt-helpers", promptH)
 	mux.Handle("/api/v1/prompt-helpers/", promptH)
 	mux.Handle("/api/v1/prompts", promptH)
