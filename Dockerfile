@@ -1,6 +1,7 @@
 # Stage 1: Build
 FROM golang:1.25.11-alpine3.22 AS builder
 WORKDIR /app
+RUN apk --no-cache add git
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
