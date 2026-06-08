@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -39,14 +40,13 @@ type updateSystemReq struct {
 func (h *SystemPromptHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	// Extract column name from the URL path
-	// /api/v1/system-prompts         → no column (list)
-	// /api/v1/system-prompts/helper  → column = "helper"
 	parts := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/")
 	var col string
 	if len(parts) >= 5 && parts[4] != "" {
 		col = parts[4]
 	}
+
+	slog.Info("system-prompt request", "method", r.Method, "col", col)
 
 	switch r.Method {
 	case http.MethodGet:
@@ -54,6 +54,7 @@ func (h *SystemPromptHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 	case http.MethodPut:
 		if col == "" {
+			slog.Warn("system-prompt: missing column name")
 			http.Error(w, `{"error":"column name required, e.g. /api/v1/system-prompts/helper"}`, http.StatusBadRequest)
 			return
 		}
@@ -63,6 +64,7 @@ func (h *SystemPromptHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		w.WriteHeader(http.StatusOK)
 
 	default:
+		slog.Warn("system-prompt: invalid method", "method", r.Method)
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 	}
 }
@@ -71,35 +73,38 @@ func (h *SystemPromptHandler) get(w http.ResponseWriter) {
 	var sp core.SystemPrompt
 	err := h.db.First(&sp, 1).Error
 	if err != nil {
-		// Row 1 doesn't exist yet — return empty defaults
+		slog.Warn("system-prompt: row 1 not found, returning defaults", "error", err)
 		json.NewEncoder(w).Encode(systemPromptsDTO{})
 		return
 	}
+	slog.Info("system-prompt: loaded", "helper_prompt_len", len(sp.HelperPrompt))
 	json.NewEncoder(w).Encode(toSystemDTO(&sp))
 }
 
 func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col string) {
-	// Validate the column name
 	validCols := map[string]string{
 		"helper": "helper_prompt",
 	}
 	columnName, ok := validCols[col]
 	if !ok {
+		slog.Warn("system-prompt: unknown column", "col", col)
 		http.Error(w, `{"error":"unknown column: `+col+`"}`, http.StatusBadRequest)
 		return
 	}
 
 	var req updateSystemReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		slog.Warn("system-prompt: invalid JSON", "error", err)
 		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 		return
 	}
 	if req.Content == "" {
+		slog.Warn("system-prompt: empty content")
 		http.Error(w, `{"error":"content cannot be empty"}`, http.StatusBadRequest)
 		return
 	}
 
-	// Upsert row 1 and update the specific column
+	slog.Info("system-prompt: updating", "col", columnName, "content_len", len(req.Content))
 	err := h.db.Exec(
 		`INSERT INTO system_prompts (id, `+columnName+`, updated_at)
 		 VALUES (1, $1, NOW())
@@ -107,12 +112,13 @@ func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col
 		req.Content,
 	).Error
 	if err != nil {
+		slog.Error("system-prompt: update failed", "error", err)
 		http.Error(w, `{"error":"update failed: `+err.Error()+`"}`, http.StatusInternalServerError)
 		return
 	}
 
-	// Return the updated row
 	var sp core.SystemPrompt
 	h.db.First(&sp, 1)
+	slog.Info("system-prompt: updated")
 	json.NewEncoder(w).Encode(toSystemDTO(&sp))
 }
