@@ -34,7 +34,7 @@ func Connect() (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	if err := db.AutoMigrate(&core.PromptHelper{}); err != nil {
+	if err := db.AutoMigrate(&core.PromptHelper{}, &core.SystemPrompt{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate: %w", err)
 	}
 

@@ -24,6 +24,7 @@ func main() {
 	promptRepo := repository.NewGormPromptRepository(db) // adapter implementing port
 	promptSvc := service.NewPromptService(promptRepo)     // use case depends on port
 	promptH := handler.NewPromptHandler(promptSvc)        // inbound adapter
+	sysPromptH := handler.NewSystemPromptHandler(db)      // direct GORM handler for column-based prompts
 
 	// ── Router ─────────────────────────────────────────────
 	mux := http.NewServeMux()
@@ -33,6 +34,8 @@ func main() {
 	mux.Handle("/api/v1/prompt-helpers/", promptH)
 	mux.Handle("/api/v1/prompts", promptH)
 	mux.Handle("/api/v1/prompts/", promptH)
+	mux.Handle("/api/v1/system-prompts", sysPromptH)
+	mux.Handle("/api/v1/system-prompts/", sysPromptH)
 
 	port := os.Getenv("PORT")
 	if port == "" {
