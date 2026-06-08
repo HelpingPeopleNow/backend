@@ -11,6 +11,20 @@ import (
 	"github.com/HelpingPeopleNow/backend/internal/service"
 )
 
+// corsMiddleware adds CORS headers for cross-port requests from the frontend.
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func main() {
 	// ── Database ──────────────────────────────────────────
 	db, err := database.Connect()
@@ -42,5 +56,5 @@ func main() {
 		port = "8081"
 	}
 	log.Printf("Starting backend on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, mux))
+	log.Fatal(http.ListenAndServe(":"+port, corsMiddleware(mux)))
 }
