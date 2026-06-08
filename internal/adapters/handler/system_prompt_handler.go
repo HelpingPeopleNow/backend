@@ -10,8 +10,8 @@ import (
 )
 
 // SystemPromptHandler serves the column-based system_prompts singleton table.
-//   GET  /api/v1/system-prompts          → returns all prompt columns
-//   PUT  /api/v1/system-prompts/{name}   → updates the named column (helper, frontend, backend, …)
+//   GET  /api/v1/system-prompts          → returns the helper prompt
+//   PUT  /api/v1/system-prompts/{name}   → updates the helper prompt
 type SystemPromptHandler struct {
 	db *gorm.DB
 }
@@ -21,18 +21,14 @@ func NewSystemPromptHandler(db *gorm.DB) *SystemPromptHandler {
 }
 
 type systemPromptsDTO struct {
-	HelperPrompt   string `json:"helper_prompt"`
-	FrontendPrompt string `json:"frontend_prompt"`
-	BackendPrompt  string `json:"backend_prompt"`
-	UpdatedAt      string `json:"updated_at"`
+	HelperPrompt string `json:"helper_prompt"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 func toSystemDTO(sp *core.SystemPrompt) systemPromptsDTO {
 	return systemPromptsDTO{
-		HelperPrompt:   sp.HelperPrompt,
-		FrontendPrompt: sp.FrontendPrompt,
-		BackendPrompt:  sp.BackendPrompt,
-		UpdatedAt:      sp.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		HelperPrompt: sp.HelperPrompt,
+		UpdatedAt:    sp.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
 
@@ -83,11 +79,9 @@ func (h *SystemPromptHandler) get(w http.ResponseWriter) {
 }
 
 func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col string) {
-	// Validate the column name is one we know about
+	// Validate the column name
 	validCols := map[string]string{
-		"helper":   "helper_prompt",
-		"frontend": "frontend_prompt",
-		"backend":  "backend_prompt",
+		"helper": "helper_prompt",
 	}
 	columnName, ok := validCols[col]
 	if !ok {
