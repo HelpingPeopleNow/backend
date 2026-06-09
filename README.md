@@ -105,6 +105,17 @@ POST /api/v1/chat ──► ChatHandler.ServeHTTP
 | PUT | `/api/v1/system-prompts/helper` | Yes | Update the helper prompt text |
 | PUT | `/api/v1/system-prompts/provider` | Yes | Set LLM provider (`"opencode"`, `"ollama"`, or `""` for env default) |
 
+### Health
+
+Simple health check — no auth required. Used by load balancers, orchestrators, and monitoring to verify the service is alive.
+
+```bash
+curl http://localhost:8081/health
+# → {"status":"ok"}
+```
+
+Returns `200 OK` with `{"status":"ok"}`. Because there is no request body, session, or database dependency, this endpoint is fast and reliable for uptime checks.
+
 ### Chat
 
 ```bash
