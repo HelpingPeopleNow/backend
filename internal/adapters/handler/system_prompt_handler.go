@@ -15,9 +15,10 @@ import (
 //   PUT  /api/v1/system-prompts/helper   → updates the helper prompt
 //   PUT  /api/v1/system-prompts/provider → updates the llm provider
 type SystemPromptHandler struct {
-	db                *gorm.DB
-	onUpdate          func(string) // prompt content refresh callback
-	onProviderUpdate  func(string) // llm provider refresh callback
+	db                  *gorm.DB
+	onUpdate            func(string) // helper prompt content refresh callback
+	onProviderUpdate    func(string) // llm provider refresh callback
+	onWorkerProfileUpd  func(string) // worker profile prompt refresh callback
 }
 
 func NewSystemPromptHandler(db *gorm.DB, onUpdate ...func(string)) *SystemPromptHandler {
@@ -28,20 +29,25 @@ func NewSystemPromptHandler(db *gorm.DB, onUpdate ...func(string)) *SystemPrompt
 	if len(onUpdate) > 1 && onUpdate[1] != nil {
 		h.onProviderUpdate = onUpdate[1]
 	}
+	if len(onUpdate) > 2 && onUpdate[2] != nil {
+		h.onWorkerProfileUpd = onUpdate[2]
+	}
 	return h
 }
 
 type systemPromptsDTO struct {
-	HelperPrompt string `json:"helper_prompt"`
-	LLMProvider  string `json:"llm_provider"`
-	UpdatedAt    string `json:"updated_at"`
+	HelperPrompt        string `json:"helper_prompt"`
+	WorkerProfilePrompt string `json:"worker_profile_prompt"`
+	LLMProvider         string `json:"llm_provider"`
+	UpdatedAt           string `json:"updated_at"`
 }
 
 func toSystemDTO(sp *core.SystemPrompt) systemPromptsDTO {
 	return systemPromptsDTO{
-		HelperPrompt: sp.HelperPrompt,
-		LLMProvider:  sp.LLMProvider,
-		UpdatedAt:    sp.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		HelperPrompt:        sp.HelperPrompt,
+		WorkerProfilePrompt: sp.WorkerProfilePrompt,
+		LLMProvider:         sp.LLMProvider,
+		UpdatedAt:           sp.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
 
@@ -95,8 +101,9 @@ func (h *SystemPromptHandler) get(w http.ResponseWriter) {
 
 func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col string) {
 	validCols := map[string]string{
-		"helper":   "helper_prompt",
-		"provider": "llm_provider",
+		"helper":         "helper_prompt",
+		"worker_profile": "worker_profile_prompt",
+		"provider":       "llm_provider",
 	}
 	columnName, ok := validCols[col]
 	if !ok {
@@ -142,6 +149,10 @@ func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col
 	if columnName == "llm_provider" && h.onProviderUpdate != nil {
 		h.onProviderUpdate(req.Content)
 		slog.Info("system-prompt: backend provider cache refreshed", "provider", req.Content)
+	}
+	if columnName == "worker_profile_prompt" && h.onWorkerProfileUpd != nil {
+		h.onWorkerProfileUpd(req.Content)
+		slog.Info("system-prompt: worker profile prompt cache refreshed")
 	}
 
 	json.NewEncoder(w).Encode(toSystemDTO(&sp))

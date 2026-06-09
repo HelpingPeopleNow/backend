@@ -21,13 +21,14 @@ import (
 
 // ChatHandler proxies questions to the helper service via gRPC.
 type ChatHandler struct {
-	conn          *grpc.ClientConn
-	client        pb.HelperServiceClient
-	authURL       string
-	mu            sync.RWMutex
-	systemPrompt  string
-	llmProvider   string
-	db            *gorm.DB
+	conn                *grpc.ClientConn
+	client              pb.HelperServiceClient
+	authURL             string
+	mu                  sync.RWMutex
+	systemPrompt        string
+	workerProfilePrompt string
+	llmProvider         string
+	db                  *gorm.DB
 }
 
 type chatRequest struct {
@@ -109,6 +110,23 @@ func (h *ChatHandler) getSystemPrompt() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.systemPrompt
+}
+
+// SetWorkerProfilePrompt updates the cached worker profile intake prompt (thread-safe).
+func (h *ChatHandler) SetWorkerProfilePrompt(prompt string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.workerProfilePrompt = prompt
+	slog.Info("worker_profile_prompt cache updated", "len", len(prompt))
+	if len(prompt) > 0 {
+		slog.Debug("worker_profile_prompt first 150 chars", "text", prompt[:min(len(prompt), 150)])
+	}
+}
+
+func (h *ChatHandler) getWorkerProfilePrompt() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.workerProfilePrompt
 }
 
 // SetLLMProvider updates the cached LLM provider (thread-safe).
@@ -292,4 +310,133 @@ type strReader string
 
 func (s strReader) Read(p []byte) (int, error) {
 	return copy(p, s), nil
+}
+
+// ----------- Worker Profile Intake Chat -----------
+
+type workerChatResponse struct {
+	Answer         string          `json:"answer"`
+	DetectedFields json.RawMessage `json:"detected_fields,omitempty"`
+}
+
+// HandleWorkerChat handles the worker profile intake chat.
+// It uses the worker_profile_prompt system prompt and parses [FIELDS] blocks
+// from the LLM response to auto-fill the worker profile form.
+func (h *ChatHandler) HandleWorkerChat(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		slog.Warn("worker-chat: invalid method", "method", r.Method)
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req chatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		slog.Warn("worker-chat: invalid JSON", "error", err)
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Message == "" {
+		slog.Warn("worker-chat: empty message")
+		http.Error(w, `{"error":"message cannot be empty"}`, http.StatusBadRequest)
+		return
+	}
+
+	slog.Info("worker-chat request", "msg_len", len(req.Message), "history_len", len(req.History))
+	sp := h.getWorkerProfilePrompt()
+	prov := h.getLLMProvider()
+	if sp == "" {
+		slog.Warn("worker-chat: no worker_profile_prompt configured, falling back to general prompt")
+		sp = h.getSystemPrompt()
+	}
+	slog.Info("worker-chat gRPC call", "msg_len", len(req.Message), "history_len", len(req.History), "sp_len", len(sp), "provider", prov)
+	if len(sp) > 0 {
+		slog.Debug("worker-chat prompt[:150]", "text", sp[:min(len(sp), 150)])
+	}
+
+	if err := h.ensureClient(); err != nil {
+		slog.Error("worker-chat: helper unreachable")
+		http.Error(w, `{"error":"helper service unreachable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	history := make([]*pb.Message, len(req.History))
+	for i, m := range req.History {
+		history[i] = &pb.Message{Role: m.Role, Content: m.Content}
+	}
+
+	timeoutSec := 60 * time.Second
+	if ts := os.Getenv("HELPER_TIMEOUT_SECONDS"); ts != "" {
+		if v, err := strconv.Atoi(ts); err == nil && v > 0 {
+			timeoutSec = time.Duration(v) * time.Second
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutSec)
+	defer cancel()
+
+	start := time.Now()
+	resp, err := h.client.Ask(ctx, &pb.AskRequest{
+		Question:     req.Message,
+		History:      history,
+		SystemPrompt: sp,
+		LlmProvider:  prov,
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		slog.Error("worker-chat: gRPC call failed", "error", err, "duration_ms", elapsed.Milliseconds())
+		if strings.Contains(err.Error(), "429") || strings.Contains(strings.ToLower(err.Error()), "rate limit") {
+			json.NewEncoder(w).Encode(workerChatResponse{
+				Answer: "I'm temporarily rate-limited. Please try again in a minute.",
+			})
+			return
+		}
+		http.Error(w, `{"error":"helper service error: `+err.Error()+`"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	slog.Info("worker-chat response", "answer_len", len(resp.Answer), "duration_ms", elapsed.Milliseconds())
+
+	// Parse [FIELDS] blocks from the LLM response
+	answer, fields := parseFieldsFromAnswer(resp.Answer)
+	if fields != nil {
+		slog.Info("worker-chat: extracted fields", "fields_json", string(fields), "answer_without_fields_len", len(answer))
+	} else {
+		slog.Debug("worker-chat: no [FIELDS] block found in response")
+	}
+
+	json.NewEncoder(w).Encode(workerChatResponse{
+		Answer:         answer,
+		DetectedFields: fields,
+	})
+}
+
+// parseFieldsFromAnswer extracts the last [FIELDS]...[/FIELDS] block from the
+// LLM answer, strips it from the response, and returns the JSON as raw bytes.
+// Returns the cleaned answer and the raw JSON fields (or nil if no block found).
+func parseFieldsFromAnswer(answer string) (string, json.RawMessage) {
+	const openTag  = "[FIELDS]"
+	const closeTag = "[/FIELDS]"
+
+	lastOpen := strings.LastIndex(answer, openTag)
+	if lastOpen < 0 {
+		return answer, nil
+	}
+	// Find the matching close tag after the opening tag
+	afterOpen := answer[lastOpen+len(openTag):]
+	closeIdx := strings.Index(afterOpen, closeTag)
+	if closeIdx < 0 {
+		return answer, nil
+	}
+	raw := afterOpen[:closeIdx]
+	// Validate that it's parseable JSON
+	var dummy interface{}
+	if err := json.Unmarshal([]byte(raw), &dummy); err != nil {
+		slog.Warn("worker-chat: [FIELDS] content is not valid JSON", "raw", raw[:min(len(raw), 100)], "error", err)
+		return answer, nil
+	}
+	// Strip the entire [FIELDS]json[/FIELDS] block plus any trailing whitespace
+	cleaned := strings.TrimSpace(answer[:lastOpen] + afterOpen[closeIdx+len(closeTag):])
+	return cleaned, json.RawMessage(raw)
 }

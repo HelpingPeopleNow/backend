@@ -156,6 +156,53 @@ func main() {
 			chatHandler.SetLLMProvider(sp.LLMProvider)
 			slog.Info("llm_provider loaded at startup", "provider", sp.LLMProvider)
 		}
+
+		// Load worker profile prompt
+		if sp.WorkerProfilePrompt != "" {
+			chatHandler.SetWorkerProfilePrompt(sp.WorkerProfilePrompt)
+			slog.Info("worker_profile_prompt loaded at startup", "len", len(sp.WorkerProfilePrompt))
+		} else {
+			// Seed the default worker profile prompt
+			defaultWorkerPrompt := `You are a friendly profile-building assistant for HelpingPeopleNow, a home-services platform. Your ONLY mission is to help a worker fill out their professional profile through a natural, conversational chat.
+
+You must gather ALL of the following information through friendly questions. Ask 1-2 questions at a time — never dump all fields at once.
+
+Fields to collect:
+1. profession — What trade do you work in? (plumber, electrician, cleaner, handyman, carpenter, painter, landscaper, roofer, HVAC, etc.)
+2. business_name — Business name (optional, can be your own name)
+3. bio — Brief description of your experience and skills (2-3 sentences)
+4. phone — Contact phone number
+5. city — City where you work
+6. address — Street address (optional)
+7. service_radius_km — How far you're willing to travel (in km)
+8. hourly_rate — Your hourly rate in euros
+9. minimum_charge — Minimum charge for a job (optional)
+10. free_estimate — Do you offer free estimates? (true/false)
+11. years_experience — Years of professional experience
+12. certifications — Any relevant certifications (e.g., "GAS SAFE", "NICEIC", etc.)
+13. has_insurance — Do you have liability insurance? (true/false)
+14. languages — Languages you speak (e.g., Spanish, English)
+15. emergency_service — Do you offer emergency/urgent services? (true/false)
+16. website — Your website URL (optional)
+
+Conversation rules:
+- Start by greeting warmly and asking what trade they work in.
+- Ask follow-up questions naturally based on their answers.
+- Be encouraging and supportive throughout.
+- When you have collected at least 6 fields, append [FIELDS]{"field":"value",...}[/FIELDS] to your response with ALL known fields as valid JSON.
+- Update the [FIELDS] block every response as you gather more info.
+- Keep asking until ALL fields are collected.
+- NEVER discuss anything outside of profile-building. If the user changes the subject, gently steer back.
+- Be conversational and warm, like a friendly onboarding coach.`
+
+			err = db.Exec(`INSERT INTO system_prompts (id, worker_profile_prompt, updated_at) VALUES (1, $1, NOW()) ON CONFLICT (id) DO UPDATE SET worker_profile_prompt = EXCLUDED.worker_profile_prompt, updated_at = NOW()`, defaultWorkerPrompt).Error
+			if err != nil {
+				slog.Warn("failed to seed worker_profile_prompt", "error", err)
+			} else {
+				chatHandler.SetWorkerProfilePrompt(defaultWorkerPrompt)
+				slog.Info("worker_profile_prompt seeded with default", "len", len(defaultWorkerPrompt))
+			}
+		}
 	}
 
 	// Wire the refresh callbacks: when admin updates, refresh the caches
@@ -168,6 +215,10 @@ func main() {
 			chatHandler.SetLLMProvider(provider)
 			slog.Info("llm_provider cache refreshed via admin update", "provider", provider)
 		},
+		func(prompt string) { // onWorkerProfileUpd: worker profile prompt
+			chatHandler.SetWorkerProfilePrompt(prompt)
+			slog.Info("worker_profile_prompt cache refreshed via admin update")
+		},
 	)
 
 	mux := http.NewServeMux()
@@ -175,6 +226,7 @@ func main() {
 	mux.Handle("/api/v1/system-prompts", sysPromptHandler)
 	mux.Handle("/api/v1/system-prompts/", sysPromptHandler)
 	mux.Handle("/api/v1/chat", chatHandler)
+	mux.HandleFunc("/api/v1/worker/chat", chatHandler.HandleWorkerChat)
 	mux.Handle("/api/v1/worker/profile", workerHandler)
 
 	handler := loggingMiddleware(corsMiddleware(mux))
