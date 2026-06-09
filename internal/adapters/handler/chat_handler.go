@@ -32,8 +32,9 @@ type ChatHandler struct {
 }
 
 type chatRequest struct {
-	Message string         `json:"message"`
-	History []historyItem `json:"history,omitempty"`
+	Message        string        `json:"message"`
+	History        []historyItem `json:"history,omitempty"`
+	ConversationID string        `json:"conversation_id,omitempty"`
 }
 
 type historyItem struct {
@@ -42,8 +43,9 @@ type historyItem struct {
 }
 
 type chatResponse struct {
-	Answer        string `json:"answer"`
-	DetectedRole  string `json:"detected_role,omitempty"`
+	Answer         string `json:"answer"`
+	DetectedRole   string `json:"detected_role,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
 }
 
 func dialHelper(addr string) (*grpc.ClientConn, pb.HelperServiceClient) {
@@ -218,14 +220,29 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("chat response", "answer_len", len(resp.Answer), "detected_role", resp.DetectedRole, "duration_ms", elapsed.Milliseconds())
 
+	// Save conversation to DB (synchronous so we can return the correct conversation_id)
+	respConvID := req.ConversationID
+	userID := h.resolveUserID(r)
+	if userID != "" {
+		newID, err := h.saveConversation(userID, req.ConversationID, "main", req.Message, resp.Answer, nil)
+		if err != nil {
+			slog.Warn("chat: failed to save conversation", "error", err)
+		} else {
+			respConvID = newID
+		}
+	} else {
+		slog.Debug("chat: skipping conversation save — no user session")
+	}
+
 	// If the helper detected a role, update the user via auth service (async, don't block the response)
 	if resp.DetectedRole != "" {
 		go h.updateUserRole(context.Background(), r, resp.DetectedRole)
 	}
 
 	json.NewEncoder(w).Encode(chatResponse{
-		Answer:       resp.Answer,
-		DetectedRole: resp.DetectedRole,
+		Answer:         resp.Answer,
+		DetectedRole:   resp.DetectedRole,
+		ConversationID: respConvID,
 	})
 }
 
@@ -312,11 +329,120 @@ func (s strReader) Read(p []byte) (int, error) {
 	return copy(p, s), nil
 }
 
+// resolveUserID extracts the user ID from the better-auth session cookie.
+func (h *ChatHandler) resolveUserID(r *http.Request) string {
+	cookie, err := r.Cookie("better-auth.session_token")
+	if err != nil {
+		return ""
+	}
+	token := strings.SplitN(cookie.Value, ".", 2)[0]
+	if token == "" {
+		return ""
+	}
+	type dbSession struct {
+		UserID string `gorm:"column:userId"`
+	}
+	var s dbSession
+	err = h.db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
+	if err != nil {
+		slog.Debug("resolveUserID: session not found", "error", err)
+		return ""
+	}
+	return s.UserID
+}
+
+// conversationMsg is a single message stored in the JSONB array.
+type conversationMsg struct {
+	Role      string    `json:"role"`
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+// saveConversation persists a pair of messages (user + assistant) to the conversations table.
+// If convID is non-empty and belongs to the user, it appends. Otherwise it creates a new conversation.
+// Returns the conversation ID.
+func (h *ChatHandler) saveConversation(userID, convID, convType string, reqMsg, respMsg string, fields json.RawMessage) (string, error) {
+	now := time.Now()
+	newMsgs := []conversationMsg{
+		{Role: "user", Content: reqMsg, Timestamp: now},
+		{Role: "assistant", Content: respMsg, Timestamp: now.Add(time.Second)},
+	}
+
+	if convID != "" {
+		// Append to existing conversation (must belong to this user)
+		var existing core.Conversation
+		if err := h.db.First(&existing, "id = ? AND user_id = ?", convID, userID).Error; err != nil {
+			// Conversation doesn't exist or doesn't belong to user — create new instead
+			slog.Warn("saveConversation: conversation not found or not owned, creating new", "convID", convID, "userID", userID, "error", err)
+			convID = ""
+		} else {
+			var msgs []conversationMsg
+			if err := json.Unmarshal(existing.Messages, &msgs); err != nil {
+				msgs = []conversationMsg{}
+			}
+			msgs = append(msgs, newMsgs...)
+			updatedMsgs, _ := json.Marshal(msgs)
+
+			updates := map[string]interface{}{
+				"messages":  updatedMsgs,
+				"updated_at": now,
+			}
+			// Update metadata with latest fields for worker chat
+			if fields != nil {
+				meta := map[string]interface{}{}
+				if existing.Metadata != nil {
+					json.Unmarshal(existing.Metadata, &meta)
+				}
+				meta["extracted_fields"] = fields
+				metaJSON, _ := json.Marshal(meta)
+				updates["metadata"] = metaJSON
+			}
+
+			if err := h.db.Model(&core.Conversation{}).Where("id = ?", convID).Updates(updates).Error; err != nil {
+				return "", err
+			}
+			slog.Info("saveConversation: appended to existing", "convID", convID, "type", convType, "total_msgs", len(newMsgs)+len(msgs)-2)
+			return convID, nil
+		}
+	}
+
+	// Create new conversation
+	msgsJSON, _ := json.Marshal(newMsgs)
+	title := reqMsg
+	if len(title) > 80 {
+		title = title[:80] + "..."
+	}
+
+	meta := map[string]interface{}{}
+	if fields != nil {
+		meta["extracted_fields"] = fields
+	}
+	if convType == "worker" {
+		meta["type"] = "profile_intake"
+		meta["completed"] = false
+	}
+	metaJSON, _ := json.Marshal(meta)
+
+	conv := core.Conversation{
+		UserID:   userID,
+		Type:     convType,
+		Title:    title,
+		Messages: msgsJSON,
+		Metadata: metaJSON,
+	}
+	if err := h.db.Create(&conv).Error; err != nil {
+		return "", err
+	}
+	slog.Info("saveConversation: created new", "convID", conv.ID, "type", convType)
+	return conv.ID, nil
+}
+
 // ----------- Worker Profile Intake Chat -----------
 
 type workerChatResponse struct {
 	Answer         string          `json:"answer"`
 	DetectedFields json.RawMessage `json:"detected_fields,omitempty"`
+	ConversationID string          `json:"conversation_id,omitempty"`
 }
 
 // HandleWorkerChat handles the worker profile intake chat.
@@ -406,9 +532,24 @@ func (h *ChatHandler) HandleWorkerChat(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("worker-chat: no [FIELDS] block found in response")
 	}
 
+	// Save conversation to DB (synchronous so we can return the correct conversation_id)
+	respConvID := req.ConversationID
+	userID := h.resolveUserID(r)
+	if userID != "" {
+		newID, err := h.saveConversation(userID, req.ConversationID, "worker", req.Message, answer, fields)
+		if err != nil {
+			slog.Warn("worker-chat: failed to save conversation", "error", err)
+		} else {
+			respConvID = newID
+		}
+	} else {
+		slog.Debug("worker-chat: skipping conversation save — no user session")
+	}
+
 	json.NewEncoder(w).Encode(workerChatResponse{
 		Answer:         answer,
 		DetectedFields: fields,
+		ConversationID: respConvID,
 	})
 }
 

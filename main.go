@@ -143,6 +143,7 @@ func main() {
 	chatHandler := handler.NewChatHandler(db)
 	sysPromptHandler := handler.NewSystemPromptHandler(db)
 	workerHandler := handler.NewWorkerHandler(db)
+	convHandler := handler.NewConversationHandler(db)
 
 	// Load the system prompt from DB into the chat handler's cache
 	var sp core.SystemPrompt
@@ -187,19 +188,23 @@ Fields to collect:
 
 Conversation rules:
 - Start by greeting warmly and asking what trade they work in.
-- Ask follow-up questions naturally based on their answers.
-- Be encouraging and supportive throughout.
-- When you have collected at least 6 fields, append [FIELDS]{"field":"value",...}[/FIELDS] to your response with ALL known fields as valid JSON.
-- CRITICAL — include NEGATIVE answers explicitly:
-  * User says "no insurance" → "has_insurance": false
-  * User says "no certifications" → "certifications": []
-  * User says "no free estimate" → "free_estimate": false
-  * User says "no emergency" → "emergency_service": false
-  * User says "no languages other than Spanish" → "languages": ["Spanish"]
-  * Any "I don't have", "none", "not applicable" → the appropriate false, [], or "" value
-  A negative answer is still a KNOWN answer. Do NOT skip fields just because the value is false or empty.
-- Keep ALL previously collected fields in [FIELDS] every time, including false/empty ones you set before.
-- Keep asking until ALL fields are collected.
+- Ask follow-up questions naturally. Ask 1-2 at a time, never more.
+- When you have collected at least 6 fields, append [FIELDS]{"field":"value"...}[/FIELDS] with ALL fields you have collected so far as valid JSON.
+- Keep ALL previously collected fields in [FIELDS] every single response — never drop fields.
+
+UNDERSTANDING NEGATIVE ANSWERS:
+When the user says "no", "none", "I don't have it", "not applicable" — that IS a definitive answer. Never treat it as "unknown". Map it correctly:
+  * "no insurance" → "has_insurance": false
+  * "no certifications" → "certifications": []
+  * "no free estimate" → "free_estimate": false
+  * "no emergency service" → "emergency_service": false
+  * "only Spanish" → "languages": ["Spanish"]
+  * "I don't have a website" → "website": ""
+
+CRITICAL RULE — NEVER ASK THE SAME FIELD TWICE:
+- Once a field appears in [FIELDS], it is permanently COLLECTED. Do NOT ask about it again in any future message, even if the value is false or empty.
+- Before asking any question, check: is this field already in [FIELDS]? If yes, skip it and move to a missing field.
+- Your goal: fill all 16 fields across the conversation. Each field gets asked exactly once.
 - NEVER discuss anything outside of profile-building. If the user changes the subject, gently steer back.
 - Be conversational and warm, like a friendly onboarding coach.`
 
@@ -236,6 +241,8 @@ Conversation rules:
 	mux.Handle("/api/v1/chat", chatHandler)
 	mux.HandleFunc("/api/v1/worker/chat", chatHandler.HandleWorkerChat)
 	mux.Handle("/api/v1/worker/profile", workerHandler)
+	mux.Handle("/api/v1/conversations", convHandler)
+	mux.Handle("/api/v1/conversations/", convHandler)
 
 	handler := loggingMiddleware(corsMiddleware(mux))
 
