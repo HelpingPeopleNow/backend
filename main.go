@@ -140,8 +140,9 @@ func main() {
 	}
 	slog.Info("database connected")
 
-	chatHandler := handler.NewChatHandler()
+	chatHandler := handler.NewChatHandler(db)
 	sysPromptHandler := handler.NewSystemPromptHandler(db)
+	workerHandler := handler.NewWorkerHandler(db)
 
 	// Load the system prompt from DB into the chat handler's cache
 	var sp core.SystemPrompt
@@ -174,6 +175,7 @@ func main() {
 	mux.Handle("/api/v1/system-prompts", sysPromptHandler)
 	mux.Handle("/api/v1/system-prompts/", sysPromptHandler)
 	mux.Handle("/api/v1/chat", chatHandler)
+	mux.Handle("/api/v1/worker/profile", workerHandler)
 
 	handler := loggingMiddleware(corsMiddleware(mux))
 

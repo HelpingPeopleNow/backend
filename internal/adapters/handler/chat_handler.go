@@ -13,9 +13,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/HelpingPeopleNow/backend/internal/core"
 	pb "github.com/HelpingPeopleNow/backend/proto/helper"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"gorm.io/gorm"
 )
 
 // ChatHandler proxies questions to the helper service via gRPC.
@@ -25,7 +27,8 @@ type ChatHandler struct {
 	authURL       string
 	mu            sync.RWMutex
 	systemPrompt  string
-	llmProvider   string // "ollama" | "opencode" | "" (= use env default, set by admin)
+	llmProvider   string
+	db            *gorm.DB
 }
 
 type chatRequest struct {
@@ -39,8 +42,8 @@ type historyItem struct {
 }
 
 type chatResponse struct {
-	Answer      string `json:"answer"`
-	RoleUpdated bool   `json:"role_updated,omitempty"`
+	Answer        string `json:"answer"`
+	DetectedRole  string `json:"detected_role,omitempty"`
 }
 
 func dialHelper(addr string) (*grpc.ClientConn, pb.HelperServiceClient) {
@@ -61,7 +64,7 @@ func dialHelper(addr string) (*grpc.ClientConn, pb.HelperServiceClient) {
 	return conn, client
 }
 
-func NewChatHandler() *ChatHandler {
+func NewChatHandler(db *gorm.DB) *ChatHandler {
 	helperAddr := os.Getenv("HELPER_GRPC_ADDR")
 	if helperAddr == "" {
 		helperAddr = "helpingpeoplenow-helper:50051"
@@ -71,7 +74,7 @@ func NewChatHandler() *ChatHandler {
 		authURL = "http://auth:8083"
 	}
 	conn, client := dialHelper(helperAddr)
-	return &ChatHandler{conn: conn, client: client, authURL: authURL}
+	return &ChatHandler{conn: conn, client: client, authURL: authURL, db: db}
 }
 
 func (h *ChatHandler) ensureClient() error {
@@ -198,21 +201,20 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("chat response", "answer_len", len(resp.Answer), "detected_role", resp.DetectedRole, "duration_ms", elapsed.Milliseconds())
 
-	// If the helper detected a role, update the user via auth service
-	roleUpdated := false
+	// If the helper detected a role, update the user via auth service (async, don't block the response)
 	if resp.DetectedRole != "" {
-		roleUpdated = h.updateUserRole(r, resp.DetectedRole)
+		go h.updateUserRole(context.Background(), r, resp.DetectedRole)
 	}
 
 	json.NewEncoder(w).Encode(chatResponse{
-		Answer:      resp.Answer,
-		RoleUpdated: roleUpdated,
+		Answer:       resp.Answer,
+		DetectedRole: resp.DetectedRole,
 	})
 }
 
 // updateUserRole extracts the user ID from the session cookie by calling
 // the auth service, then PATCHes the user's role.
-func (h *ChatHandler) updateUserRole(r *http.Request, role string) bool {
+func (h *ChatHandler) updateUserRole(ctx context.Context, r *http.Request, role string) bool {
 	// Get the session cookie
 	cookie, err := r.Cookie("better-auth.session_token")
 	if err != nil {
@@ -221,7 +223,7 @@ func (h *ChatHandler) updateUserRole(r *http.Request, role string) bool {
 	}
 
 	// Validate session against the auth service to get user info
-	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, h.authURL+"/api/auth/get-session", nil)
+	authReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.authURL+"/api/auth/get-session", nil)
 	if err != nil {
 		slog.Error("chat: failed to create session request", "error", err)
 		return false
@@ -285,7 +287,25 @@ func (h *ChatHandler) updateUserRole(r *http.Request, role string) bool {
 	}
 
 	slog.Info("chat: user role updated", "user_id", userID, "role", role)
+
+	// Auto-create an empty worker profile if one doesn't exist yet
+	go h.ensureWorkerProfile(userID)
+
 	return true
+}
+
+func (h *ChatHandler) ensureWorkerProfile(userID string) {
+	var count int64
+	h.db.Model(&core.WorkerProfile{}).Where("user_id = ?", userID).Count(&count)
+	if count > 0 {
+		return
+	}
+	wp := &core.WorkerProfile{UserID: userID}
+	if err := h.db.Create(wp).Error; err != nil {
+		slog.Warn("chat: failed to auto-create worker profile", "user_id", userID, "error", err)
+		return
+	}
+	slog.Info("chat: auto-created worker profile", "user_id", userID)
 }
 
 // strReader is a small helper to create a strings.Reader-like from a string.

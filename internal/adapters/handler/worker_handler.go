@@ -1,0 +1,215 @@
+package handler
+
+import (
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/HelpingPeopleNow/backend/internal/core"
+	"gorm.io/gorm"
+)
+
+// WorkerHandler serves the worker profile (one per user).
+//   GET /api/v1/worker/profile  →  returns the authenticated user's worker profile
+//   PUT /api/v1/worker/profile  →  creates or updates the worker profile
+type WorkerHandler struct {
+	db *gorm.DB
+}
+
+func NewWorkerHandler(db *gorm.DB) *WorkerHandler {
+	return &WorkerHandler{db: db}
+}
+
+func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// Extract user ID from the session cookie via auth service
+	userID := extractUserIDFromRequest(r, h.db)
+	if userID == "" {
+		slog.Warn("worker: no user session")
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		h.get(w, userID)
+	case http.MethodPut:
+		h.put(w, r, userID)
+	case http.MethodOptions:
+		w.WriteHeader(http.StatusOK)
+	default:
+		slog.Warn("worker: invalid method", "method", r.Method)
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *WorkerHandler) get(w http.ResponseWriter, userID string) {
+	var wp core.WorkerProfile
+	err := h.db.Where("user_id = ?", userID).First(&wp).Error
+	if err != nil {
+		// No profile yet — return empty, not 404 (frontend shows the form)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"user_id": userID,
+		})
+		return
+	}
+	json.NewEncoder(w).Encode(toWorkerDTO(&wp))
+}
+
+func (h *WorkerHandler) put(w http.ResponseWriter, r *http.Request, userID string) {
+	var dto core.WorkerProfileDTO
+	if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
+		slog.Warn("worker: invalid JSON", "error", err)
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Serialize arrays to JSON strings for storage
+	certStr := marshalStrings(dto.Certifications)
+	langStr := marshalStrings(dto.Languages)
+	socialStr := marshalSocialLinks(dto.SocialLinks)
+
+	wp := &core.WorkerProfile{
+		UserID:           userID,
+		Profession:       dto.Profession,
+		BusinessName:     dto.BusinessName,
+		Bio:              dto.Bio,
+		Phone:            dto.Phone,
+		City:             dto.City,
+		ServiceRadiusKm:  dto.ServiceRadiusKm,
+		Address:          dto.Address,
+		HourlyRate:       dto.HourlyRate,
+		MinimumCharge:    dto.MinimumCharge,
+		FreeEstimate:     dto.FreeEstimate,
+		YearsExperience:  dto.YearsExperience,
+		Certifications:   certStr,
+		HasInsurance:     dto.HasInsurance,
+		Languages:        langStr,
+		EmergencyService: dto.EmergencyService,
+		Website:          dto.Website,
+		SocialLinks:      socialStr,
+	}
+
+	// Upsert: if a row for this user_id already exists, update it
+	var existing core.WorkerProfile
+	err := h.db.Where("user_id = ?", userID).First(&existing).Error
+	if err == nil {
+		wp.ID = existing.ID
+		wp.CreatedAt = existing.CreatedAt
+		err = h.db.Save(wp).Error
+	} else {
+		err = h.db.Create(wp).Error
+	}
+	if err != nil {
+		slog.Error("worker: save failed", "error", err)
+		http.Error(w, `{"error":"save failed"}`, http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("worker: profile saved", "user_id", userID, "profession", wp.Profession)
+
+	// Return the saved DTO
+	h.db.Where("user_id = ?", userID).First(&wp)
+	json.NewEncoder(w).Encode(toWorkerDTO(wp))
+}
+
+// --- helpers ---
+
+func toWorkerDTO(wp *core.WorkerProfile) *core.WorkerProfileDTO {
+	var certs, langs []string
+	json.Unmarshal([]byte(wp.Certifications), &certs)
+	json.Unmarshal([]byte(wp.Languages), &langs)
+	var social []core.SocialLink
+	json.Unmarshal([]byte(wp.SocialLinks), &social)
+	if certs == nil {
+		certs = []string{}
+	}
+	if langs == nil {
+		langs = []string{}
+	}
+	if social == nil {
+		social = []core.SocialLink{}
+	}
+	return &core.WorkerProfileDTO{
+		ID:               wp.ID,
+		UserID:           wp.UserID,
+		Profession:       wp.Profession,
+		BusinessName:     wp.BusinessName,
+		Bio:              wp.Bio,
+		Phone:            wp.Phone,
+		City:             wp.City,
+		ServiceRadiusKm:  wp.ServiceRadiusKm,
+		Address:          wp.Address,
+		HourlyRate:       wp.HourlyRate,
+		MinimumCharge:    wp.MinimumCharge,
+		FreeEstimate:     wp.FreeEstimate,
+		YearsExperience:  wp.YearsExperience,
+		Certifications:   certs,
+		HasInsurance:     wp.HasInsurance,
+		Languages:        langs,
+		EmergencyService: wp.EmergencyService,
+		Website:          wp.Website,
+		SocialLinks:      social,
+		CreatedAt:        wp.CreatedAt,
+		UpdatedAt:        wp.UpdatedAt,
+	}
+}
+
+func marshalStrings(s []string) string {
+	if s == nil {
+		return "[]"
+	}
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+func marshalSocialLinks(s []core.SocialLink) string {
+	if s == nil {
+		return "[]"
+	}
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// extractUserIDFromRequest calls the auth service's get-session endpoint to find the user ID.
+func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
+	// Try from the session cookie via auth service
+	cookie, err := r.Cookie("better-auth.session_token")
+	if err != nil {
+		return ""
+	}
+	// We need the auth service URL
+	authURL := getEnvDefault("AUTH_SERVICE_URL", "http://auth:8083")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, authURL+"/api/auth/get-session", nil)
+	if err != nil {
+		return ""
+	}
+	authReq.AddCookie(cookie)
+	resp, err := client.Do(authReq)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	defer resp.Body.Close()
+	var session map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&session); err != nil {
+		return ""
+	}
+	user, _ := session["user"].(map[string]interface{})
+	if user == nil {
+		return ""
+	}
+	id, _ := user["id"].(string)
+	return id
+}
+
+func getEnvDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
