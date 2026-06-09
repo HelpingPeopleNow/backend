@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -210,10 +211,8 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// updateUserRole resolves the user ID from the session JWT via the auth service,
-// updateUserRole extracts the user ID from the session cookie by splitting
-// the JWT on '.' (the first part is the raw session token) and looking it
-// up directly in the DB, then updates the user's role.
+// updateUserRole resolves the user ID from the session JWT via direct DB read,
+// then calls the auth service (the role authority) to perform the role update.
 func (h *ChatHandler) updateUserRole(ctx context.Context, r *http.Request, role string) bool {
 	cookie, err := r.Cookie("better-auth.session_token")
 	if err != nil {
@@ -221,7 +220,7 @@ func (h *ChatHandler) updateUserRole(ctx context.Context, r *http.Request, role 
 		return false
 	}
 
-	// The cookie is "<session.token>.<encrypted_payload>"
+	// The cookie is "<session.token>.<encrypted_payload>" — split to get the raw token
 	token := strings.SplitN(cookie.Value, ".", 2)[0]
 
 	type dbSession struct {
@@ -234,14 +233,39 @@ func (h *ChatHandler) updateUserRole(ctx context.Context, r *http.Request, role 
 		return false
 	}
 
-	// Update role directly in the user table
-	err = h.db.Table("\"user\"").Where("id = ?", s.UserID).Update("role", role).Error
+	// Auth service is the authority for role mutations — call it
+	authURL := os.Getenv("AUTH_SERVICE_URL")
+	if authURL == "" {
+		authURL = "http://auth:8083"
+	}
+
+	bodyPayload, _ := json.Marshal(map[string]string{"role": role})
+	authReq, err := http.NewRequest(
+		http.MethodPut,
+		authURL+"/api/auth/user/"+s.UserID+"/role",
+		strings.NewReader(string(bodyPayload)),
+	)
 	if err != nil {
-		slog.Error("chat: failed to update user role", "user_id", s.UserID, "error", err)
+		slog.Error("chat: failed to create auth request", "error", err)
+		return false
+	}
+	authReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(authReq)
+	if err != nil {
+		slog.Error("chat: auth call failed", "user_id", s.UserID, "error", err)
+		return false
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		slog.Error("chat: auth returned non-200", "user_id", s.UserID, "status", resp.StatusCode, "body", string(respBody))
 		return false
 	}
 
-	slog.Info("chat: user role updated", "user_id", s.UserID, "role", role)
+	slog.Info("chat: user role updated via auth", "user_id", s.UserID, "role", role)
 
 	// Auto-create an empty worker profile if one doesn't exist yet
 	go h.ensureWorkerProfile(s.UserID)
