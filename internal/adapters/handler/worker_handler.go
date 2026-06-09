@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"os"
-	"time"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
 	"gorm.io/gorm"
@@ -174,42 +172,21 @@ func marshalSocialLinks(s []core.SocialLink) string {
 	return string(b)
 }
 
-// extractUserIDFromRequest calls the auth service's get-session endpoint to find the user ID.
+// extractUserIDFromRequest looks up the session token directly in the DB
+// instead of calling the auth service (which has been hanging).
 func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
-	// Try from the session cookie via auth service
 	cookie, err := r.Cookie("better-auth.session_token")
 	if err != nil {
 		return ""
 	}
-	// We need the auth service URL
-	authURL := getEnvDefault("AUTH_SERVICE_URL", "http://auth:8083")
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, authURL+"/api/auth/get-session", nil)
+	type dbSession struct {
+		UserID string `gorm:"column:userId"`
+	}
+	var s dbSession
+	err = db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", cookie.Value).First(&s).Error
 	if err != nil {
 		return ""
 	}
-	authReq.AddCookie(cookie)
-	resp, err := client.Do(authReq)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return ""
-	}
-	defer resp.Body.Close()
-	var session map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&session); err != nil {
-		return ""
-	}
-	user, _ := session["user"].(map[string]interface{})
-	if user == nil {
-		return ""
-	}
-	id, _ := user["id"].(string)
-	return id
-}
-
-func getEnvDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
+	return s.UserID
 }

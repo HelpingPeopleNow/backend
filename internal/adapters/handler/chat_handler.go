@@ -3,8 +3,6 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -212,8 +210,8 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// updateUserRole extracts the user ID from the session cookie by calling
-// the auth service, then PATCHes the user's role.
+// updateUserRole extracts the user ID from the session cookie via direct DB lookup,
+// then updates the user's role directly in the database.
 func (h *ChatHandler) updateUserRole(ctx context.Context, r *http.Request, role string) bool {
 	// Get the session cookie
 	cookie, err := r.Cookie("better-auth.session_token")
@@ -222,74 +220,28 @@ func (h *ChatHandler) updateUserRole(ctx context.Context, r *http.Request, role 
 		return false
 	}
 
-	// Validate session against the auth service to get user info
-	authReq, err := http.NewRequestWithContext(ctx, http.MethodGet, h.authURL+"/api/auth/get-session", nil)
+	// Look up the session directly in the database
+	type dbSession struct {
+		UserID string `gorm:"column:userId"`
+	}
+	var s dbSession
+	err = h.db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", cookie.Value).First(&s).Error
 	if err != nil {
-		slog.Error("chat: failed to create session request", "error", err)
+		slog.Warn("chat: session not found in DB, skipping role update", "error", err)
 		return false
 	}
-	authReq.AddCookie(cookie)
 
-	client := &http.Client{Timeout: 60 * time.Second}
-	sessionResp, err := client.Do(authReq)
+	// Update the user's role directly in the database
+	err = h.db.Table("\"user\"").Where("id = ?", s.UserID).Update("role", role).Error
 	if err != nil {
-		slog.Error("chat: session check failed", "error", err)
-		return false
-	}
-	defer sessionResp.Body.Close()
-
-	if sessionResp.StatusCode != http.StatusOK {
-		slog.Warn("chat: invalid session, skipping role update", "status", sessionResp.StatusCode)
+		slog.Error("chat: failed to update user role", "user_id", s.UserID, "error", err)
 		return false
 	}
 
-	var session map[string]interface{}
-	if err := json.NewDecoder(sessionResp.Body).Decode(&session); err != nil {
-		slog.Error("chat: failed to decode session", "error", err)
-		return false
-	}
-
-	user, _ := session["user"].(map[string]interface{})
-	if user == nil {
-		slog.Warn("chat: no user in session")
-		return false
-	}
-
-	userID, _ := user["id"].(string)
-	if userID == "" {
-		slog.Warn("chat: no user ID in session")
-		return false
-	}
-
-	// PATCH the auth service to update the user's role
-	payload, _ := json.Marshal(map[string]string{"role": role})
-	url := fmt.Sprintf("%s/api/auth/user/%s/role", h.authURL, userID)
-
-	patchReq, err := http.NewRequest(http.MethodPut, url, strReader(string(payload)))
-	if err != nil {
-		slog.Error("chat: failed to create role update request", "error", err)
-		return false
-	}
-	patchReq.Header.Set("Content-Type", "application/json")
-	patchReq.AddCookie(cookie)
-
-	resp, err := client.Do(patchReq)
-	if err != nil {
-		slog.Error("chat: role update request failed", "error", err)
-		return false
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		slog.Warn("chat: role update rejected", "status", resp.StatusCode, "body", string(body))
-		return false
-	}
-
-	slog.Info("chat: user role updated", "user_id", userID, "role", role)
+	slog.Info("chat: user role updated", "user_id", s.UserID, "role", role)
 
 	// Auto-create an empty worker profile if one doesn't exist yet
-	go h.ensureWorkerProfile(userID)
+	go h.ensureWorkerProfile(s.UserID)
 
 	return true
 }
