@@ -210,28 +210,31 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// updateUserRole extracts the user ID from the session cookie via direct DB lookup,
-// then updates the user's role directly in the database.
+// updateUserRole resolves the user ID from the session JWT via the auth service,
+// updateUserRole extracts the user ID from the session cookie by splitting
+// the JWT on '.' (the first part is the raw session token) and looking it
+// up directly in the DB, then updates the user's role.
 func (h *ChatHandler) updateUserRole(ctx context.Context, r *http.Request, role string) bool {
-	// Get the session cookie
 	cookie, err := r.Cookie("better-auth.session_token")
 	if err != nil {
 		slog.Warn("chat: no session cookie, skipping role update")
 		return false
 	}
 
-	// Look up the session directly in the database
+	// The cookie is "<session.token>.<encrypted_payload>"
+	token := strings.SplitN(cookie.Value, ".", 2)[0]
+
 	type dbSession struct {
 		UserID string `gorm:"column:userId"`
 	}
 	var s dbSession
-	err = h.db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", cookie.Value).First(&s).Error
+	err = h.db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
 	if err != nil {
 		slog.Warn("chat: session not found in DB, skipping role update", "error", err)
 		return false
 	}
 
-	// Update the user's role directly in the database
+	// Update role directly in the user table
 	err = h.db.Table("\"user\"").Where("id = ?", s.UserID).Update("role", role).Error
 	if err != nil {
 		slog.Error("chat: failed to update user role", "user_id", s.UserID, "error", err)

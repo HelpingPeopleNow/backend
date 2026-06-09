@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
 	"gorm.io/gorm"
@@ -172,19 +173,22 @@ func marshalSocialLinks(s []core.SocialLink) string {
 	return string(b)
 }
 
-// extractUserIDFromRequest looks up the session token directly in the DB
-// instead of calling the auth service (which has been hanging).
+// extractUserIDFromRequest splits the JWT cookie on '.' — the first part
+// is the raw session token — and looks up the user in the DB directly.
 func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
 	cookie, err := r.Cookie("better-auth.session_token")
 	if err != nil {
 		return ""
 	}
 
+	// The cookie is "<session.token>.<encrypted_payload>"
+	token := strings.SplitN(cookie.Value, ".", 2)[0]
+
 	type dbSession struct {
 		UserID string `gorm:"column:userId"`
 	}
 	var s dbSession
-	err = db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", cookie.Value).First(&s).Error
+	err = db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
 	if err != nil {
 		return ""
 	}
