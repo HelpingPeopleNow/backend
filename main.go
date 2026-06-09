@@ -10,8 +10,7 @@ import (
 
 	"github.com/HelpingPeopleNow/backend/database"
 	"github.com/HelpingPeopleNow/backend/internal/adapters/handler"
-	"github.com/HelpingPeopleNow/backend/internal/adapters/repository"
-	"github.com/HelpingPeopleNow/backend/internal/service"
+	"github.com/HelpingPeopleNow/backend/internal/core"
 )
 
 // contextKey is used for storing values in request context to avoid collisions.
@@ -141,18 +140,37 @@ func main() {
 	}
 	slog.Info("database connected")
 
-	repo := repository.NewGormPromptRepository(db)
-	svc := service.NewPromptService(repo)
-	promptHandler := handler.NewPromptHandler(svc)
 	chatHandler := handler.NewChatHandler()
 	sysPromptHandler := handler.NewSystemPromptHandler(db)
 
+	// Load the system prompt from DB into the chat handler's cache
+	var sp core.SystemPrompt
+	if err := db.First(&sp, 1).Error; err != nil {
+		slog.Warn("system_prompt: row 1 not found, using empty", "error", err)
+	} else {
+		chatHandler.SetSystemPrompt(sp.HelperPrompt)
+		slog.Info("system_prompt loaded at startup", "len", len(sp.HelperPrompt))
+
+		if sp.LLMProvider != "" {
+			chatHandler.SetLLMProvider(sp.LLMProvider)
+			slog.Info("llm_provider loaded at startup", "provider", sp.LLMProvider)
+		}
+	}
+
+	// Wire the refresh callbacks: when admin updates, refresh the caches
+	sysPromptHandler = handler.NewSystemPromptHandler(db,
+		func(prompt string) { // onUpdate: prompt content
+			chatHandler.SetSystemPrompt(prompt)
+			slog.Info("system_prompt cache refreshed via admin update")
+		},
+		func(provider string) { // onProviderUpdate: llm provider
+			chatHandler.SetLLMProvider(provider)
+			slog.Info("llm_provider cache refreshed via admin update", "provider", provider)
+		},
+	)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
-	mux.Handle("/api/v1/prompt-helpers", authMiddleware(promptHandler))
-	mux.Handle("/api/v1/prompt-helpers/", authMiddleware(promptHandler))
-	mux.Handle("/api/v1/prompts", promptHandler)
-	mux.Handle("/api/v1/prompts/", promptHandler)
 	mux.Handle("/api/v1/system-prompts", sysPromptHandler)
 	mux.Handle("/api/v1/system-prompts/", sysPromptHandler)
 	mux.Handle("/api/v1/chat", chatHandler)

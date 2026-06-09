@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v3.19.6
-// source: proto/helper.proto
+// source: proto/helper/helper.proto
 
 package helper
 
@@ -31,7 +31,7 @@ type Message struct {
 
 func (x *Message) Reset() {
 	*x = Message{}
-	mi := &file_proto_helper_proto_msgTypes[0]
+	mi := &file_proto_helper_helper_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -43,7 +43,7 @@ func (x *Message) String() string {
 func (*Message) ProtoMessage() {}
 
 func (x *Message) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_helper_proto_msgTypes[0]
+	mi := &file_proto_helper_helper_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -56,7 +56,7 @@ func (x *Message) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Message.ProtoReflect.Descriptor instead.
 func (*Message) Descriptor() ([]byte, []int) {
-	return file_proto_helper_proto_rawDescGZIP(), []int{0}
+	return file_proto_helper_helper_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *Message) GetRole() string {
@@ -77,13 +77,15 @@ type AskRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Question      string                 `protobuf:"bytes,1,opt,name=question,proto3" json:"question,omitempty"`
 	History       []*Message             `protobuf:"bytes,2,rep,name=history,proto3" json:"history,omitempty"`
+	SystemPrompt  string                 `protobuf:"bytes,3,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"` // loaded by backend, provided on every call
+	LlmProvider   string                 `protobuf:"bytes,4,opt,name=llm_provider,json=llmProvider,proto3" json:"llm_provider,omitempty"`    // "ollama" | "opencode" | "" (= use env default, set by admin)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AskRequest) Reset() {
 	*x = AskRequest{}
-	mi := &file_proto_helper_proto_msgTypes[1]
+	mi := &file_proto_helper_helper_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -95,7 +97,7 @@ func (x *AskRequest) String() string {
 func (*AskRequest) ProtoMessage() {}
 
 func (x *AskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_helper_proto_msgTypes[1]
+	mi := &file_proto_helper_helper_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -108,7 +110,7 @@ func (x *AskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AskRequest.ProtoReflect.Descriptor instead.
 func (*AskRequest) Descriptor() ([]byte, []int) {
-	return file_proto_helper_proto_rawDescGZIP(), []int{1}
+	return file_proto_helper_helper_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *AskRequest) GetQuestion() string {
@@ -125,16 +127,31 @@ func (x *AskRequest) GetHistory() []*Message {
 	return nil
 }
 
+func (x *AskRequest) GetSystemPrompt() string {
+	if x != nil {
+		return x.SystemPrompt
+	}
+	return ""
+}
+
+func (x *AskRequest) GetLlmProvider() string {
+	if x != nil {
+		return x.LlmProvider
+	}
+	return ""
+}
+
 type AskResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Answer        string                 `protobuf:"bytes,1,opt,name=answer,proto3" json:"answer,omitempty"`
+	DetectedRole  string                 `protobuf:"bytes,2,opt,name=detected_role,json=detectedRole,proto3" json:"detected_role,omitempty"` // "worker" | "client" | ""
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AskResponse) Reset() {
 	*x = AskResponse{}
-	mi := &file_proto_helper_proto_msgTypes[2]
+	mi := &file_proto_helper_helper_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -146,7 +163,7 @@ func (x *AskResponse) String() string {
 func (*AskResponse) ProtoMessage() {}
 
 func (x *AskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_helper_proto_msgTypes[2]
+	mi := &file_proto_helper_helper_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -159,7 +176,7 @@ func (x *AskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AskResponse.ProtoReflect.Descriptor instead.
 func (*AskResponse) Descriptor() ([]byte, []int) {
-	return file_proto_helper_proto_rawDescGZIP(), []int{2}
+	return file_proto_helper_helper_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *AskResponse) GetAnswer() string {
@@ -169,42 +186,52 @@ func (x *AskResponse) GetAnswer() string {
 	return ""
 }
 
-var File_proto_helper_proto protoreflect.FileDescriptor
+func (x *AskResponse) GetDetectedRole() string {
+	if x != nil {
+		return x.DetectedRole
+	}
+	return ""
+}
 
-const file_proto_helper_proto_rawDesc = "" +
+var File_proto_helper_helper_proto protoreflect.FileDescriptor
+
+const file_proto_helper_helper_proto_rawDesc = "" +
 	"\n" +
-	"\x12proto/helper.proto\x12\x06helper\"7\n" +
+	"\x19proto/helper/helper.proto\x12\x06helper\"7\n" +
 	"\aMessage\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x18\n" +
-	"\acontent\x18\x02 \x01(\tR\acontent\"S\n" +
+	"\acontent\x18\x02 \x01(\tR\acontent\"\x9b\x01\n" +
 	"\n" +
 	"AskRequest\x12\x1a\n" +
 	"\bquestion\x18\x01 \x01(\tR\bquestion\x12)\n" +
-	"\ahistory\x18\x02 \x03(\v2\x0f.helper.MessageR\ahistory\"%\n" +
+	"\ahistory\x18\x02 \x03(\v2\x0f.helper.MessageR\ahistory\x12#\n" +
+	"\rsystem_prompt\x18\x03 \x01(\tR\fsystemPrompt\x12!\n" +
+	"\fllm_provider\x18\x04 \x01(\tR\vllmProvider\"J\n" +
 	"\vAskResponse\x12\x16\n" +
-	"\x06answer\x18\x01 \x01(\tR\x06answer2?\n" +
+	"\x06answer\x18\x01 \x01(\tR\x06answer\x12#\n" +
+	"\rdetected_role\x18\x02 \x01(\tR\fdetectedRole2?\n" +
 	"\rHelperService\x12.\n" +
 	"\x03Ask\x12\x12.helper.AskRequest\x1a\x13.helper.AskResponseB2Z0github.com/HelpingPeopleNow/backend/proto/helperb\x06proto3"
 
 var (
-	file_proto_helper_proto_rawDescOnce sync.Once
-	file_proto_helper_proto_rawDescData []byte
+	file_proto_helper_helper_proto_rawDescOnce sync.Once
+	file_proto_helper_helper_proto_rawDescData []byte
 )
 
-func file_proto_helper_proto_rawDescGZIP() []byte {
-	file_proto_helper_proto_rawDescOnce.Do(func() {
-		file_proto_helper_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_helper_proto_rawDesc), len(file_proto_helper_proto_rawDesc)))
+func file_proto_helper_helper_proto_rawDescGZIP() []byte {
+	file_proto_helper_helper_proto_rawDescOnce.Do(func() {
+		file_proto_helper_helper_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_helper_helper_proto_rawDesc), len(file_proto_helper_helper_proto_rawDesc)))
 	})
-	return file_proto_helper_proto_rawDescData
+	return file_proto_helper_helper_proto_rawDescData
 }
 
-var file_proto_helper_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
-var file_proto_helper_proto_goTypes = []any{
+var file_proto_helper_helper_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_proto_helper_helper_proto_goTypes = []any{
 	(*Message)(nil),     // 0: helper.Message
 	(*AskRequest)(nil),  // 1: helper.AskRequest
 	(*AskResponse)(nil), // 2: helper.AskResponse
 }
-var file_proto_helper_proto_depIdxs = []int32{
+var file_proto_helper_helper_proto_depIdxs = []int32{
 	0, // 0: helper.AskRequest.history:type_name -> helper.Message
 	1, // 1: helper.HelperService.Ask:input_type -> helper.AskRequest
 	2, // 2: helper.HelperService.Ask:output_type -> helper.AskResponse
@@ -215,26 +242,26 @@ var file_proto_helper_proto_depIdxs = []int32{
 	0, // [0:1] is the sub-list for field type_name
 }
 
-func init() { file_proto_helper_proto_init() }
-func file_proto_helper_proto_init() {
-	if File_proto_helper_proto != nil {
+func init() { file_proto_helper_helper_proto_init() }
+func file_proto_helper_helper_proto_init() {
+	if File_proto_helper_helper_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_helper_proto_rawDesc), len(file_proto_helper_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_helper_helper_proto_rawDesc), len(file_proto_helper_helper_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_proto_helper_proto_goTypes,
-		DependencyIndexes: file_proto_helper_proto_depIdxs,
-		MessageInfos:      file_proto_helper_proto_msgTypes,
+		GoTypes:           file_proto_helper_helper_proto_goTypes,
+		DependencyIndexes: file_proto_helper_helper_proto_depIdxs,
+		MessageInfos:      file_proto_helper_helper_proto_msgTypes,
 	}.Build()
-	File_proto_helper_proto = out.File
-	file_proto_helper_proto_goTypes = nil
-	file_proto_helper_proto_depIdxs = nil
+	File_proto_helper_helper_proto = out.File
+	file_proto_helper_helper_proto_goTypes = nil
+	file_proto_helper_helper_proto_depIdxs = nil
 }

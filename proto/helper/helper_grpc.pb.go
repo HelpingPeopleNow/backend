@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v3.19.6
-// source: proto/helper.proto
+// source: proto/helper/helper.proto
 
 package helper
 
@@ -117,5 +117,5 @@ var HelperService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "proto/helper.proto",
+	Metadata: "proto/helper/helper.proto",
 }

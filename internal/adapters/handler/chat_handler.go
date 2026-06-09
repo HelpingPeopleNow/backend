@@ -3,9 +3,14 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	pb "github.com/HelpingPeopleNow/backend/proto/helper"
@@ -15,8 +20,12 @@ import (
 
 // ChatHandler proxies questions to the helper service via gRPC.
 type ChatHandler struct {
-	conn   *grpc.ClientConn
-	client pb.HelperServiceClient
+	conn          *grpc.ClientConn
+	client        pb.HelperServiceClient
+	authURL       string
+	mu            sync.RWMutex
+	systemPrompt  string
+	llmProvider   string // "ollama" | "opencode" | "" (= use env default, set by admin)
 }
 
 type chatRequest struct {
@@ -30,7 +39,8 @@ type historyItem struct {
 }
 
 type chatResponse struct {
-	Answer string `json:"answer"`
+	Answer      string `json:"answer"`
+	RoleUpdated bool   `json:"role_updated,omitempty"`
 }
 
 func dialHelper(addr string) (*grpc.ClientConn, pb.HelperServiceClient) {
@@ -56,8 +66,12 @@ func NewChatHandler() *ChatHandler {
 	if helperAddr == "" {
 		helperAddr = "helpingpeoplenow-helper:50051"
 	}
+	authURL := os.Getenv("AUTH_SERVICE_URL")
+	if authURL == "" {
+		authURL = "http://auth:8083"
+	}
 	conn, client := dialHelper(helperAddr)
-	return &ChatHandler{conn: conn, client: client}
+	return &ChatHandler{conn: conn, client: client, authURL: authURL}
 }
 
 func (h *ChatHandler) ensureClient() error {
@@ -75,6 +89,39 @@ func (h *ChatHandler) ensureClient() error {
 		return grpc.ErrClientConnClosing
 	}
 	return nil
+}
+
+// SetSystemPrompt updates the cached system prompt (thread-safe).
+// Called at startup and whenever the admin modifies the prompt via PUT.
+func (h *ChatHandler) SetSystemPrompt(prompt string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.systemPrompt = prompt
+	slog.Info("system_prompt cache updated", "len", len(prompt))
+	if len(prompt) > 0 {
+		slog.Debug("system_prompt first 150 chars", "text", prompt[:min(len(prompt), 150)])
+	}
+}
+
+func (h *ChatHandler) getSystemPrompt() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.systemPrompt
+}
+
+// SetLLMProvider updates the cached LLM provider (thread-safe).
+// Called at startup and whenever the admin modifies it via PUT.
+func (h *ChatHandler) SetLLMProvider(provider string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.llmProvider = provider
+	slog.Info("llm_provider cache updated", "provider", provider)
+}
+
+func (h *ChatHandler) getLLMProvider() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.llmProvider
 }
 
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +146,12 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("chat request", "msg_len", len(req.Message), "history_len", len(req.History))
+	sp := h.getSystemPrompt()
+	prov := h.getLLMProvider()
+	slog.Info("chat gRPC call", "msg_len", len(req.Message), "history_len", len(req.History), "sp_len", len(sp), "provider", prov)
+	if len(sp) > 0 {
+		slog.Debug("chat system_prompt[:150]", "text", sp[:min(len(sp), 150)])
+	}
 
 	if err := h.ensureClient(); err != nil {
 		slog.Error("chat: helper unreachable")
@@ -111,22 +164,133 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		history[i] = &pb.Message{Role: m.Role, Content: m.Content}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// gRPC timeout: configurable via HELPER_TIMEOUT_SECONDS, default 60s for CPU inference
+	timeoutSec := 60 * time.Second
+	if ts := os.Getenv("HELPER_TIMEOUT_SECONDS"); ts != "" {
+		if v, err := strconv.Atoi(ts); err == nil && v > 0 {
+			timeoutSec = time.Duration(v) * time.Second
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutSec)
 	defer cancel()
 
 	start := time.Now()
 	resp, err := h.client.Ask(ctx, &pb.AskRequest{
-		Question: req.Message,
-		History:  history,
+		Question:     req.Message,
+		History:      history,
+		SystemPrompt: sp,
+		LlmProvider:  prov,
 	})
 	elapsed := time.Since(start)
 
 	if err != nil {
-		slog.Error("chat: gRPC call failed", "error", err, "duration_ms", elapsed.Milliseconds())
-		http.Error(w, `{"error":"helper service error: `+err.Error()+`"}`, http.StatusServiceUnavailable)
-		return
+			slog.Error("chat: gRPC call failed", "error", err, "duration_ms", elapsed.Milliseconds())
+			// If rate-limited, return a readable message instead of HTTP error
+			if strings.Contains(err.Error(), "429") || strings.Contains(strings.ToLower(err.Error()), "rate limit") {
+				json.NewEncoder(w).Encode(chatResponse{
+					Answer: "I'm temporarily rate-limited. Please try again in a minute.",
+				})
+				return
+			}
+			http.Error(w, `{"error":"helper service error: `+err.Error()+`"}`, http.StatusServiceUnavailable)
+			return
+		}
+
+	slog.Info("chat response", "answer_len", len(resp.Answer), "detected_role", resp.DetectedRole, "duration_ms", elapsed.Milliseconds())
+
+	// If the helper detected a role, update the user via auth service
+	roleUpdated := false
+	if resp.DetectedRole != "" {
+		roleUpdated = h.updateUserRole(r, resp.DetectedRole)
 	}
 
-	slog.Info("chat response", "answer_len", len(resp.Answer), "duration_ms", elapsed.Milliseconds())
-	json.NewEncoder(w).Encode(chatResponse{Answer: resp.Answer})
+	json.NewEncoder(w).Encode(chatResponse{
+		Answer:      resp.Answer,
+		RoleUpdated: roleUpdated,
+	})
+}
+
+// updateUserRole extracts the user ID from the session cookie by calling
+// the auth service, then PATCHes the user's role.
+func (h *ChatHandler) updateUserRole(r *http.Request, role string) bool {
+	// Get the session cookie
+	cookie, err := r.Cookie("better-auth.session_token")
+	if err != nil {
+		slog.Warn("chat: no session cookie, skipping role update")
+		return false
+	}
+
+	// Validate session against the auth service to get user info
+	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, h.authURL+"/api/auth/get-session", nil)
+	if err != nil {
+		slog.Error("chat: failed to create session request", "error", err)
+		return false
+	}
+	authReq.AddCookie(cookie)
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	sessionResp, err := client.Do(authReq)
+	if err != nil {
+		slog.Error("chat: session check failed", "error", err)
+		return false
+	}
+	defer sessionResp.Body.Close()
+
+	if sessionResp.StatusCode != http.StatusOK {
+		slog.Warn("chat: invalid session, skipping role update", "status", sessionResp.StatusCode)
+		return false
+	}
+
+	var session map[string]interface{}
+	if err := json.NewDecoder(sessionResp.Body).Decode(&session); err != nil {
+		slog.Error("chat: failed to decode session", "error", err)
+		return false
+	}
+
+	user, _ := session["user"].(map[string]interface{})
+	if user == nil {
+		slog.Warn("chat: no user in session")
+		return false
+	}
+
+	userID, _ := user["id"].(string)
+	if userID == "" {
+		slog.Warn("chat: no user ID in session")
+		return false
+	}
+
+	// PATCH the auth service to update the user's role
+	payload, _ := json.Marshal(map[string]string{"role": role})
+	url := fmt.Sprintf("%s/api/auth/user/%s/role", h.authURL, userID)
+
+	patchReq, err := http.NewRequest(http.MethodPut, url, strReader(string(payload)))
+	if err != nil {
+		slog.Error("chat: failed to create role update request", "error", err)
+		return false
+	}
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchReq.AddCookie(cookie)
+
+	resp, err := client.Do(patchReq)
+	if err != nil {
+		slog.Error("chat: role update request failed", "error", err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		slog.Warn("chat: role update rejected", "status", resp.StatusCode, "body", string(body))
+		return false
+	}
+
+	slog.Info("chat: user role updated", "user_id", userID, "role", role)
+	return true
+}
+
+// strReader is a small helper to create a strings.Reader-like from a string.
+type strReader string
+
+func (s strReader) Read(p []byte) (int, error) {
+	return copy(p, s), nil
 }

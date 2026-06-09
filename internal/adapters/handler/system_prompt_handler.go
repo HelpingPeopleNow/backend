@@ -11,24 +11,36 @@ import (
 )
 
 // SystemPromptHandler serves the column-based system_prompts singleton table.
-//   GET  /api/v1/system-prompts          → returns the helper prompt
-//   PUT  /api/v1/system-prompts/{name}   → updates the helper prompt
+//   GET  /api/v1/system-prompts          → returns the helper prompt + llm provider
+//   PUT  /api/v1/system-prompts/helper   → updates the helper prompt
+//   PUT  /api/v1/system-prompts/provider → updates the llm provider
 type SystemPromptHandler struct {
-	db *gorm.DB
+	db                *gorm.DB
+	onUpdate          func(string) // prompt content refresh callback
+	onProviderUpdate  func(string) // llm provider refresh callback
 }
 
-func NewSystemPromptHandler(db *gorm.DB) *SystemPromptHandler {
-	return &SystemPromptHandler{db: db}
+func NewSystemPromptHandler(db *gorm.DB, onUpdate ...func(string)) *SystemPromptHandler {
+	h := &SystemPromptHandler{db: db}
+	if len(onUpdate) > 0 && onUpdate[0] != nil {
+		h.onUpdate = onUpdate[0]
+	}
+	if len(onUpdate) > 1 && onUpdate[1] != nil {
+		h.onProviderUpdate = onUpdate[1]
+	}
+	return h
 }
 
 type systemPromptsDTO struct {
 	HelperPrompt string `json:"helper_prompt"`
+	LLMProvider  string `json:"llm_provider"`
 	UpdatedAt    string `json:"updated_at"`
 }
 
 func toSystemDTO(sp *core.SystemPrompt) systemPromptsDTO {
 	return systemPromptsDTO{
 		HelperPrompt: sp.HelperPrompt,
+		LLMProvider:  sp.LLMProvider,
 		UpdatedAt:    sp.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
@@ -83,7 +95,8 @@ func (h *SystemPromptHandler) get(w http.ResponseWriter) {
 
 func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col string) {
 	validCols := map[string]string{
-		"helper": "helper_prompt",
+		"helper":   "helper_prompt",
+		"provider": "llm_provider",
 	}
 	columnName, ok := validCols[col]
 	if !ok {
@@ -98,7 +111,7 @@ func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col
 		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 		return
 	}
-	if req.Content == "" {
+	if col != "provider" && req.Content == "" {
 		slog.Warn("system-prompt: empty content")
 		http.Error(w, `{"error":"content cannot be empty"}`, http.StatusBadRequest)
 		return
@@ -119,6 +132,17 @@ func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col
 
 	var sp core.SystemPrompt
 	h.db.First(&sp, 1)
-	slog.Info("system-prompt: updated")
+	slog.Info("system-prompt: updated", "col", columnName)
+
+	// Refresh the appropriate backend cache
+	if columnName == "helper_prompt" && h.onUpdate != nil {
+		h.onUpdate(req.Content)
+		slog.Info("system-prompt: backend cache refreshed")
+	}
+	if columnName == "llm_provider" && h.onProviderUpdate != nil {
+		h.onProviderUpdate(req.Content)
+		slog.Info("system-prompt: backend provider cache refreshed", "provider", req.Content)
+	}
+
 	json.NewEncoder(w).Encode(toSystemDTO(&sp))
 }
