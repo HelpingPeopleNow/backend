@@ -146,13 +146,9 @@ func (h *ConversationHandler) getOne(w http.ResponseWriter, r *http.Request, con
 
 // resolveUserIDFromSession extracts the user ID from the better-auth session cookie.
 func resolveUserIDFromSession(r *http.Request, db *gorm.DB) string {
-	cookie, err := r.Cookie("better-auth.session_token")
+	cookie, err := r.Cookie("better-auth-session")
 	if err != nil {
-		// Try the old-style "session" cookie as fallback
-		cookie, err = r.Cookie("session")
-		if err != nil {
-			return ""
-		}
+		return ""
 	}
 	tokenParts := []byte(cookie.Value)
 	// The cookie is "<token>.<encrypted_payload>" — split to get the raw token

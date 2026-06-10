@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
 	"gorm.io/gorm"
@@ -173,17 +174,43 @@ func marshalSocialLinks(s []core.SocialLink) string {
 	return string(b)
 }
 
-// extractUserIDFromRequest splits the JWT cookie on '.' — the first part
-// is the raw session token — and looks up the user in the DB directly.
+// extractUserIDFromRequest resolves the user ID from the session cookie.
+// Tries the auth service's user-id endpoint first, then falls back to
+// a direct DB query using the raw session token.
 func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
-	cookie, err := r.Cookie("better-auth.session_token")
+	// Tries via auth service first
+	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://auth:8083/api/auth/user-id", nil)
+	if err == nil {
+		for _, c := range r.Cookies() {
+			if c.Name == "better-auth-session" {
+				authReq.AddCookie(c)
+				break
+			}
+		}
+		client := &http.Client{Timeout: 3 * time.Second}
+		authResp, err := client.Do(authReq)
+		if err == nil {
+			defer authResp.Body.Close()
+			if authResp.StatusCode == http.StatusOK {
+				var result struct {
+					UserID string `json:"userId"`
+				}
+				if err := json.NewDecoder(authResp.Body).Decode(&result); err == nil && result.UserID != "" {
+					return result.UserID
+				}
+			}
+		}
+	}
+
+	// Fallback: parse the cookie directly and query the session table
+	cookie, err := r.Cookie("better-auth-session")
 	if err != nil {
 		return ""
 	}
-
-	// The cookie is "<session.token>.<encrypted_payload>"
 	token := strings.SplitN(cookie.Value, ".", 2)[0]
-
+	if token == "" {
+		return ""
+	}
 	type dbSession struct {
 		UserID string `gorm:"column:userId"`
 	}

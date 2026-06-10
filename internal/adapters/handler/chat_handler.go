@@ -167,7 +167,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("chat request", "msg_len", len(req.Message), "history_len", len(req.History))
+	slog.Info("chat request", "msg_len", len(req.Message), "history_len", len(req.History), "conv_id", req.ConversationID)
 	sp := h.getSystemPrompt()
 	prov := h.getLLMProvider()
 	slog.Info("chat gRPC call", "msg_len", len(req.Message), "history_len", len(req.History), "sp_len", len(sp), "provider", prov)
@@ -206,19 +206,10 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	elapsed := time.Since(start)
 
 	if err != nil {
-			slog.Error("chat: gRPC call failed", "error", err, "duration_ms", elapsed.Milliseconds())
-			// If rate-limited, return a readable message instead of HTTP error
-			if strings.Contains(err.Error(), "429") || strings.Contains(strings.ToLower(err.Error()), "rate limit") {
-				json.NewEncoder(w).Encode(chatResponse{
-					Answer: "I'm temporarily rate-limited. Please try again in a minute.",
-				})
-				return
-			}
-			http.Error(w, `{"error":"helper service error: `+err.Error()+`"}`, http.StatusServiceUnavailable)
-			return
-		}
-
-	slog.Info("chat response", "answer_len", len(resp.Answer), "detected_role", resp.DetectedRole, "duration_ms", elapsed.Milliseconds())
+		slog.Error("chat: gRPC call failed", "error", err, "duration_ms", elapsed.Milliseconds())
+		http.Error(w, `{"error":"helper service error: `+err.Error()+`"}`, http.StatusServiceUnavailable)
+		return
+	}
 
 	// Save conversation to DB (synchronous so we can return the correct conversation_id)
 	respConvID := req.ConversationID
@@ -233,6 +224,8 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.Debug("chat: skipping conversation save — no user session")
 	}
+
+	slog.Info("chat response", "answer_len", len(resp.Answer), "detected_role", resp.DetectedRole, "duration_ms", elapsed.Milliseconds(), "conv_id", req.ConversationID, "resp_conv_id", respConvID)
 
 	// If the helper detected a role, update the user via auth service (async, don't block the response)
 	if resp.DetectedRole != "" {
@@ -249,7 +242,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // updateUserRole resolves the user ID from the session JWT via direct DB read,
 // then calls the auth service (the role authority) to perform the role update.
 func (h *ChatHandler) updateUserRole(ctx context.Context, r *http.Request, role string) bool {
-	cookie, err := r.Cookie("better-auth.session_token")
+	cookie, err := r.Cookie("better-auth-session")
 	if err != nil {
 		slog.Warn("chat: no session cookie, skipping role update")
 		return false
@@ -330,9 +323,21 @@ func (s strReader) Read(p []byte) (int, error) {
 }
 
 // resolveUserID extracts the user ID from the better-auth session cookie.
+// Tries the auth service's user-id endpoint first, then falls back to
+// a direct DB query using the raw session token.
 func (h *ChatHandler) resolveUserID(r *http.Request) string {
-	cookie, err := r.Cookie("better-auth.session_token")
+	// First, try via auth service (validates full JWT cookie)
+	if userID := h.resolveUserIDViaAuth(r); userID != "" {
+		return userID
+	}
+	// Fallback: read cookie and query DB directly
+	// (works for cookies where we only have the session token part)
+	cookie, err := r.Cookie("better-auth-session")
 	if err != nil {
+		slog.Debug("resolveUserID: no better-auth-session cookie found", "err", err)
+		return ""
+	}
+	if cookie.Value == "" {
 		return ""
 	}
 	token := strings.SplitN(cookie.Value, ".", 2)[0]
@@ -345,10 +350,41 @@ func (h *ChatHandler) resolveUserID(r *http.Request) string {
 	var s dbSession
 	err = h.db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
 	if err != nil {
-		slog.Debug("resolveUserID: session not found", "error", err)
+		slog.Debug("resolveUserID: session not found in DB", "token_prefix", token[:min(len(token), 15)])
 		return ""
 	}
 	return s.UserID
+}
+
+// resolveUserIDViaAuth calls the auth service to validate the full JWT cookie.
+func (h *ChatHandler) resolveUserIDViaAuth(r *http.Request) string {
+	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://auth:8083/api/auth/user-id", nil)
+	if err != nil {
+		return ""
+	}
+	// Copy the better-auth-session cookie from the original request
+	for _, c := range r.Cookies() {
+		if c.Name == "better-auth-session" {
+			authReq.AddCookie(c)
+			break
+		}
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	authResp, err := client.Do(authReq)
+	if err != nil {
+		return ""
+	}
+	defer authResp.Body.Close()
+	if authResp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var result struct {
+		UserID string `json:"userId"`
+	}
+	if err := json.NewDecoder(authResp.Body).Decode(&result); err != nil {
+		return ""
+	}
+	return result.UserID
 }
 
 // conversationMsg is a single message stored in the JSONB array.
@@ -469,7 +505,7 @@ func (h *ChatHandler) HandleWorkerChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("worker-chat request", "msg_len", len(req.Message), "history_len", len(req.History))
+	slog.Info("worker-chat request", "msg_len", len(req.Message), "history_len", len(req.History), "conv_id", req.ConversationID)
 	sp := h.getWorkerProfilePrompt()
 	prov := h.getLLMProvider()
 	if sp == "" {
@@ -522,8 +558,6 @@ func (h *ChatHandler) HandleWorkerChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slog.Info("worker-chat response", "answer_len", len(resp.Answer), "duration_ms", elapsed.Milliseconds())
-
 	// Parse [FIELDS] blocks from the LLM response
 	answer, fields := parseFieldsFromAnswer(resp.Answer)
 	if fields != nil {
@@ -545,6 +579,8 @@ func (h *ChatHandler) HandleWorkerChat(w http.ResponseWriter, r *http.Request) {
 	} else {
 		slog.Debug("worker-chat: skipping conversation save — no user session")
 	}
+
+	slog.Info("worker-chat response", "answer_len", len(answer), "duration_ms", elapsed.Milliseconds(), "conv_id", req.ConversationID, "resp_conv_id", respConvID)
 
 	json.NewEncoder(w).Encode(workerChatResponse{
 		Answer:         answer,
