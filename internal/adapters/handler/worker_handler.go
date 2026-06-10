@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
@@ -12,8 +11,9 @@ import (
 )
 
 // WorkerHandler serves the worker profile (one per user).
-//   GET /api/v1/worker/profile  →  returns the authenticated user's worker profile
-//   PUT /api/v1/worker/profile  →  creates or updates the worker profile
+//
+//	GET /api/v1/worker/profile  →  returns the authenticated user's worker profile
+//	PUT /api/v1/worker/profile  →  creates or updates the worker profile
 type WorkerHandler struct {
 	db *gorm.DB
 }
@@ -181,12 +181,7 @@ func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
 	// Tries via auth service first
 	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://auth:8083/api/auth/user-id", nil)
 	if err == nil {
-		for _, c := range r.Cookies() {
-			if c.Name == "better-auth-session" {
-				authReq.AddCookie(c)
-				break
-			}
-		}
+		addSessionCookie(authReq, r)
 		client := &http.Client{Timeout: 3 * time.Second}
 		authResp, err := client.Do(authReq)
 		if err == nil {
@@ -203,11 +198,11 @@ func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
 	}
 
 	// Fallback: parse the cookie directly and query the session table
-	cookie, err := r.Cookie("better-auth-session")
-	if err != nil {
+	cookie, ok := sessionCookie(r)
+	if !ok {
 		return ""
 	}
-	token := strings.SplitN(cookie.Value, ".", 2)[0]
+	token := rawSessionToken(cookie)
 	if token == "" {
 		return ""
 	}

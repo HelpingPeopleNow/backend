@@ -170,7 +170,44 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	slog.Info("chat request", "msg_len", len(req.Message), "history_len", len(req.History), "conv_id", req.ConversationID)
 	sp := h.getSystemPrompt()
 	prov := h.getLLMProvider()
-	slog.Info("chat gRPC call", "msg_len", len(req.Message), "history_len", len(req.History), "sp_len", len(sp), "provider", prov)
+
+	// If the conversation already has a detected_role, skip re-detection
+	// unless the user has since cleared their role.
+	var metaDetectedRole string
+	if req.ConversationID != "" {
+		var existing core.Conversation
+		if err := h.db.First(&existing, "id = ?", req.ConversationID).Error; err == nil {
+			if existing.Metadata != nil {
+				var meta map[string]interface{}
+				if err := json.Unmarshal(existing.Metadata, &meta); err == nil {
+					if role, ok := meta["detected_role"]; ok {
+						metaDetectedRole, _ = role.(string)
+					}
+				}
+			}
+		}
+	}
+
+	skipRoleDetection := metaDetectedRole != ""
+	if skipRoleDetection {
+		if userID := h.resolveUserID(r); userID != "" {
+			type dbUserRole struct {
+				Role string `gorm:"column:role"`
+			}
+			var u dbUserRole
+			if err := h.db.Table("\"user\"").Where("id = ?", userID).First(&u).Error; err == nil {
+				if u.Role == "" {
+					skipRoleDetection = false
+					slog.Debug("chat: user cleared role, allowing re-detection", "conv_id", req.ConversationID, "meta_role", metaDetectedRole)
+				}
+			}
+		}
+	}
+	if skipRoleDetection {
+		slog.Debug("chat: skipping role detection", "conv_id", req.ConversationID, "meta_role", metaDetectedRole)
+	}
+
+	slog.Info("chat gRPC call", "msg_len", len(req.Message), "history_len", len(req.History), "sp_len", len(sp), "provider", prov, "skip_role_detection", skipRoleDetection)
 	if len(sp) > 0 {
 		slog.Debug("chat system_prompt[:150]", "text", sp[:min(len(sp), 150)])
 	}
@@ -198,10 +235,11 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	resp, err := h.client.Ask(ctx, &pb.AskRequest{
-		Question:     req.Message,
-		History:      history,
-		SystemPrompt: sp,
-		LlmProvider:  prov,
+		Question:           req.Message,
+		History:            history,
+		SystemPrompt:       sp,
+		LlmProvider:        prov,
+		SkipRoleDetection:  skipRoleDetection,
 	})
 	elapsed := time.Since(start)
 
@@ -215,7 +253,11 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	respConvID := req.ConversationID
 	userID := h.resolveUserID(r)
 	if userID != "" {
-		newID, err := h.saveConversation(userID, req.ConversationID, "main", req.Message, resp.Answer, nil)
+		metadata := map[string]interface{}{}
+		if resp.DetectedRole == "worker" || resp.DetectedRole == "client" {
+			metadata["detected_role"] = resp.DetectedRole
+		}
+		newID, err := h.saveConversation(userID, req.ConversationID, "main", req.Message, resp.Answer, nil, metadata)
 		if err != nil {
 			slog.Warn("chat: failed to save conversation", "error", err)
 		} else {
@@ -242,20 +284,24 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // updateUserRole resolves the user ID from the session JWT via direct DB read,
 // then calls the auth service (the role authority) to perform the role update.
 func (h *ChatHandler) updateUserRole(ctx context.Context, r *http.Request, role string) bool {
-	cookie, err := r.Cookie("better-auth-session")
-	if err != nil {
+	cookie, ok := sessionCookie(r)
+	if !ok {
 		slog.Warn("chat: no session cookie, skipping role update")
 		return false
 	}
 
 	// The cookie is "<session.token>.<encrypted_payload>" — split to get the raw token
-	token := strings.SplitN(cookie.Value, ".", 2)[0]
+	token := rawSessionToken(cookie)
+	if token == "" {
+		slog.Warn("chat: empty session token, skipping role update")
+		return false
+	}
 
 	type dbSession struct {
 		UserID string `gorm:"column:userId"`
 	}
 	var s dbSession
-	err = h.db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
+	err := h.db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
 	if err != nil {
 		slog.Warn("chat: session not found in DB, skipping role update", "error", err)
 		return false
@@ -278,6 +324,7 @@ func (h *ChatHandler) updateUserRole(ctx context.Context, r *http.Request, role 
 		return false
 	}
 	authReq.Header.Set("Content-Type", "application/json")
+	addSessionCookie(authReq, r)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(authReq)
@@ -332,15 +379,12 @@ func (h *ChatHandler) resolveUserID(r *http.Request) string {
 	}
 	// Fallback: read cookie and query DB directly
 	// (works for cookies where we only have the session token part)
-	cookie, err := r.Cookie("better-auth-session")
-	if err != nil {
-		slog.Debug("resolveUserID: no better-auth-session cookie found", "err", err)
+	cookie, ok := sessionCookie(r)
+	if !ok {
+		slog.Debug("resolveUserID: no supported session cookie found")
 		return ""
 	}
-	if cookie.Value == "" {
-		return ""
-	}
-	token := strings.SplitN(cookie.Value, ".", 2)[0]
+	token := rawSessionToken(cookie)
 	if token == "" {
 		return ""
 	}
@@ -348,7 +392,7 @@ func (h *ChatHandler) resolveUserID(r *http.Request) string {
 		UserID string `gorm:"column:userId"`
 	}
 	var s dbSession
-	err = h.db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
+	err := h.db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
 	if err != nil {
 		slog.Debug("resolveUserID: session not found in DB", "token_prefix", token[:min(len(token), 15)])
 		return ""
@@ -362,13 +406,7 @@ func (h *ChatHandler) resolveUserIDViaAuth(r *http.Request) string {
 	if err != nil {
 		return ""
 	}
-	// Copy the better-auth-session cookie from the original request
-	for _, c := range r.Cookies() {
-		if c.Name == "better-auth-session" {
-			authReq.AddCookie(c)
-			break
-		}
-	}
+	addSessionCookie(authReq, r)
 	client := &http.Client{Timeout: 3 * time.Second}
 	authResp, err := client.Do(authReq)
 	if err != nil {
@@ -397,7 +435,7 @@ type conversationMsg struct {
 // saveConversation persists a pair of messages (user + assistant) to the conversations table.
 // If convID is non-empty and belongs to the user, it appends. Otherwise it creates a new conversation.
 // Returns the conversation ID.
-func (h *ChatHandler) saveConversation(userID, convID, convType string, reqMsg, respMsg string, fields json.RawMessage) (string, error) {
+func (h *ChatHandler) saveConversation(userID, convID, convType string, reqMsg, respMsg string, fields json.RawMessage, metadata map[string]interface{}) (string, error) {
 	now := time.Now()
 	newMsgs := []conversationMsg{
 		{Role: "user", Content: reqMsg, Timestamp: now},
@@ -420,16 +458,21 @@ func (h *ChatHandler) saveConversation(userID, convID, convType string, reqMsg, 
 			updatedMsgs, _ := json.Marshal(msgs)
 
 			updates := map[string]interface{}{
-				"messages":  updatedMsgs,
+				"messages":   updatedMsgs,
 				"updated_at": now,
 			}
-			// Update metadata with latest fields for worker chat
-			if fields != nil {
+			// Merge metadata without replacing unrelated keys.
+			if fields != nil || len(metadata) > 0 {
 				meta := map[string]interface{}{}
 				if existing.Metadata != nil {
 					json.Unmarshal(existing.Metadata, &meta)
 				}
-				meta["extracted_fields"] = fields
+				if fields != nil {
+					meta["extracted_fields"] = fields
+				}
+				for k, v := range metadata {
+					meta[k] = v
+				}
 				metaJSON, _ := json.Marshal(meta)
 				updates["metadata"] = metaJSON
 			}
@@ -452,6 +495,9 @@ func (h *ChatHandler) saveConversation(userID, convID, convType string, reqMsg, 
 	meta := map[string]interface{}{}
 	if fields != nil {
 		meta["extracted_fields"] = fields
+	}
+	for k, v := range metadata {
+		meta[k] = v
 	}
 	if convType == "worker" {
 		meta["type"] = "profile_intake"
@@ -570,7 +616,7 @@ func (h *ChatHandler) HandleWorkerChat(w http.ResponseWriter, r *http.Request) {
 	respConvID := req.ConversationID
 	userID := h.resolveUserID(r)
 	if userID != "" {
-		newID, err := h.saveConversation(userID, req.ConversationID, "worker", req.Message, answer, fields)
+		newID, err := h.saveConversation(userID, req.ConversationID, "worker", req.Message, answer, fields, nil)
 		if err != nil {
 			slog.Warn("worker-chat: failed to save conversation", "error", err)
 		} else {
@@ -593,7 +639,7 @@ func (h *ChatHandler) HandleWorkerChat(w http.ResponseWriter, r *http.Request) {
 // LLM answer, strips it from the response, and returns the JSON as raw bytes.
 // Returns the cleaned answer and the raw JSON fields (or nil if no block found).
 func parseFieldsFromAnswer(answer string) (string, json.RawMessage) {
-	const openTag  = "[FIELDS]"
+	const openTag = "[FIELDS]"
 	const closeTag = "[/FIELDS]"
 
 	lastOpen := strings.LastIndex(answer, openTag)

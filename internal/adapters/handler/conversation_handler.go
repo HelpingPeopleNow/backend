@@ -34,8 +34,9 @@ func NewConversationHandler(db *gorm.DB) *ConversationHandler {
 
 // ServeHTTP dispatches GET requests for listing or fetching conversations.
 // Routes:
-//   GET /api/v1/conversations          — list (filtered by ?type=, ?limit=, ?offset=)
-//   GET /api/v1/conversations/{id}     — get one by ID
+//
+//	GET /api/v1/conversations          — list (filtered by ?type=, ?limit=, ?offset=)
+//	GET /api/v1/conversations/{id}     — get one by ID
 func (h *ConversationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -146,23 +147,11 @@ func (h *ConversationHandler) getOne(w http.ResponseWriter, r *http.Request, con
 
 // resolveUserIDFromSession extracts the user ID from the better-auth session cookie.
 func resolveUserIDFromSession(r *http.Request, db *gorm.DB) string {
-	cookie, err := r.Cookie("better-auth-session")
-	if err != nil {
+	cookie, ok := sessionCookie(r)
+	if !ok {
 		return ""
 	}
-	tokenParts := []byte(cookie.Value)
-	// The cookie is "<token>.<encrypted_payload>" — split to get the raw token
-	dotIdx := -1
-	for i, b := range tokenParts {
-		if b == '.' {
-			dotIdx = i
-			break
-		}
-	}
-	if dotIdx < 0 {
-		return ""
-	}
-	token := string(tokenParts[:dotIdx])
+	token := rawSessionToken(cookie)
 	if token == "" {
 		return ""
 	}
@@ -170,7 +159,7 @@ func resolveUserIDFromSession(r *http.Request, db *gorm.DB) string {
 		UserID string `gorm:"column:userId"`
 	}
 	var s dbSession
-	err = db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
+	err := db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
 	if err != nil {
 		slog.Debug("resolveUserIDFromSession: session not found", "error", err)
 		return ""
