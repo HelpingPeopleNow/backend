@@ -27,6 +27,7 @@ type ChatHandler struct {
 	mu                  sync.RWMutex
 	systemPrompt        string
 	workerProfilePrompt string
+	clientProfilePrompt string
 	llmProvider         string
 	db                  *gorm.DB
 }
@@ -129,6 +130,23 @@ func (h *ChatHandler) getWorkerProfilePrompt() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.workerProfilePrompt
+}
+
+// SetClientProfilePrompt updates the cached client profile intake prompt (thread-safe).
+func (h *ChatHandler) SetClientProfilePrompt(prompt string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.clientProfilePrompt = prompt
+	slog.Info("client_profile_prompt cache updated", "len", len(prompt))
+	if len(prompt) > 0 {
+		slog.Debug("client_profile_prompt first 150 chars", "text", prompt[:min(len(prompt), 150)])
+	}
+}
+
+func (h *ChatHandler) getClientProfilePrompt() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.clientProfilePrompt
 }
 
 // SetLLMProvider updates the cached LLM provider (thread-safe).
@@ -499,7 +517,7 @@ func (h *ChatHandler) saveConversation(userID, convID, convType string, reqMsg, 
 	for k, v := range metadata {
 		meta[k] = v
 	}
-	if convType == "worker" {
+	if convType == "worker" || convType == "client" {
 		meta["type"] = "profile_intake"
 		meta["completed"] = false
 	}
@@ -519,7 +537,112 @@ func (h *ChatHandler) saveConversation(userID, convID, convType string, reqMsg, 
 	return conv.ID, nil
 }
 
-// ----------- Worker Profile Intake Chat -----------
+// ----------- Client Profile Intake Chat -----------
+
+// HandleClientChat handles the client profile intake chat.
+// It uses the client_profile_prompt system prompt and parses [FIELDS] blocks
+// from the LLM response to auto-fill the client profile form.
+func (h *ChatHandler) HandleClientChat(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		slog.Warn("client-chat: invalid method", "method", r.Method)
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req chatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		slog.Warn("client-chat: invalid JSON", "error", err)
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Message == "" {
+		slog.Warn("client-chat: empty message")
+		http.Error(w, `{"error":"message cannot be empty"}`, http.StatusBadRequest)
+		return
+	}
+
+	slog.Info("client-chat request", "msg_len", len(req.Message), "history_len", len(req.History), "conv_id", req.ConversationID)
+	sp := h.getClientProfilePrompt()
+	prov := h.getLLMProvider()
+	if sp == "" {
+		slog.Warn("client-chat: no client_profile_prompt configured, falling back to general prompt")
+		sp = h.getSystemPrompt()
+	}
+	slog.Info("client-chat gRPC call", "msg_len", len(req.Message), "history_len", len(req.History), "sp_len", len(sp), "provider", prov)
+
+	if err := h.ensureClient(); err != nil {
+		slog.Error("client-chat: helper unreachable")
+		http.Error(w, `{"error":"helper service unreachable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	history := make([]*pb.Message, len(req.History))
+	for i, m := range req.History {
+		history[i] = &pb.Message{Role: m.Role, Content: m.Content}
+	}
+
+	timeoutSec := 60 * time.Second
+	if ts := os.Getenv("HELPER_TIMEOUT_SECONDS"); ts != "" {
+		if v, err := strconv.Atoi(ts); err == nil && v > 0 {
+			timeoutSec = time.Duration(v) * time.Second
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutSec)
+	defer cancel()
+
+	start := time.Now()
+	resp, err := h.client.Ask(ctx, &pb.AskRequest{
+		Question:     req.Message,
+		History:      history,
+		SystemPrompt: sp,
+		LlmProvider:  prov,
+	})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		slog.Error("client-chat: gRPC call failed", "error", err, "duration_ms", elapsed.Milliseconds())
+		if strings.Contains(err.Error(), "429") || strings.Contains(strings.ToLower(err.Error()), "rate limit") {
+			json.NewEncoder(w).Encode(workerChatResponse{
+				Answer: "I'm temporarily rate-limited. Please try again in a minute.",
+			})
+			return
+		}
+		http.Error(w, `{"error":"helper service error: `+err.Error()+`"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	// Parse [FIELDS] blocks from the LLM response
+	answer, fields := parseFieldsFromAnswer(resp.Answer)
+	if fields != nil {
+		slog.Info("client-chat: extracted fields", "fields_json", string(fields), "answer_without_fields_len", len(answer))
+	} else {
+		slog.Debug("client-chat: no [FIELDS] block found in response")
+	}
+
+	// Save conversation to DB
+	respConvID := req.ConversationID
+	userID := h.resolveUserID(r)
+	if userID != "" {
+		newID, err := h.saveConversation(userID, req.ConversationID, "client", req.Message, answer, fields, nil)
+		if err != nil {
+			slog.Warn("client-chat: failed to save conversation", "error", err)
+		} else {
+			respConvID = newID
+		}
+	} else {
+		slog.Debug("client-chat: skipping conversation save — no user session")
+	}
+
+	slog.Info("client-chat response", "answer_len", len(answer), "duration_ms", elapsed.Milliseconds(), "conv_id", req.ConversationID, "resp_conv_id", respConvID)
+
+	json.NewEncoder(w).Encode(workerChatResponse{
+		Answer:         answer,
+		DetectedFields: fields,
+		ConversationID: respConvID,
+	})
+}
 
 type workerChatResponse struct {
 	Answer         string          `json:"answer"`

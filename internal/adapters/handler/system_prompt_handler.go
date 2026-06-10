@@ -19,6 +19,7 @@ type SystemPromptHandler struct {
 	onUpdate            func(string) // helper prompt content refresh callback
 	onProviderUpdate    func(string) // llm provider refresh callback
 	onWorkerProfileUpd  func(string) // worker profile prompt refresh callback
+	onClientProfileUpd  func(string) // client profile prompt refresh callback
 }
 
 func NewSystemPromptHandler(db *gorm.DB, onUpdate ...func(string)) *SystemPromptHandler {
@@ -32,12 +33,16 @@ func NewSystemPromptHandler(db *gorm.DB, onUpdate ...func(string)) *SystemPrompt
 	if len(onUpdate) > 2 && onUpdate[2] != nil {
 		h.onWorkerProfileUpd = onUpdate[2]
 	}
+	if len(onUpdate) > 3 && onUpdate[3] != nil {
+		h.onClientProfileUpd = onUpdate[3]
+	}
 	return h
 }
 
 type systemPromptsDTO struct {
 	HelperPrompt        string `json:"helper_prompt"`
 	WorkerProfilePrompt string `json:"worker_profile_prompt"`
+	ClientProfilePrompt string `json:"client_profile_prompt"`
 	LLMProvider         string `json:"llm_provider"`
 	UpdatedAt           string `json:"updated_at"`
 }
@@ -46,6 +51,7 @@ func toSystemDTO(sp *core.SystemPrompt) systemPromptsDTO {
 	return systemPromptsDTO{
 		HelperPrompt:        sp.HelperPrompt,
 		WorkerProfilePrompt: sp.WorkerProfilePrompt,
+		ClientProfilePrompt: sp.ClientProfilePrompt,
 		LLMProvider:         sp.LLMProvider,
 		UpdatedAt:           sp.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
@@ -103,6 +109,7 @@ func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col
 	validCols := map[string]string{
 		"helper":         "helper_prompt",
 		"worker_profile": "worker_profile_prompt",
+		"client_profile": "client_profile_prompt",
 		"provider":       "llm_provider",
 	}
 	columnName, ok := validCols[col]
@@ -153,6 +160,10 @@ func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col
 	if columnName == "worker_profile_prompt" && h.onWorkerProfileUpd != nil {
 		h.onWorkerProfileUpd(req.Content)
 		slog.Info("system-prompt: worker profile prompt cache refreshed")
+	}
+	if columnName == "client_profile_prompt" && h.onClientProfileUpd != nil {
+		h.onClientProfileUpd(req.Content)
+		slog.Info("system-prompt: client profile prompt cache refreshed")
 	}
 
 	json.NewEncoder(w).Encode(toSystemDTO(&sp))

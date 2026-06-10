@@ -34,9 +34,12 @@ func Connect() (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	if err := db.AutoMigrate(&core.SystemPrompt{}, &core.WorkerProfile{}, &core.Conversation{}); err != nil {
+	if err := db.AutoMigrate(&core.SystemPrompt{}, &core.WorkerProfile{}, &core.ClientProfile{}, &core.Conversation{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate: %w", err)
 	}
+
+	// Ensure client_profile_prompt column exists (for existing DBs that pre-date this column)
+	db.Exec(`ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS client_profile_prompt TEXT NOT NULL DEFAULT ''`)
 
 	return db, nil
 }

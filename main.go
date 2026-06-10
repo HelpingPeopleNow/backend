@@ -143,6 +143,7 @@ func main() {
 	chatHandler := handler.NewChatHandler(db)
 	sysPromptHandler := handler.NewSystemPromptHandler(db)
 	workerHandler := handler.NewWorkerHandler(db)
+	clientHandler := handler.NewClientHandler(db)
 	convHandler := handler.NewConversationHandler(db)
 
 	// Load the system prompt from DB into the chat handler's cache
@@ -198,35 +199,57 @@ Conversation rules:
 - When you have collected at least 6 fields, append [FIELDS]{"field":"value"...}[/FIELDS] with ALL fields you have collected so far as valid JSON.
 - Keep ALL previously collected fields in [FIELDS] every single response — never drop fields.
 - Ask about social networks (instagram, facebook, twitter, linkedin, tiktok, youtube) naturally — "Do you have a social media presence? Instagram, Facebook, LinkedIn?"
-
-UNDERSTANDING NEGATIVE ANSWERS:
-When the user says "no", "none", "I don't have it", "not applicable" — that IS a definitive answer. Never treat it as "unknown". Map it correctly:
-  * "no insurance" → "has_insurance": false
-  * "no certifications" → "certifications": []
-  * "no free estimate" → "free_estimate": false
-  * "no emergency service" → "emergency_service": false
-  * "only Spanish" → "languages": ["Spanish"]
-  * "I don't have a website" → "website": ""
-  * "I don't use Instagram" → "instagram": ""
-
-CRITICAL RULE — NEVER ASK THE SAME FIELD TWICE:
-- Once a field appears in [FIELDS], it is permanently COLLECTED. Do NOT ask about it again in any future message, even if the value is false or empty.
-- Before asking any question, check: is this field already in [FIELDS]? If yes, skip it and move to a missing field.
-- Your goal: fill all 22 fields across the conversation. Each field gets asked exactly once.
-
-STRICT SCOPE — NEVER ANSWER OFF-TOPIC QUESTIONS:
-- You are a profile-building assistant ONLY. Your SOLE purpose is to collect worker profile information.
-- If the user asks anything outside of profile building (recipes, advice, jokes, news, general chat, etc.), politely decline: "I'm here to help you build your worker profile! Let's continue with that."
-- NEVER provide recipes, tutorials, general knowledge, or any information unrelated to worker profile building.
-- NEVER engage in conversation about topics outside the 22 profile fields.
-- Be conversational and warm, like a friendly onboarding coach, but stay strictly on mission.`
-
+- UNDERSTANDING NEGATIVE ANSWERS as definitive values (false/empty/[]).
+- NEVER ASK THE SAME FIELD TWICE.
+- STRICT SCOPE — NEVER ANSWER OFF-TOPIC QUESTIONS.`
 			err = db.Exec(`INSERT INTO system_prompts (id, worker_profile_prompt, updated_at) VALUES (1, $1, NOW()) ON CONFLICT (id) DO UPDATE SET worker_profile_prompt = EXCLUDED.worker_profile_prompt, updated_at = NOW()`, defaultWorkerPrompt).Error
 			if err != nil {
 				slog.Warn("failed to seed worker_profile_prompt", "error", err)
 			} else {
 				chatHandler.SetWorkerProfilePrompt(defaultWorkerPrompt)
 				slog.Info("worker_profile_prompt seeded with default", "len", len(defaultWorkerPrompt))
+			}
+		}
+
+		// Load client profile prompt
+		if sp.ClientProfilePrompt != "" {
+			chatHandler.SetClientProfilePrompt(sp.ClientProfilePrompt)
+			slog.Info("client_profile_prompt loaded at startup", "len", len(sp.ClientProfilePrompt))
+		} else {
+			defaultClientPrompt := `You are a friendly profile-building assistant for HelpingPeopleNow, a home-services platform. Your ONLY mission is to help a client fill out their profile through a natural, conversational chat.
+
+You must gather ALL of the following information through friendly questions. Ask 1-2 questions at a time — never dump all fields at once.
+
+Fields to collect:
+1. full_name — Your full name
+2. phone — Your contact phone number
+3. city — Your city of residence
+4. address — Your street address (optional)
+5. bio — A brief description about yourself (optional, 1-2 sentences)
+
+Conversation rules:
+- Start by greeting warmly and asking for their name.
+- Ask follow-up questions naturally. Ask 1-2 at a time, never more.
+- When you have collected at least 3 fields, append [FIELDS]{"field":"value"...}[/FIELDS] with ALL fields you have collected so far as valid JSON.
+- Keep ALL previously collected fields in [FIELDS] every single response — never drop fields.
+
+UNDERSTANDING NEGATIVE ANSWERS:
+When the user says "no", "none", "I don't have it" — that IS a definitive answer. Map it to empty string or omit.
+
+NEVER ASK THE SAME FIELD TWICE:
+- Once a field appears in [FIELDS], it is permanently COLLECTED. Do NOT ask about it again.
+- Before asking any question, check: is this field already in [FIELDS]? If yes, skip it and move on.
+
+STRICT SCOPE:
+- You are a profile-building assistant ONLY. Your SOLE purpose is to collect client profile information.
+- If the user asks anything outside of profile building, politely decline: "I'm here to help you build your client profile! Let's continue with that."
+- NEVER provide general knowledge, recipes, advice, jokes, or any information unrelated to profile building.`
+			err = db.Exec(`INSERT INTO system_prompts (id, client_profile_prompt, updated_at) VALUES (1, $1, NOW()) ON CONFLICT (id) DO UPDATE SET client_profile_prompt = EXCLUDED.client_profile_prompt, updated_at = NOW()`, defaultClientPrompt).Error
+			if err != nil {
+				slog.Warn("failed to seed client_profile_prompt", "error", err)
+			} else {
+				chatHandler.SetClientProfilePrompt(defaultClientPrompt)
+				slog.Info("client_profile_prompt seeded with default", "len", len(defaultClientPrompt))
 			}
 		}
 	}
@@ -245,6 +268,10 @@ STRICT SCOPE — NEVER ANSWER OFF-TOPIC QUESTIONS:
 			chatHandler.SetWorkerProfilePrompt(prompt)
 			slog.Info("worker_profile_prompt cache refreshed via admin update")
 		},
+		func(prompt string) { // onClientProfileUpd: client profile prompt
+			chatHandler.SetClientProfilePrompt(prompt)
+			slog.Info("client_profile_prompt cache refreshed via admin update")
+		},
 	)
 
 	mux := http.NewServeMux()
@@ -254,6 +281,8 @@ STRICT SCOPE — NEVER ANSWER OFF-TOPIC QUESTIONS:
 	mux.Handle("/api/v1/chat", chatHandler)
 	mux.HandleFunc("/api/v1/worker/chat", chatHandler.HandleWorkerChat)
 	mux.Handle("/api/v1/worker/profile", workerHandler)
+	mux.HandleFunc("/api/v1/client/chat", chatHandler.HandleClientChat)
+	mux.Handle("/api/v1/client/profile", clientHandler)
 	mux.Handle("/api/v1/conversations", convHandler)
 	mux.Handle("/api/v1/conversations/", convHandler)
 
