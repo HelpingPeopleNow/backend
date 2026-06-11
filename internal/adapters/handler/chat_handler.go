@@ -635,6 +635,45 @@ func (h *ChatHandler) HandleClientChat(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("client-chat: skipping conversation save — no user session")
 	}
 
+	// If fields were extracted via [FIELDS], upsert the client profile into client_profiles
+	if fields != nil && userID != "" {
+		type clientFields struct {
+			FullName string `json:"full_name"`
+			Phone    string `json:"phone"`
+			City     string `json:"city"`
+			Address  string `json:"address"`
+			Bio      string `json:"bio"`
+		}
+		var cf clientFields
+		if err := json.Unmarshal([]byte(fields), &cf); err == nil {
+			cp := &core.ClientProfile{
+				UserID:   userID,
+				FullName: cf.FullName,
+				Phone:    cf.Phone,
+				City:     cf.City,
+				Address:  cf.Address,
+				Bio:      cf.Bio,
+			}
+			// Upsert
+			var existing core.ClientProfile
+			err := h.db.Where("user_id = ?", userID).First(&existing).Error
+			if err == nil {
+				cp.ID = existing.ID
+				cp.CreatedAt = existing.CreatedAt
+				err = h.db.Save(cp).Error
+			} else {
+				err = h.db.Create(cp).Error
+			}
+			if err != nil {
+				slog.Warn("client-chat: failed to save client profile", "error", err)
+			} else {
+				slog.Info("client-chat: client profile saved", "user_id", userID, "full_name", cp.FullName)
+			}
+		} else {
+			slog.Warn("client-chat: failed to parse fields JSON into profile", "error", err)
+		}
+	}
+
 	slog.Info("client-chat response", "answer_len", len(answer), "duration_ms", elapsed.Milliseconds(), "conv_id", req.ConversationID, "resp_conv_id", respConvID)
 
 	json.NewEncoder(w).Encode(workerChatResponse{
@@ -747,6 +786,126 @@ func (h *ChatHandler) HandleWorkerChat(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		slog.Debug("worker-chat: skipping conversation save — no user session")
+	}
+
+	// If fields were extracted via [FIELDS], upsert the worker profile
+	if fields != nil && userID != "" {
+		type workerFields struct {
+			Profession      string  `json:"profession"`
+			BusinessName    string  `json:"business_name"`
+			Bio             string  `json:"bio"`
+			Phone           string  `json:"phone"`
+			City            string  `json:"city"`
+			Address         string  `json:"address"`
+			ServiceRadiusKm int     `json:"service_radius_km"`
+			HourlyRate      float64 `json:"hourly_rate"`
+			MinimumCharge   float64 `json:"minimum_charge"`
+			FreeEstimate    bool    `json:"free_estimate"`
+			YearsExperience int     `json:"years_experience"`
+			HasInsurance    bool    `json:"has_insurance"`
+			EmergencySvc    bool    `json:"emergency_service"`
+			Website         string  `json:"website"`
+		}
+		var wf workerFields
+		if err := json.Unmarshal([]byte(fields), &wf); err == nil {
+			// Parse array fields (certifications, languages) from the raw JSON
+			var certs, langs, socials string
+			var rawMap map[string]interface{}
+			if err := json.Unmarshal([]byte(fields), &rawMap); err == nil {
+				if v, ok := rawMap["certifications"]; ok {
+					if arr, ok := v.([]interface{}); ok {
+						b, _ := json.Marshal(arr)
+						certs = string(b)
+					} else if s, ok := v.(string); ok {
+						b, _ := json.Marshal([]string{s})
+						certs = string(b)
+					}
+				}
+				if v, ok := rawMap["languages"]; ok {
+					if arr, ok := v.([]interface{}); ok {
+						b, _ := json.Marshal(arr)
+						langs = string(b)
+					} else if s, ok := v.(string); ok {
+						b, _ := json.Marshal([]string{s})
+						langs = string(b)
+					}
+				}
+				// Collect social links from individual fields
+				var links []map[string]string
+				socialFields := map[string]string{
+					"instagram": "Instagram", "facebook": "Facebook",
+					"twitter": "Twitter", "linkedin": "LinkedIn",
+					"tiktok": "TikTok", "youtube": "YouTube",
+				}
+				for field, platform := range socialFields {
+					if v, ok := rawMap[field]; ok {
+						if s, ok := v.(string); ok && s != "" {
+							links = append(links, map[string]string{"platform": platform, "url": s})
+						}
+					}
+				}
+				if v, ok := rawMap["social_links"]; ok {
+					if arr, ok := v.([]interface{}); ok {
+						for _, item := range arr {
+							if m, ok := item.(map[string]interface{}); ok {
+								l := map[string]string{}
+								if p, ok := m["platform"].(string); ok {
+									l["platform"] = p
+								}
+								if u, ok := m["url"].(string); ok {
+									l["url"] = u
+								}
+								if l["platform"] != "" || l["url"] != "" {
+									links = append(links, l)
+								}
+							}
+						}
+					}
+				}
+				if len(links) > 0 {
+					b, _ := json.Marshal(links)
+					socials = string(b)
+				}
+			}
+
+			wp := &core.WorkerProfile{
+				UserID:           userID,
+				Profession:       wf.Profession,
+				BusinessName:     wf.BusinessName,
+				Bio:              wf.Bio,
+				Phone:            wf.Phone,
+				City:             wf.City,
+				Address:          wf.Address,
+				ServiceRadiusKm:  wf.ServiceRadiusKm,
+				HourlyRate:       wf.HourlyRate,
+				MinimumCharge:    wf.MinimumCharge,
+				FreeEstimate:     wf.FreeEstimate,
+				YearsExperience:  wf.YearsExperience,
+				HasInsurance:     wf.HasInsurance,
+				EmergencyService: wf.EmergencySvc,
+				Website:          wf.Website,
+				Certifications:   certs,
+				Languages:        langs,
+				SocialLinks:      socials,
+			}
+			// Upsert
+			var existing core.WorkerProfile
+			err := h.db.Where("user_id = ?", userID).First(&existing).Error
+			if err == nil {
+				wp.ID = existing.ID
+				wp.CreatedAt = existing.CreatedAt
+				err = h.db.Save(wp).Error
+			} else {
+				err = h.db.Create(wp).Error
+			}
+			if err != nil {
+				slog.Warn("worker-chat: failed to save worker profile", "error", err)
+			} else {
+				slog.Info("worker-chat: worker profile saved", "user_id", userID, "profession", wp.Profession)
+			}
+		} else {
+			slog.Warn("worker-chat: failed to parse fields JSON into profile", "error", err)
+		}
 	}
 
 	slog.Info("worker-chat response", "answer_len", len(answer), "duration_ms", elapsed.Milliseconds(), "conv_id", req.ConversationID, "resp_conv_id", respConvID)
