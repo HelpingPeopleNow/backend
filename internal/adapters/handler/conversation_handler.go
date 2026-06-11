@@ -21,10 +21,24 @@ type ConversationHandler struct {
 type conversationListItem struct {
 	ID        string          `json:"id"`
 	Type      string          `json:"type"`
-	Title     string          `json:"title"`
 	Metadata  json.RawMessage `json:"metadata,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
+}
+
+// conversationDetail is the full conversation including messages.
+type conversationDetail struct {
+	ID        string          `json:"id"`
+	Type      string          `json:"type"`
+	Metadata  json.RawMessage `json:"metadata,omitempty"`
+	Messages  []msgItem       `json:"messages"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+}
+
+type msgItem struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 // NewConversationHandler creates a new ConversationHandler.
@@ -41,13 +55,11 @@ func (h *ConversationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", "application/json")
 
 	// Extract conversation ID from path suffix: /api/v1/conversations/{id}
-	// The path looks like /api/v1/conversations/<uuid>
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/conversations")
 	path = strings.TrimPrefix(path, "/")
 	convID := path
 
 	if convID != "" {
-		// It's a request for a specific conversation
 		if r.Method != http.MethodGet {
 			slog.Warn("conv-handler: invalid method for single conversation", "method", r.Method)
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -67,7 +79,6 @@ func (h *ConversationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 }
 
 // list returns a user's conversations, optionally filtered by type.
-// GET /api/v1/conversations?type=worker&limit=5&offset=0
 func (h *ConversationHandler) list(w http.ResponseWriter, r *http.Request) {
 	userID := resolveUserIDFromSession(r, h.db)
 	if userID == "" {
@@ -112,7 +123,6 @@ func (h *ConversationHandler) list(w http.ResponseWriter, r *http.Request) {
 		items[i] = conversationListItem{
 			ID:        c.ID,
 			Type:      c.Type,
-			Title:     c.Title,
 			Metadata:  c.Metadata,
 			CreatedAt: c.CreatedAt,
 			UpdatedAt: c.UpdatedAt,
@@ -127,7 +137,7 @@ func (h *ConversationHandler) list(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// getOne returns a single conversation by ID (must belong to the requesting user).
+// getOne loads a conversation by ID and includes its messages from the messages table.
 func (h *ConversationHandler) getOne(w http.ResponseWriter, r *http.Request, convID string) {
 	userID := resolveUserIDFromSession(r, h.db)
 	if userID == "" {
@@ -142,7 +152,29 @@ func (h *ConversationHandler) getOne(w http.ResponseWriter, r *http.Request, con
 		return
 	}
 
-	json.NewEncoder(w).Encode(conv)
+	// Load messages from the messages table
+	var dbMessages []core.Message
+	if err := h.db.Where("conversation_id = ?", convID).Order("created_at ASC").Find(&dbMessages).Error; err != nil {
+		slog.Error("conv-handler: failed to load messages", "convID", convID, "error", err)
+		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	msgs := make([]msgItem, len(dbMessages))
+	for i, m := range dbMessages {
+		msgs[i] = msgItem{Role: m.Role, Content: m.Content}
+	}
+
+	detail := conversationDetail{
+		ID:        conv.ID,
+		Type:      conv.Type,
+		Metadata:  conv.Metadata,
+		Messages:  msgs,
+		CreatedAt: conv.CreatedAt,
+		UpdatedAt: conv.UpdatedAt,
+	}
+
+	json.NewEncoder(w).Encode(detail)
 }
 
 // resolveUserIDFromSession extracts the user ID from the better-auth session cookie.

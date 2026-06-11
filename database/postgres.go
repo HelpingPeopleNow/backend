@@ -34,12 +34,17 @@ func Connect() (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	if err := db.AutoMigrate(&core.SystemPrompt{}, &core.WorkerProfile{}, &core.ClientProfile{}, &core.Conversation{}); err != nil {
+	if err := db.AutoMigrate(&core.SystemPrompt{}, &core.WorkerProfile{}, &core.ClientProfile{}, &core.Conversation{}, &core.Message{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate: %w", err)
 	}
 
 	// Ensure client_profile_prompt column exists (for existing DBs that pre-date this column)
 	db.Exec(`ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS client_profile_prompt TEXT NOT NULL DEFAULT ''`)
+
+	// Drop the old messages JSONB column (moved to separate messages table)
+	db.Exec(`ALTER TABLE conversations DROP COLUMN IF EXISTS messages;`)
+	// Drop the old title column (unused)
+	db.Exec(`ALTER TABLE conversations DROP COLUMN IF EXISTS title;`)
 
 	return db, nil
 }

@@ -443,23 +443,10 @@ func (h *ChatHandler) resolveUserIDViaAuth(r *http.Request) string {
 	return result.UserID
 }
 
-// conversationMsg is a single message stored in the JSONB array.
-type conversationMsg struct {
-	Role      string    `json:"role"`
-	Content   string    `json:"content"`
-	Timestamp time.Time `json:"timestamp"`
-}
-
-// saveConversation persists a pair of messages (user + assistant) to the conversations table.
+// saveConversation persists a pair of messages (user + assistant) to the messages table.
 // If convID is non-empty and belongs to the user, it appends. Otherwise it creates a new conversation.
 // Returns the conversation ID.
 func (h *ChatHandler) saveConversation(userID, convID, convType string, reqMsg, respMsg string, fields json.RawMessage, metadata map[string]interface{}) (string, error) {
-	now := time.Now()
-	newMsgs := []conversationMsg{
-		{Role: "user", Content: reqMsg, Timestamp: now},
-		{Role: "assistant", Content: respMsg, Timestamp: now.Add(time.Second)},
-	}
-
 	if convID != "" {
 		// Append to existing conversation (must belong to this user)
 		var existing core.Conversation
@@ -468,18 +455,20 @@ func (h *ChatHandler) saveConversation(userID, convID, convType string, reqMsg, 
 			slog.Warn("saveConversation: conversation not found or not owned, creating new", "convID", convID, "userID", userID, "error", err)
 			convID = ""
 		} else {
-			var msgs []conversationMsg
-			if err := json.Unmarshal(existing.Messages, &msgs); err != nil {
-				msgs = []conversationMsg{}
+			// Insert both messages
+			for _, msg := range []core.Message{
+				{ConversationID: convID, Role: "user", Content: reqMsg},
+				{ConversationID: convID, Role: "assistant", Content: respMsg},
+			} {
+				if err := h.db.Create(&msg).Error; err != nil {
+					return "", err
+				}
 			}
-			msgs = append(msgs, newMsgs...)
-			updatedMsgs, _ := json.Marshal(msgs)
 
+			// Update metadata + updated_at
 			updates := map[string]interface{}{
-				"messages":   updatedMsgs,
-				"updated_at": now,
+				"updated_at": time.Now(),
 			}
-			// Merge metadata without replacing unrelated keys.
 			if fields != nil || len(metadata) > 0 {
 				meta := map[string]interface{}{}
 				if existing.Metadata != nil {
@@ -498,18 +487,13 @@ func (h *ChatHandler) saveConversation(userID, convID, convType string, reqMsg, 
 			if err := h.db.Model(&core.Conversation{}).Where("id = ?", convID).Updates(updates).Error; err != nil {
 				return "", err
 			}
-			slog.Info("saveConversation: appended to existing", "convID", convID, "type", convType, "total_msgs", len(newMsgs)+len(msgs)-2)
+
+			slog.Info("saveConversation: appended to existing", "convID", convID, "type", convType)
 			return convID, nil
 		}
 	}
 
 	// Create new conversation
-	msgsJSON, _ := json.Marshal(newMsgs)
-	title := reqMsg
-	if len(title) > 80 {
-		title = title[:80] + "..."
-	}
-
 	meta := map[string]interface{}{}
 	if fields != nil {
 		meta["extracted_fields"] = fields
@@ -526,13 +510,22 @@ func (h *ChatHandler) saveConversation(userID, convID, convType string, reqMsg, 
 	conv := core.Conversation{
 		UserID:   userID,
 		Type:     convType,
-		Title:    title,
-		Messages: msgsJSON,
 		Metadata: metaJSON,
 	}
 	if err := h.db.Create(&conv).Error; err != nil {
 		return "", err
 	}
+
+	// Insert both messages
+	for _, msg := range []core.Message{
+		{ConversationID: conv.ID, Role: "user", Content: reqMsg},
+		{ConversationID: conv.ID, Role: "assistant", Content: respMsg},
+	} {
+		if err := h.db.Create(&msg).Error; err != nil {
+			return "", err
+		}
+	}
+
 	slog.Info("saveConversation: created new", "convID", conv.ID, "type", convType)
 	return conv.ID, nil
 }
