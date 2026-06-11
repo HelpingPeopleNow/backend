@@ -253,11 +253,11 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	resp, err := h.client.Ask(ctx, &pb.AskRequest{
-		Question:           req.Message,
-		History:            history,
-		SystemPrompt:       sp,
-		LlmProvider:        prov,
-		SkipRoleDetection:  skipRoleDetection,
+		Question:          req.Message,
+		History:           history,
+		SystemPrompt:      sp,
+		LlmProvider:       prov,
+		SkipRoleDetection: skipRoleDetection,
 	})
 	elapsed := time.Since(start)
 
@@ -785,4 +785,32 @@ func parseFieldsFromAnswer(answer string) (string, json.RawMessage) {
 	// Strip the entire [FIELDS]json[/FIELDS] block plus any trailing whitespace
 	cleaned := strings.TrimSpace(answer[:lastOpen] + afterOpen[closeIdx+len(closeTag):])
 	return cleaned, json.RawMessage(raw)
+}
+
+// HandleResetRole clears the user's role to allow re-detection.
+func (h *ChatHandler) HandleResetRole(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		slog.Warn("reset-role: invalid method", "method", r.Method)
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID := h.resolveUserID(r)
+	if userID == "" {
+		slog.Warn("reset-role: no user session")
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// Clear role via direct DB write (same pattern as auth service)
+	if err := h.db.Table("\"user\"").Where("id = ?", userID).Update("role", "").Error; err != nil {
+		slog.Error("reset-role: failed to update", "error", err)
+		http.Error(w, `{"error":"failed to reset role"}`, http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("reset-role: role cleared", "user_id", userID)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }

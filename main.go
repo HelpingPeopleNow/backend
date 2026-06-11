@@ -283,6 +283,7 @@ STRICT SCOPE:
 	mux.Handle("/api/v1/worker/profile", workerHandler)
 	mux.HandleFunc("/api/v1/client/chat", chatHandler.HandleClientChat)
 	mux.Handle("/api/v1/client/profile", clientHandler)
+	mux.HandleFunc("/api/v1/user/reset-role", chatHandler.HandleResetRole)
 	mux.Handle("/api/v1/conversations", convHandler)
 	mux.Handle("/api/v1/conversations/", convHandler)
 
