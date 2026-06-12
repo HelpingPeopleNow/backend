@@ -145,6 +145,7 @@ func main() {
 	workerHandler := handler.NewWorkerHandler(db)
 	clientHandler := handler.NewClientHandler(db)
 	convHandler := handler.NewConversationHandler(db)
+	transcribeHandler := handler.NewTranscribeHandler()
 
 	// Load the system prompt from DB into the chat handler's cache
 	var sp core.SystemPrompt
@@ -376,7 +377,7 @@ Keep it friendly and concise. If no workers match the search, be empathetic and 
 	)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/health", newHealthHandler(db))
 	mux.Handle("/api/v1/system-prompts", sysPromptHandler)
 	mux.Handle("/api/v1/system-prompts/", sysPromptHandler)
 	mux.Handle("/api/v1/chat", chatHandler)
@@ -388,6 +389,7 @@ Keep it friendly and concise. If no workers match the search, be empathetic and 
 	mux.HandleFunc("/api/v1/user/reset-role", chatHandler.HandleResetRole)
 	mux.Handle("/api/v1/conversations", convHandler)
 	mux.Handle("/api/v1/conversations/", convHandler)
+	mux.Handle("/api/v1/transcribe", transcribeHandler)
 
 	handler := loggingMiddleware(corsMiddleware(mux))
 

@@ -1,11 +1,87 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"time"
+
+	"gorm.io/gorm"
 )
 
-var healthHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
-})
+// healthResponse is the shape of the /health JSON output.
+type healthResponse struct {
+	Status     string            `json:"status"`
+	Postgres   string            `json:"postgres"`
+	GRPCHelper string            `json:"grpc_helper"`
+	Details    map[string]string `json:"details,omitempty"`
+}
+
+// newHealthHandler returns an HTTP handler that checks PostgreSQL and the
+// helper gRPC service health endpoint before reporting status.
+func newHealthHandler(db *gorm.DB) http.HandlerFunc {
+	helperHealthURL := os.Getenv("HELPER_HEALTH_URL")
+	if helperHealthURL == "" {
+		helperHealthURL = "http://helpingpeoplenow-helper:8084/health"
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		resp := healthResponse{
+			Postgres:   "ok",
+			GRPCHelper: "ok",
+			Details:    make(map[string]string),
+		}
+
+		// --- PostgreSQL check ---
+		sqlDB, err := db.DB()
+		if err != nil {
+			resp.Postgres = "down"
+			resp.Details["postgres_err"] = err.Error()
+		} else if err := sqlDB.PingContext(ctx); err != nil {
+			resp.Postgres = "down"
+			resp.Details["postgres_err"] = err.Error()
+		}
+
+		// --- Helper gRPC health check (HTTP probe on :8084) ---
+		helperCtx, helperCancel := context.WithTimeout(ctx, 3*time.Second)
+		defer helperCancel()
+		req, err := http.NewRequestWithContext(helperCtx, http.MethodGet, helperHealthURL, nil)
+		if err != nil {
+			resp.GRPCHelper = "down"
+			resp.Details["grpc_helper_err"] = err.Error()
+		} else {
+			hc := &http.Client{Timeout: 3 * time.Second}
+			hresp, err := hc.Do(req)
+			if err != nil {
+				resp.GRPCHelper = "down"
+				resp.Details["grpc_helper_err"] = err.Error()
+			} else {
+				hresp.Body.Close()
+				if hresp.StatusCode != http.StatusOK {
+					resp.GRPCHelper = "down"
+					resp.Details["grpc_helper_err"] = http.StatusText(hresp.StatusCode)
+				}
+			}
+		}
+
+		// --- Overall status ---
+		if resp.Postgres == "ok" && resp.GRPCHelper == "ok" {
+			resp.Status = "ok"
+		} else {
+			resp.Status = "degraded"
+		}
+
+		statusCode := http.StatusOK
+		if resp.Status == "degraded" {
+			statusCode = http.StatusServiceUnavailable
+		}
+
+		w.WriteHeader(statusCode)
+		json.NewEncoder(w).Encode(resp)
+	}
+}
