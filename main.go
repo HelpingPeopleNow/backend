@@ -149,8 +149,11 @@ func main() {
 	// Load the system prompt from DB into the chat handler's cache
 	var sp core.SystemPrompt
 	if err := db.First(&sp, 1).Error; err != nil {
-		slog.Warn("system_prompt: row 1 not found, using empty", "error", err)
-	} else {
+		slog.Info("system_prompt: row 1 not found, creating empty row")
+		db.Exec(`INSERT INTO system_prompts (id, helper_prompt, worker_profile_prompt, client_profile_prompt) VALUES (1, '', '', '') ON CONFLICT (id) DO NOTHING`)
+		db.First(&sp, 1)
+	}
+	{
 		chatHandler.SetSystemPrompt(sp.HelperPrompt)
 		slog.Info("system_prompt loaded at startup", "len", len(sp.HelperPrompt))
 
@@ -196,12 +199,19 @@ Fields to collect:
 Conversation rules:
 - Start by greeting warmly and asking what trade they work in.
 - Ask follow-up questions naturally. Ask 1-2 at a time, never more.
-- When you have collected at least 6 fields, append [FIELDS]{"field":"value"...}[/FIELDS] with ALL fields you have collected so far as valid JSON.
-- Keep ALL previously collected fields in [FIELDS] every single response — never drop fields.
+- EVERY response MUST end with [FIELDS]{"field":"value"...}[/FIELDS] containing ALL fields you know so far. Even if you only know 1 field, include it. Every new response must include all previous fields plus any new ones. NEVER skip [FIELDS].
 - Ask about social networks (instagram, facebook, twitter, linkedin, tiktok, youtube) naturally — "Do you have a social media presence? Instagram, Facebook, LinkedIn?"
 - UNDERSTANDING NEGATIVE ANSWERS as definitive values (false/empty/[]).
 - NEVER ASK THE SAME FIELD TWICE.
-- STRICT SCOPE — NEVER ANSWER OFF-TOPIC QUESTIONS.`
+- STRICT SCOPE — NEVER ANSWER OFF-TOPIC QUESTIONS.
+
+HANDLING UPDATES:
+- If the user corrects a previously given value ("actually my rate is €40", "I moved to Barcelona", "my new phone is +34 600 000 001"), update that field in your [FIELDS] block.
+- ALWAYS include ALL previously collected fields in [FIELDS] every time. Never emit only the changed field — send the full set.
+
+FIELD CLEARING:
+- When a user explicitly asks to remove a field value, set it to null in [FIELDS]: "phone": null
+- This signals the system to clear that field.`
 			err = db.Exec(`INSERT INTO system_prompts (id, worker_profile_prompt, updated_at) VALUES (1, $1, NOW()) ON CONFLICT (id) DO UPDATE SET worker_profile_prompt = EXCLUDED.worker_profile_prompt, updated_at = NOW()`, defaultWorkerPrompt).Error
 			if err != nil {
 				slog.Warn("failed to seed worker_profile_prompt", "error", err)
@@ -226,12 +236,14 @@ Fields to collect:
 3. city — Your city of residence
 4. address — Your street address (optional)
 5. bio — A brief description about yourself (optional, 1-2 sentences)
+6. preferred_contact — How do you prefer to be contacted? (e.g., "phone", "email", "WhatsApp", "any way")
+7. property_type — What type of property do you have? (e.g., "apartment", "house", "commercial", "condo")
+8. notes — Any special requirements or notes for workers (optional, free text)
 
 Conversation rules:
 - Start by greeting warmly and asking for their name.
 - Ask follow-up questions naturally. Ask 1-2 at a time, never more.
-- When you have collected at least 3 fields, append [FIELDS]{"field":"value"...}[/FIELDS] with ALL fields you have collected so far as valid JSON.
-- Keep ALL previously collected fields in [FIELDS] every single response — never drop fields.
+- EVERY response MUST end with [FIELDS]{"field":"value"...}[/FIELDS] containing ALL fields you know so far. Even if you only know 1 field, include it. Every new response must include all previous fields plus any new ones. NEVER skip [FIELDS].
 
 UNDERSTANDING NEGATIVE ANSWERS:
 When the user says "no", "none", "I don't have it" — that IS a definitive answer. Map it to empty string or omit.
@@ -239,6 +251,14 @@ When the user says "no", "none", "I don't have it" — that IS a definitive answ
 NEVER ASK THE SAME FIELD TWICE:
 - Once a field appears in [FIELDS], it is permanently COLLECTED. Do NOT ask about it again.
 - Before asking any question, check: is this field already in [FIELDS]? If yes, skip it and move on.
+
+HANDLING UPDATES:
+- If the user corrects a previously given value ("I actually live in Barcelona", "my new phone is +34 600 000 001"), update that field in your [FIELDS] block.
+- ALWAYS include ALL previously collected fields in [FIELDS] every time. Never emit only the changed field — send the full set.
+
+FIELD CLEARING:
+- When a user explicitly asks to remove a field value, set it to null in [FIELDS]: "phone": null
+- This signals the system to clear that field.
 
 STRICT SCOPE:
 - You are a profile-building assistant ONLY. Your SOLE purpose is to collect client profile information.

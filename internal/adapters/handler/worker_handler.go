@@ -12,8 +12,8 @@ import (
 
 // WorkerHandler serves the worker profile (one per user).
 //
-//	GET /api/v1/worker/profile  →  returns the authenticated user's worker profile
-//	PUT /api/v1/worker/profile  →  creates or updates the worker profile
+//	GET /api/v1/worker/profile     →  returns the authenticated user's worker profile
+//	DELETE /api/v1/worker/profile  →  clears the authenticated user's worker profile
 type WorkerHandler struct {
 	db *gorm.DB
 }
@@ -36,8 +36,8 @@ func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		h.get(w, userID)
-	case http.MethodPut:
-		h.put(w, r, userID)
+	case http.MethodDelete:
+		h.delete(w, userID)
 	case http.MethodOptions:
 		w.WriteHeader(http.StatusOK)
 	default:
@@ -59,61 +59,14 @@ func (h *WorkerHandler) get(w http.ResponseWriter, userID string) {
 	json.NewEncoder(w).Encode(toWorkerDTO(&wp))
 }
 
-func (h *WorkerHandler) put(w http.ResponseWriter, r *http.Request, userID string) {
-	var dto core.WorkerProfileDTO
-	if err := json.NewDecoder(r.Body).Decode(&dto); err != nil {
-		slog.Warn("worker: invalid JSON", "error", err)
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+func (h *WorkerHandler) delete(w http.ResponseWriter, userID string) {
+	if err := h.db.Where("user_id = ?", userID).Delete(&core.WorkerProfile{}).Error; err != nil {
+		slog.Error("worker: delete failed", "error", err)
+		http.Error(w, `{"error":"delete failed"}`, http.StatusInternalServerError)
 		return
 	}
-
-	// Serialize arrays to JSON strings for storage
-	certStr := marshalStrings(dto.Certifications)
-	langStr := marshalStrings(dto.Languages)
-	socialStr := marshalSocialLinks(dto.SocialLinks)
-
-	wp := &core.WorkerProfile{
-		UserID:           userID,
-		Profession:       dto.Profession,
-		BusinessName:     dto.BusinessName,
-		Bio:              dto.Bio,
-		Phone:            dto.Phone,
-		City:             dto.City,
-		ServiceRadiusKm:  dto.ServiceRadiusKm,
-		Address:          dto.Address,
-		HourlyRate:       dto.HourlyRate,
-		MinimumCharge:    dto.MinimumCharge,
-		FreeEstimate:     dto.FreeEstimate,
-		YearsExperience:  dto.YearsExperience,
-		Certifications:   certStr,
-		HasInsurance:     dto.HasInsurance,
-		Languages:        langStr,
-		EmergencyService: dto.EmergencyService,
-		Website:          dto.Website,
-		SocialLinks:      socialStr,
-	}
-
-	// Upsert: if a row for this user_id already exists, update it
-	var existing core.WorkerProfile
-	err := h.db.Where("user_id = ?", userID).First(&existing).Error
-	if err == nil {
-		wp.ID = existing.ID
-		wp.CreatedAt = existing.CreatedAt
-		err = h.db.Save(wp).Error
-	} else {
-		err = h.db.Create(wp).Error
-	}
-	if err != nil {
-		slog.Error("worker: save failed", "error", err)
-		http.Error(w, `{"error":"save failed"}`, http.StatusInternalServerError)
-		return
-	}
-
-	slog.Info("worker: profile saved", "user_id", userID, "profession", wp.Profession)
-
-	// Return the saved DTO
-	h.db.Where("user_id = ?", userID).First(&wp)
-	json.NewEncoder(w).Encode(toWorkerDTO(wp))
+	slog.Info("worker: profile deleted", "user_id", userID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- helpers ---
@@ -156,22 +109,6 @@ func toWorkerDTO(wp *core.WorkerProfile) *core.WorkerProfileDTO {
 		CreatedAt:        wp.CreatedAt,
 		UpdatedAt:        wp.UpdatedAt,
 	}
-}
-
-func marshalStrings(s []string) string {
-	if s == nil {
-		return "[]"
-	}
-	b, _ := json.Marshal(s)
-	return string(b)
-}
-
-func marshalSocialLinks(s []core.SocialLink) string {
-	if s == nil {
-		return "[]"
-	}
-	b, _ := json.Marshal(s)
-	return string(b)
 }
 
 // extractUserIDFromRequest resolves the user ID from the session cookie.

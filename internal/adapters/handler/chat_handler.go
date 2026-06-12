@@ -630,40 +630,39 @@ func (h *ChatHandler) HandleClientChat(w http.ResponseWriter, r *http.Request) {
 
 	// If fields were extracted via [FIELDS], upsert the client profile into client_profiles
 	if fields != nil && userID != "" {
-		type clientFields struct {
-			FullName string `json:"full_name"`
-			Phone    string `json:"phone"`
-			City     string `json:"city"`
-			Address  string `json:"address"`
-			Bio      string `json:"bio"`
-		}
-		var cf clientFields
-		if err := json.Unmarshal([]byte(fields), &cf); err == nil {
-			cp := &core.ClientProfile{
-				UserID:   userID,
-				FullName: cf.FullName,
-				Phone:    cf.Phone,
-				City:     cf.City,
-				Address:  cf.Address,
-				Bio:      cf.Bio,
-			}
-			// Upsert
+		var rawMap map[string]interface{}
+		if err := json.Unmarshal(fields, &rawMap); err == nil {
 			var existing core.ClientProfile
-			err := h.db.Where("user_id = ?", userID).First(&existing).Error
-			if err == nil {
-				cp.ID = existing.ID
-				cp.CreatedAt = existing.CreatedAt
-				err = h.db.Save(cp).Error
-			} else {
-				err = h.db.Create(cp).Error
+			found := h.db.Where("user_id = ?", userID).First(&existing).Error == nil
+			cp := existing
+			if !found {
+				cp = core.ClientProfile{UserID: userID}
 			}
-			if err != nil {
-				slog.Warn("client-chat: failed to save client profile", "error", err)
+
+			if v, ok := rawString(rawMap, "full_name"); ok { cp.FullName = v }
+			if v, ok := rawString(rawMap, "phone"); ok { cp.Phone = v }
+			if v, ok := rawString(rawMap, "city"); ok { cp.City = v }
+			if v, ok := rawString(rawMap, "address"); ok { cp.Address = v }
+			if v, ok := rawString(rawMap, "bio"); ok { cp.Bio = v }
+			if v, ok := rawString(rawMap, "preferred_contact"); ok { cp.PreferredContact = v }
+			if v, ok := rawString(rawMap, "property_type"); ok { cp.PropertyType = v }
+			if v, ok := rawString(rawMap, "notes"); ok { cp.Notes = v }
+
+			if found {
+				if err := h.db.Save(&cp).Error; err != nil {
+					slog.Warn("client-chat: failed to save client profile", "error", err)
+				} else {
+					slog.Info("client-chat: client profile saved", "user_id", userID, "full_name", cp.FullName)
+				}
 			} else {
-				slog.Info("client-chat: client profile saved", "user_id", userID, "full_name", cp.FullName)
+				if err := h.db.Create(&cp).Error; err != nil {
+					slog.Warn("client-chat: failed to create client profile", "error", err)
+				} else {
+					slog.Info("client-chat: client profile created", "user_id", userID, "full_name", cp.FullName)
+				}
 			}
 		} else {
-			slog.Warn("client-chat: failed to parse fields JSON into profile", "error", err)
+			slog.Warn("client-chat: failed to parse fields JSON into rawMap", "error", err)
 		}
 	}
 
@@ -783,57 +782,95 @@ func (h *ChatHandler) HandleWorkerChat(w http.ResponseWriter, r *http.Request) {
 
 	// If fields were extracted via [FIELDS], upsert the worker profile
 	if fields != nil && userID != "" {
-		type workerFields struct {
-			Profession      string  `json:"profession"`
-			BusinessName    string  `json:"business_name"`
-			Bio             string  `json:"bio"`
-			Phone           string  `json:"phone"`
-			City            string  `json:"city"`
-			Address         string  `json:"address"`
-			ServiceRadiusKm int     `json:"service_radius_km"`
-			HourlyRate      float64 `json:"hourly_rate"`
-			MinimumCharge   float64 `json:"minimum_charge"`
-			FreeEstimate    bool    `json:"free_estimate"`
-			YearsExperience int     `json:"years_experience"`
-			HasInsurance    bool    `json:"has_insurance"`
-			EmergencySvc    bool    `json:"emergency_service"`
-			Website         string  `json:"website"`
-		}
-		var wf workerFields
-		if err := json.Unmarshal([]byte(fields), &wf); err == nil {
-			// Parse array fields (certifications, languages) from the raw JSON
-			var certs, langs, socials string
-			var rawMap map[string]interface{}
-			if err := json.Unmarshal([]byte(fields), &rawMap); err == nil {
-				if v, ok := rawMap["certifications"]; ok {
-					if arr, ok := v.([]interface{}); ok {
-						b, _ := json.Marshal(arr)
-						certs = string(b)
-					} else if s, ok := v.(string); ok {
-						b, _ := json.Marshal([]string{s})
-						certs = string(b)
-					}
+		var rawMap map[string]interface{}
+		if err := json.Unmarshal(fields, &rawMap); err == nil {
+			var existing core.WorkerProfile
+			found := h.db.Where("user_id = ?", userID).First(&existing).Error == nil
+			wp := existing
+			if !found {
+				wp = core.WorkerProfile{UserID: userID}
+			}
+
+			if v, ok := rawString(rawMap, "profession"); ok { wp.Profession = v }
+			if v, ok := rawString(rawMap, "business_name"); ok { wp.BusinessName = v }
+			if v, ok := rawString(rawMap, "bio"); ok { wp.Bio = v }
+			if v, ok := rawString(rawMap, "phone"); ok { wp.Phone = v }
+			if v, ok := rawString(rawMap, "city"); ok { wp.City = v }
+			if v, ok := rawString(rawMap, "address"); ok { wp.Address = v }
+			if v, ok := rawString(rawMap, "website"); ok { wp.Website = v }
+
+			if v, ok := rawFloat(rawMap, "hourly_rate"); ok { wp.HourlyRate = v }
+			if v, ok := rawFloat(rawMap, "minimum_charge"); ok { wp.MinimumCharge = v }
+			if v, ok := rawInt(rawMap, "service_radius_km"); ok { wp.ServiceRadiusKm = v }
+			if v, ok := rawInt(rawMap, "years_experience"); ok { wp.YearsExperience = v }
+
+			if v, ok := rawBool(rawMap, "free_estimate"); ok { wp.FreeEstimate = v }
+			if v, ok := rawBool(rawMap, "has_insurance"); ok { wp.HasInsurance = v }
+			if v, ok := rawBool(rawMap, "emergency_service"); ok { wp.EmergencyService = v }
+
+			if v, ok := rawMap["certifications"]; ok {
+				if arr, ok := v.([]interface{}); ok {
+					b, _ := json.Marshal(arr)
+					wp.Certifications = string(b)
+				} else if s, ok := v.(string); ok {
+					b, _ := json.Marshal([]string{s})
+					wp.Certifications = string(b)
+				} else if v == nil {
+					wp.Certifications = ""
 				}
-				if v, ok := rawMap["languages"]; ok {
-					if arr, ok := v.([]interface{}); ok {
-						b, _ := json.Marshal(arr)
-						langs = string(b)
-					} else if s, ok := v.(string); ok {
-						b, _ := json.Marshal([]string{s})
-						langs = string(b)
-					}
+			}
+			if v, ok := rawMap["languages"]; ok {
+				if arr, ok := v.([]interface{}); ok {
+					b, _ := json.Marshal(arr)
+					wp.Languages = string(b)
+				} else if s, ok := v.(string); ok {
+					b, _ := json.Marshal([]string{s})
+					wp.Languages = string(b)
+				} else if v == nil {
+					wp.Languages = ""
 				}
-				// Collect social links from individual fields
+			}
+
+			hasSocialKey := false
+			socialFieldNames := map[string]string{
+				"instagram": "Instagram", "facebook": "Facebook",
+				"twitter": "Twitter", "linkedin": "LinkedIn",
+				"tiktok": "TikTok", "youtube": "YouTube",
+			}
+			for field := range socialFieldNames {
+				if _, ok := rawMap[field]; ok {
+					hasSocialKey = true
+					break
+				}
+			}
+			if _, ok := rawMap["social_links"]; ok {
+				hasSocialKey = true
+			}
+			if hasSocialKey {
 				var links []map[string]string
-				socialFields := map[string]string{
-					"instagram": "Instagram", "facebook": "Facebook",
-					"twitter": "Twitter", "linkedin": "LinkedIn",
-					"tiktok": "TikTok", "youtube": "YouTube",
+				var existingLinks []core.SocialLink
+				json.Unmarshal([]byte(wp.SocialLinks), &existingLinks)
+				knownPlatforms := map[string]bool{}
+				for _, l := range existingLinks {
+					key := strings.ToLower(l.Platform)
+					if !knownPlatforms[key] {
+						links = append(links, map[string]string{"platform": l.Platform, "url": l.URL})
+						knownPlatforms[key] = true
+					}
 				}
-				for field, platform := range socialFields {
-					if v, ok := rawMap[field]; ok {
-						if s, ok := v.(string); ok && s != "" {
-							links = append(links, map[string]string{"platform": platform, "url": s})
+				for field, platform := range socialFieldNames {
+					if v, ok := rawString(rawMap, field); ok && v != "" {
+						key := strings.ToLower(platform)
+						if !knownPlatforms[key] {
+							links = append(links, map[string]string{"platform": platform, "url": v})
+							knownPlatforms[key] = true
+						} else {
+							for i, l := range links {
+								if strings.ToLower(l["platform"]) == key {
+									links[i]["url"] = v
+									break
+								}
+							}
 						}
 					}
 				}
@@ -849,7 +886,20 @@ func (h *ChatHandler) HandleWorkerChat(w http.ResponseWriter, r *http.Request) {
 									l["url"] = u
 								}
 								if l["platform"] != "" || l["url"] != "" {
-									links = append(links, l)
+									key := strings.ToLower(l["platform"])
+									if !knownPlatforms[key] {
+										links = append(links, l)
+										knownPlatforms[key] = true
+									} else {
+										for i, existing := range links {
+											if strings.ToLower(existing["platform"]) == key {
+												if l["url"] != "" {
+													links[i]["url"] = l["url"]
+												}
+												break
+											}
+										}
+									}
 								}
 							}
 						}
@@ -857,47 +907,27 @@ func (h *ChatHandler) HandleWorkerChat(w http.ResponseWriter, r *http.Request) {
 				}
 				if len(links) > 0 {
 					b, _ := json.Marshal(links)
-					socials = string(b)
+					wp.SocialLinks = string(b)
+				} else if v, ok := rawMap["social_links"]; ok && v == nil {
+					wp.SocialLinks = ""
 				}
 			}
 
-			wp := &core.WorkerProfile{
-				UserID:           userID,
-				Profession:       wf.Profession,
-				BusinessName:     wf.BusinessName,
-				Bio:              wf.Bio,
-				Phone:            wf.Phone,
-				City:             wf.City,
-				Address:          wf.Address,
-				ServiceRadiusKm:  wf.ServiceRadiusKm,
-				HourlyRate:       wf.HourlyRate,
-				MinimumCharge:    wf.MinimumCharge,
-				FreeEstimate:     wf.FreeEstimate,
-				YearsExperience:  wf.YearsExperience,
-				HasInsurance:     wf.HasInsurance,
-				EmergencyService: wf.EmergencySvc,
-				Website:          wf.Website,
-				Certifications:   certs,
-				Languages:        langs,
-				SocialLinks:      socials,
-			}
-			// Upsert
-			var existing core.WorkerProfile
-			err := h.db.Where("user_id = ?", userID).First(&existing).Error
-			if err == nil {
-				wp.ID = existing.ID
-				wp.CreatedAt = existing.CreatedAt
-				err = h.db.Save(wp).Error
+			if found {
+				if err := h.db.Save(&wp).Error; err != nil {
+					slog.Warn("worker-chat: failed to save worker profile", "error", err)
+				} else {
+					slog.Info("worker-chat: worker profile saved", "user_id", userID, "profession", wp.Profession)
+				}
 			} else {
-				err = h.db.Create(wp).Error
-			}
-			if err != nil {
-				slog.Warn("worker-chat: failed to save worker profile", "error", err)
-			} else {
-				slog.Info("worker-chat: worker profile saved", "user_id", userID, "profession", wp.Profession)
+				if err := h.db.Create(&wp).Error; err != nil {
+					slog.Warn("worker-chat: failed to create worker profile", "error", err)
+				} else {
+					slog.Info("worker-chat: worker profile created", "user_id", userID, "profession", wp.Profession)
+				}
 			}
 		} else {
-			slog.Warn("worker-chat: failed to parse fields JSON into profile", "error", err)
+			slog.Warn("worker-chat: failed to parse fields JSON into rawMap", "error", err)
 		}
 	}
 
@@ -908,6 +938,74 @@ func (h *ChatHandler) HandleWorkerChat(w http.ResponseWriter, r *http.Request) {
 		DetectedFields: fields,
 		ConversationID: respConvID,
 	})
+}
+
+func rawString(m map[string]interface{}, key string) (string, bool) {
+	v, ok := m[key]
+	if !ok {
+		return "", false
+	}
+	if v == nil {
+		return "", true
+	}
+	if s, ok := v.(string); ok {
+		return s, true
+	}
+	return "", false
+}
+
+func rawFloat(m map[string]interface{}, key string) (float64, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	if v == nil {
+		return 0, true
+	}
+	if f, ok := v.(float64); ok {
+		return f, true
+	}
+	return 0, false
+}
+
+func rawInt(m map[string]interface{}, key string) (int, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	if v == nil {
+		return 0, true
+	}
+	if f, ok := v.(float64); ok {
+		return int(f), true
+	}
+	if s, ok := v.(string); ok {
+		n, err := strconv.Atoi(s)
+		if err == nil {
+			return n, true
+		}
+	}
+	return 0, false
+}
+
+func rawBool(m map[string]interface{}, key string) (bool, bool) {
+	v, ok := m[key]
+	if !ok {
+		return false, false
+	}
+	if v == nil {
+		return false, true
+	}
+	if b, ok := v.(bool); ok {
+		return b, true
+	}
+	if f, ok := v.(float64); ok {
+		return f != 0, true
+	}
+	if s, ok := v.(string); ok {
+		return strings.EqualFold(s, "true") || s == "1", true
+	}
+	return false, false
 }
 
 // parseFieldsFromAnswer extracts the last [FIELDS]...[/FIELDS] block from the
