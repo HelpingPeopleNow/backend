@@ -272,6 +272,53 @@ STRICT SCOPE:
 				slog.Info("client_profile_prompt seeded with default", "len", len(defaultClientPrompt))
 			}
 		}
+
+		// Load find-trader search prompt
+		if sp.FindTraderSearchPrompt != "" {
+			chatHandler.SetFindTraderSearchPrompt(sp.FindTraderSearchPrompt)
+			slog.Info("find_trader_search_prompt loaded at startup", "len", len(sp.FindTraderSearchPrompt))
+		} else {
+			defaultFindTraderSearchPrompt := `You are a search assistant for HelpingPeopleNow, a home-services platform. Users describe home problems in natural language. Your job is to understand their need and extract structured search parameters.
+
+Available professions: plumber, electrician, cleaner, handyman, carpenter, painter, landscaper, roofer, HVAC technician
+
+EVERY response MUST end with [SEARCH]{"profession":"...", "city":"...", "emergency":false, "free_estimate":false, "insured":false}[/SEARCH]
+
+Rules:
+- Map descriptions to professions ("fix electricity" → electrician, etc.)
+- Extract the city from the user's message; if not mentioned, set city to ""
+- Set emergency=true only if user mentions urgency
+- Set free_estimate=true only if user explicitly wants free estimates
+- Set insured=true only if user specifically wants insured workers
+- On follow-up messages, update [SEARCH] parameters accordingly
+- ALWAYS include [SEARCH] in EVERY response
+- Talk naturally — greet, confirm understanding, let them know you're searching
+- STRICT SCOPE — only help with finding tradespeople`
+			err = db.Exec(`INSERT INTO system_prompts (id, find_trader_search_prompt, updated_at) VALUES (1, $1, NOW()) ON CONFLICT (id) DO UPDATE SET find_trader_search_prompt = EXCLUDED.find_trader_search_prompt, updated_at = NOW()`, defaultFindTraderSearchPrompt).Error
+			if err != nil {
+				slog.Warn("failed to seed find_trader_search_prompt", "error", err)
+			} else {
+				chatHandler.SetFindTraderSearchPrompt(defaultFindTraderSearchPrompt)
+				slog.Info("find_trader_search_prompt seeded with default", "len", len(defaultFindTraderSearchPrompt))
+			}
+		}
+
+		// Load find-trader presentation prompt
+		if sp.FindTraderPresentationPrompt != "" {
+			chatHandler.SetFindTraderPresentationPrompt(sp.FindTraderPresentationPrompt)
+			slog.Info("find_trader_presentation_prompt loaded at startup", "len", len(sp.FindTraderPresentationPrompt))
+		} else {
+			defaultFindTraderPresentationPrompt := `You are a helpful assistant for HelpingPeopleNow. Present search results conversationally. Mention key details: name, city, hourly rate, years of experience, and any notable badges (insured, emergency service available, free estimates offered).
+
+Keep it friendly and concise. If no workers match the search, be empathetic and suggest broadening the criteria.`
+			err = db.Exec(`INSERT INTO system_prompts (id, find_trader_presentation_prompt, updated_at) VALUES (1, $1, NOW()) ON CONFLICT (id) DO UPDATE SET find_trader_presentation_prompt = EXCLUDED.find_trader_presentation_prompt, updated_at = NOW()`, defaultFindTraderPresentationPrompt).Error
+			if err != nil {
+				slog.Warn("failed to seed find_trader_presentation_prompt", "error", err)
+			} else {
+				chatHandler.SetFindTraderPresentationPrompt(defaultFindTraderPresentationPrompt)
+				slog.Info("find_trader_presentation_prompt seeded with default", "len", len(defaultFindTraderPresentationPrompt))
+			}
+		}
 	}
 
 	// Wire the refresh callbacks: when admin updates, refresh the caches
@@ -292,6 +339,14 @@ STRICT SCOPE:
 			chatHandler.SetClientProfilePrompt(prompt)
 			slog.Info("client_profile_prompt cache refreshed via admin update")
 		},
+		func(prompt string) { // onFindTraderSearchUpd: find-trader search prompt
+			chatHandler.SetFindTraderSearchPrompt(prompt)
+			slog.Info("find_trader_search_prompt cache refreshed via admin update")
+		},
+		func(prompt string) { // onFindTraderPresentationUpd: find-trader presentation prompt
+			chatHandler.SetFindTraderPresentationPrompt(prompt)
+			slog.Info("find_trader_presentation_prompt cache refreshed via admin update")
+		},
 	)
 
 	mux := http.NewServeMux()
@@ -302,6 +357,7 @@ STRICT SCOPE:
 	mux.HandleFunc("/api/v1/worker/chat", chatHandler.HandleWorkerChat)
 	mux.Handle("/api/v1/worker/profile", workerHandler)
 	mux.HandleFunc("/api/v1/client/chat", chatHandler.HandleClientChat)
+	mux.HandleFunc("/api/v1/client/find-chat", chatHandler.HandleFindTradersChat)
 	mux.Handle("/api/v1/client/profile", clientHandler)
 	mux.HandleFunc("/api/v1/user/reset-role", chatHandler.HandleResetRole)
 	mux.Handle("/api/v1/conversations", convHandler)

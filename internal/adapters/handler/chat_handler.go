@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -21,15 +22,17 @@ import (
 
 // ChatHandler proxies questions to the helper service via gRPC.
 type ChatHandler struct {
-	conn                *grpc.ClientConn
-	client              pb.HelperServiceClient
-	authURL             string
-	mu                  sync.RWMutex
-	systemPrompt        string
-	workerProfilePrompt string
-	clientProfilePrompt string
-	llmProvider         string
-	db                  *gorm.DB
+	conn                          *grpc.ClientConn
+	client                        pb.HelperServiceClient
+	authURL                       string
+	mu                            sync.RWMutex
+	systemPrompt                  string
+	workerProfilePrompt           string
+	clientProfilePrompt           string
+	findTraderSearchPrompt        string
+	findTraderPresentationPrompt  string
+	llmProvider                   string
+	db                            *gorm.DB
 }
 
 type chatRequest struct {
@@ -147,6 +150,34 @@ func (h *ChatHandler) getClientProfilePrompt() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.clientProfilePrompt
+}
+
+// SetFindTraderSearchPrompt updates the cached find-trader search prompt (thread-safe).
+func (h *ChatHandler) SetFindTraderSearchPrompt(prompt string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.findTraderSearchPrompt = prompt
+	slog.Info("find_trader_search_prompt cache updated", "len", len(prompt))
+}
+
+func (h *ChatHandler) getFindTraderSearchPrompt() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.findTraderSearchPrompt
+}
+
+// SetFindTraderPresentationPrompt updates the cached find-trader presentation prompt (thread-safe).
+func (h *ChatHandler) SetFindTraderPresentationPrompt(prompt string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.findTraderPresentationPrompt = prompt
+	slog.Info("find_trader_presentation_prompt cache updated", "len", len(prompt))
+}
+
+func (h *ChatHandler) getFindTraderPresentationPrompt() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.findTraderPresentationPrompt
 }
 
 // SetLLMProvider updates the cached LLM provider (thread-safe).
@@ -681,6 +712,260 @@ type workerChatResponse struct {
 	ConversationID string          `json:"conversation_id,omitempty"`
 }
 
+type findChatResponse struct {
+	Answer         string                 `json:"answer"`
+	Workers        []findTraderWorkerCard `json:"workers,omitempty"`
+	ConversationID string                 `json:"conversation_id,omitempty"`
+}
+
+type findTraderWorkerCard struct {
+	ID               uint     `json:"id"`
+	Profession       string   `json:"profession"`
+	BusinessName     string   `json:"business_name"`
+	Bio              string   `json:"bio"`
+	City             string   `json:"city"`
+	HourlyRate       float64  `json:"hourly_rate"`
+	FreeEstimate     bool     `json:"free_estimate"`
+	YearsExperience  int      `json:"years_experience"`
+	Certifications   []string `json:"certifications"`
+	HasInsurance     bool     `json:"has_insurance"`
+	EmergencyService bool     `json:"emergency_service"`
+}
+
+// HandleFindTradersChat handles the find-a-trader search chat.
+// Two-pass flow: (1) extract search params via LLM, (2) present results conversationally.
+func (h *ChatHandler) HandleFindTradersChat(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		slog.Warn("find-chat: invalid method", "method", r.Method)
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req chatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		slog.Warn("find-chat: invalid JSON", "error", err)
+		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+		return
+	}
+	if req.Message == "" {
+		slog.Warn("find-chat: empty message")
+		http.Error(w, `{"error":"message cannot be empty"}`, http.StatusBadRequest)
+		return
+	}
+
+	slog.Info("find-chat request", "msg_len", len(req.Message), "history_len", len(req.History), "conv_id", req.ConversationID)
+
+	// Load client's profile to pre-fill city context
+	var clientCity string
+	userID := h.resolveUserID(r)
+	if userID != "" {
+		var cp core.ClientProfile
+		if err := h.db.Where("user_id = ?", userID).First(&cp).Error; err == nil && cp.City != "" {
+			clientCity = cp.City
+			slog.Debug("find-chat: loaded client city from profile", "city", clientCity)
+		}
+	}
+
+	// Pass 1 prompt: extract search parameters
+	searchSP := h.getFindTraderSearchPrompt()
+	if searchSP == "" {
+		slog.Warn("find-chat: no find_trader_search_prompt configured")
+		json.NewEncoder(w).Encode(findChatResponse{
+			Answer: "Search is not configured yet. Please contact an administrator.",
+		})
+		return
+	}
+
+	// Inject client city context into the search prompt
+	if clientCity != "" {
+		searchSP = fmt.Sprintf("The client is based in %s. Use this as the default city unless they specify a different one.\n\n%s", clientCity, searchSP)
+	}
+
+	prov := h.getLLMProvider()
+
+	history := make([]*pb.Message, len(req.History))
+	for i, m := range req.History {
+		history[i] = &pb.Message{Role: m.Role, Content: m.Content}
+	}
+
+	timeoutSec := 60 * time.Second
+	if ts := os.Getenv("HELPER_TIMEOUT_SECONDS"); ts != "" {
+		if v, err := strconv.Atoi(ts); err == nil && v > 0 {
+			timeoutSec = time.Duration(v) * time.Second
+		}
+	}
+
+	if err := h.ensureClient(); err != nil {
+		slog.Error("find-chat: helper unreachable")
+		http.Error(w, `{"error":"helper service unreachable"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	// --- Pass 1: Search parameter extraction ---
+	slog.Info("find-chat: pass 1 — extracting search params", "sp_len", len(searchSP), "provider", prov)
+	ctx1, cancel1 := context.WithTimeout(context.Background(), timeoutSec)
+	defer cancel1()
+
+	start1 := time.Now()
+	resp1, err := h.client.Ask(ctx1, &pb.AskRequest{
+		Question:          req.Message,
+		History:           history,
+		SystemPrompt:      searchSP,
+		LlmProvider:       prov,
+		SkipRoleDetection: true,
+	})
+	elapsed1 := time.Since(start1)
+
+	if err != nil {
+		slog.Error("find-chat: pass 1 gRPC failed", "error", err, "duration_ms", elapsed1.Milliseconds())
+		if strings.Contains(err.Error(), "429") || strings.Contains(strings.ToLower(err.Error()), "rate limit") {
+			json.NewEncoder(w).Encode(findChatResponse{
+				Answer: "I'm temporarily rate-limited. Please try again in a minute.",
+			})
+			return
+		}
+		http.Error(w, `{"error":"helper service error: `+err.Error()+`"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	// Parse [SEARCH] block from Pass 1 response
+	_, searchParams := parseSearchFromAnswer(resp1.Answer)
+	if searchParams == nil {
+		slog.Warn("find-chat: no [SEARCH] block in pass 1 response", "answer_len", len(resp1.Answer))
+	}
+
+	// --- Query workers from DB ---
+	var workers []core.WorkerProfile
+	var workerCards []findTraderWorkerCard
+	if searchParams != nil {
+		var rawMap map[string]interface{}
+		if err := json.Unmarshal(searchParams, &rawMap); err == nil {
+			profession, _ := rawString(rawMap, "profession")
+			city, _ := rawString(rawMap, "city")
+			emergency, _ := rawBool(rawMap, "emergency")
+			freeEstimate, _ := rawBool(rawMap, "free_estimate")
+			insured, _ := rawBool(rawMap, "insured")
+
+			// If user didn't mention a city but we have one from their profile, use it
+			if city == "" && clientCity != "" {
+				city = clientCity
+			}
+
+			slog.Info("find-chat: searching workers", "profession", profession, "city", city,
+				"emergency", emergency, "free_estimate", freeEstimate, "insured", insured)
+
+			workers, err = h.searchWorkers(profession, city, emergency, freeEstimate, insured)
+			if err != nil {
+				slog.Error("find-chat: DB query failed", "error", err)
+			}
+
+			// Convert to worker cards (summary only — no contact info)
+			workerCards = make([]findTraderWorkerCard, 0, len(workers))
+			for _, w := range workers {
+				var certs []string
+				json.Unmarshal([]byte(w.Certifications), &certs)
+				if certs == nil {
+					certs = []string{}
+				}
+				workerCards = append(workerCards, findTraderWorkerCard{
+					ID:               w.ID,
+					Profession:       w.Profession,
+					BusinessName:     w.BusinessName,
+					Bio:              w.Bio,
+					City:             w.City,
+					HourlyRate:       w.HourlyRate,
+					FreeEstimate:     w.FreeEstimate,
+					YearsExperience:  w.YearsExperience,
+					Certifications:   certs,
+					HasInsurance:     w.HasInsurance,
+					EmergencyService: w.EmergencyService,
+				})
+			}
+		}
+	}
+
+	// --- Pass 2: Present results conversationally ---
+	presentationSP := h.getFindTraderPresentationPrompt()
+	if presentationSP == "" {
+		slog.Warn("find-chat: no find_trader_presentation_prompt configured, using fallback")
+		presentationSP = "You are a helpful assistant. Present search results conversationally."
+	}
+
+	var pass2Question string
+	if len(workers) == 0 {
+		pass2Question = "No workers matched the search criteria. Let the user know empathetically and suggest they broaden their search."
+	} else {
+		var sb strings.Builder
+		sb.WriteString("Here are the matching workers:\n")
+		for i, w := range workers {
+			sb.WriteString(fmt.Sprintf("%d. %s - %s in %s, €%.0f/hr, %d years experience",
+				i+1, w.BusinessName, w.Profession, w.City, w.HourlyRate, w.YearsExperience))
+			if w.HasInsurance {
+				sb.WriteString(", insured")
+			}
+			if w.EmergencyService {
+				sb.WriteString(", emergency service")
+			}
+			if w.FreeEstimate {
+				sb.WriteString(", free estimates")
+			}
+			sb.WriteString("\n")
+		}
+		pass2Question = sb.String()
+	}
+
+	slog.Info("find-chat: pass 2 — presenting results", "worker_count", len(workers), "question_len", len(pass2Question))
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), timeoutSec)
+	defer cancel2()
+
+	start2 := time.Now()
+	resp2, err := h.client.Ask(ctx2, &pb.AskRequest{
+		Question:          pass2Question,
+		SystemPrompt:      presentationSP,
+		LlmProvider:       prov,
+		SkipRoleDetection: true,
+	})
+	elapsed2 := time.Since(start2)
+
+	if err != nil {
+		slog.Error("find-chat: pass 2 gRPC failed", "error", err, "duration_ms", elapsed2.Milliseconds())
+		if strings.Contains(err.Error(), "429") || strings.Contains(strings.ToLower(err.Error()), "rate limit") {
+			json.NewEncoder(w).Encode(findChatResponse{
+				Answer: "I'm temporarily rate-limited. Please try again in a minute.",
+			})
+			return
+		}
+		http.Error(w, `{"error":"helper service error: `+err.Error()+`"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	finalAnswer := resp2.Answer
+	slog.Info("find-chat: pass 2 complete", "answer_len", len(finalAnswer),
+		"pass1_ms", elapsed1.Milliseconds(), "pass2_ms", elapsed2.Milliseconds())
+
+	// Save conversation
+	respConvID := req.ConversationID
+	if userID != "" {
+		newID, err := h.saveConversation(userID, req.ConversationID, "client-find", req.Message, finalAnswer, nil, nil)
+		if err != nil {
+			slog.Warn("find-chat: failed to save conversation", "error", err)
+		} else {
+			respConvID = newID
+		}
+	} else {
+		slog.Debug("find-chat: skipping conversation save — no user session")
+	}
+
+	json.NewEncoder(w).Encode(findChatResponse{
+		Answer:         finalAnswer,
+		Workers:        workerCards,
+		ConversationID: respConvID,
+	})
+}
+
 // HandleWorkerChat handles the worker profile intake chat.
 // It uses the worker_profile_prompt system prompt and parses [FIELDS] blocks
 // from the LLM response to auto-fill the worker profile form.
@@ -988,6 +1273,39 @@ func rawInt(m map[string]interface{}, key string) (int, bool) {
 	return 0, false
 }
 
+// searchWorkers queries worker_profiles with optional filters and city-match-first ordering.
+func (h *ChatHandler) searchWorkers(profession, city string, emergency, freeEstimate, insured bool) ([]core.WorkerProfile, error) {
+	query := h.db.Model(&core.WorkerProfile{}).Where("profession ILIKE ?", "%"+profession+"%")
+
+	if city != "" {
+		query = query.Where("city ILIKE ?", "%"+city+"%")
+	}
+	if emergency {
+		query = query.Where("emergency_service = true")
+	}
+	if freeEstimate {
+		query = query.Where("free_estimate = true")
+	}
+	if insured {
+		query = query.Where("has_insurance = true")
+	}
+
+	if city != "" {
+		escapedCity := strings.ReplaceAll(city, "'", "''")
+		query = query.Order(fmt.Sprintf("CASE WHEN LOWER(city) = LOWER('%s') THEN 0 ELSE 1 END, created_at DESC", escapedCity))
+	} else {
+		query = query.Order("created_at DESC")
+	}
+
+	query = query.Limit(50)
+
+	var workers []core.WorkerProfile
+	if err := query.Find(&workers).Error; err != nil {
+		return nil, err
+	}
+	return workers, nil
+}
+
 func rawBool(m map[string]interface{}, key string) (bool, bool) {
 	v, ok := m[key]
 	if !ok {
@@ -1006,6 +1324,31 @@ func rawBool(m map[string]interface{}, key string) (bool, bool) {
 		return strings.EqualFold(s, "true") || s == "1", true
 	}
 	return false, false
+}
+
+// parseSearchFromAnswer extracts the last [SEARCH]...[/SEARCH] block from the
+// LLM answer, strips it from the response, and returns the JSON as raw bytes.
+func parseSearchFromAnswer(answer string) (string, json.RawMessage) {
+	const openTag = "[SEARCH]"
+	const closeTag = "[/SEARCH]"
+
+	lastOpen := strings.LastIndex(answer, openTag)
+	if lastOpen < 0 {
+		return answer, nil
+	}
+	afterOpen := answer[lastOpen+len(openTag):]
+	closeIdx := strings.Index(afterOpen, closeTag)
+	if closeIdx < 0 {
+		return answer, nil
+	}
+	raw := afterOpen[:closeIdx]
+	var dummy interface{}
+	if err := json.Unmarshal([]byte(raw), &dummy); err != nil {
+		slog.Warn("find-chat: [SEARCH] content is not valid JSON", "raw", raw[:min(len(raw), 100)], "error", err)
+		return answer, nil
+	}
+	cleaned := strings.TrimSpace(answer[:lastOpen] + afterOpen[closeIdx+len(closeTag):])
+	return cleaned, json.RawMessage(raw)
 }
 
 // parseFieldsFromAnswer extracts the last [FIELDS]...[/FIELDS] block from the

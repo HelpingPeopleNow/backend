@@ -15,11 +15,13 @@ import (
 //   PUT  /api/v1/system-prompts/helper   → updates the helper prompt
 //   PUT  /api/v1/system-prompts/provider → updates the llm provider
 type SystemPromptHandler struct {
-	db                  *gorm.DB
-	onUpdate            func(string) // helper prompt content refresh callback
-	onProviderUpdate    func(string) // llm provider refresh callback
-	onWorkerProfileUpd  func(string) // worker profile prompt refresh callback
-	onClientProfileUpd  func(string) // client profile prompt refresh callback
+	db                            *gorm.DB
+	onUpdate                      func(string) // helper prompt content refresh callback
+	onProviderUpdate              func(string) // llm provider refresh callback
+	onWorkerProfileUpd            func(string) // worker profile prompt refresh callback
+	onClientProfileUpd            func(string) // client profile prompt refresh callback
+	onFindTraderSearchUpd         func(string) // find-trader search prompt refresh callback
+	onFindTraderPresentationUpd   func(string) // find-trader presentation prompt refresh callback
 }
 
 func NewSystemPromptHandler(db *gorm.DB, onUpdate ...func(string)) *SystemPromptHandler {
@@ -36,24 +38,34 @@ func NewSystemPromptHandler(db *gorm.DB, onUpdate ...func(string)) *SystemPrompt
 	if len(onUpdate) > 3 && onUpdate[3] != nil {
 		h.onClientProfileUpd = onUpdate[3]
 	}
+	if len(onUpdate) > 4 && onUpdate[4] != nil {
+		h.onFindTraderSearchUpd = onUpdate[4]
+	}
+	if len(onUpdate) > 5 && onUpdate[5] != nil {
+		h.onFindTraderPresentationUpd = onUpdate[5]
+	}
 	return h
 }
 
 type systemPromptsDTO struct {
-	HelperPrompt        string `json:"helper_prompt"`
-	WorkerProfilePrompt string `json:"worker_profile_prompt"`
-	ClientProfilePrompt string `json:"client_profile_prompt"`
-	LLMProvider         string `json:"llm_provider"`
-	UpdatedAt           string `json:"updated_at"`
+	HelperPrompt                string `json:"helper_prompt"`
+	WorkerProfilePrompt         string `json:"worker_profile_prompt"`
+	ClientProfilePrompt         string `json:"client_profile_prompt"`
+	FindTraderSearchPrompt      string `json:"find_trader_search_prompt"`
+	FindTraderPresentationPrompt string `json:"find_trader_presentation_prompt"`
+	LLMProvider                 string `json:"llm_provider"`
+	UpdatedAt                   string `json:"updated_at"`
 }
 
 func toSystemDTO(sp *core.SystemPrompt) systemPromptsDTO {
 	return systemPromptsDTO{
-		HelperPrompt:        sp.HelperPrompt,
-		WorkerProfilePrompt: sp.WorkerProfilePrompt,
-		ClientProfilePrompt: sp.ClientProfilePrompt,
-		LLMProvider:         sp.LLMProvider,
-		UpdatedAt:           sp.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
+		HelperPrompt:                 sp.HelperPrompt,
+		WorkerProfilePrompt:          sp.WorkerProfilePrompt,
+		ClientProfilePrompt:          sp.ClientProfilePrompt,
+		FindTraderSearchPrompt:       sp.FindTraderSearchPrompt,
+		FindTraderPresentationPrompt: sp.FindTraderPresentationPrompt,
+		LLMProvider:                  sp.LLMProvider,
+		UpdatedAt:                    sp.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
 
@@ -107,10 +119,12 @@ func (h *SystemPromptHandler) get(w http.ResponseWriter) {
 
 func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col string) {
 	validCols := map[string]string{
-		"helper":         "helper_prompt",
-		"worker_profile": "worker_profile_prompt",
-		"client_profile": "client_profile_prompt",
-		"provider":       "llm_provider",
+		"helper":               "helper_prompt",
+		"worker_profile":       "worker_profile_prompt",
+		"client_profile":       "client_profile_prompt",
+		"find_trader_search":   "find_trader_search_prompt",
+		"find_trader_presentation": "find_trader_presentation_prompt",
+		"provider":             "llm_provider",
 	}
 	columnName, ok := validCols[col]
 	if !ok {
@@ -164,6 +178,14 @@ func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col
 	if columnName == "client_profile_prompt" && h.onClientProfileUpd != nil {
 		h.onClientProfileUpd(req.Content)
 		slog.Info("system-prompt: client profile prompt cache refreshed")
+	}
+	if columnName == "find_trader_search_prompt" && h.onFindTraderSearchUpd != nil {
+		h.onFindTraderSearchUpd(req.Content)
+		slog.Info("system-prompt: find-trader search prompt cache refreshed")
+	}
+	if columnName == "find_trader_presentation_prompt" && h.onFindTraderPresentationUpd != nil {
+		h.onFindTraderPresentationUpd(req.Content)
+		slog.Info("system-prompt: find-trader presentation prompt cache refreshed")
 	}
 
 	json.NewEncoder(w).Encode(toSystemDTO(&sp))

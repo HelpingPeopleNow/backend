@@ -40,6 +40,10 @@ func Connect() (*gorm.DB, error) {
 
 	// Ensure client_profile_prompt column exists (for existing DBs that pre-date this column)
 	db.Exec(`ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS client_profile_prompt TEXT NOT NULL DEFAULT ''`)
+	// Ensure find_trader_search_prompt column exists (for existing DBs that pre-date this column)
+	db.Exec(`ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS find_trader_search_prompt TEXT NOT NULL DEFAULT ''`)
+	// Ensure find_trader_presentation_prompt column exists (for existing DBs that pre-date this column)
+	db.Exec(`ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS find_trader_presentation_prompt TEXT NOT NULL DEFAULT ''`)
 
 	// Drop the old messages JSONB column (moved to separate messages table)
 	db.Exec(`ALTER TABLE conversations DROP COLUMN IF EXISTS messages;`)
