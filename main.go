@@ -154,8 +154,34 @@ func main() {
 		db.First(&sp, 1)
 	}
 	{
-		chatHandler.SetSystemPrompt(sp.HelperPrompt)
-		slog.Info("system_prompt loaded at startup", "len", len(sp.HelperPrompt))
+		// Load helper prompt
+		if sp.HelperPrompt != "" {
+			chatHandler.SetSystemPrompt(sp.HelperPrompt)
+			slog.Info("helper_prompt loaded at startup", "len", len(sp.HelperPrompt))
+		} else {
+			defaultHelperPrompt := `You are the main AI assistant for HelpingPeopleNow, a home-services platform connecting homeowners with verified professionals.
+
+Your job is to:
+1. Greet the user warmly
+2. Detect if they are a WORKER (professional offering services) or a CLIENT (homeowner seeking services)
+3. Guide them accordingly
+
+ROLE DETECTION:
+- If they mention being a tradesperson, offering services, wanting work, or describe their profession → they are a WORKER
+- If they need home repairs, want to hire someone, describe a problem → they are a CLIENT
+
+When you detect a role, respond with a JSON block at the end of your message:
+[ROLE]{"role":"worker"}[/ROLE] or [ROLE]{"role":"client"}[/ROLE]
+
+Be friendly, helpful, and conversational. Ask clarifying questions to understand their needs.`
+			err = db.Exec(`INSERT INTO system_prompts (id, helper_prompt, updated_at) VALUES (1, $1, NOW()) ON CONFLICT (id) DO UPDATE SET helper_prompt = EXCLUDED.helper_prompt, updated_at = NOW()`, defaultHelperPrompt).Error
+			if err != nil {
+				slog.Warn("failed to seed helper_prompt", "error", err)
+			} else {
+				chatHandler.SetSystemPrompt(defaultHelperPrompt)
+				slog.Info("helper_prompt seeded with default", "len", len(defaultHelperPrompt))
+			}
+		}
 
 		if sp.LLMProvider != "" {
 			chatHandler.SetLLMProvider(sp.LLMProvider)

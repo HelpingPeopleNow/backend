@@ -27,7 +27,7 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
 3. **Client profile intake chat** — receives `POST /api/v1/client/chat`, uses a separate `client_profile_prompt` system prompt designed to gather client profile fields conversationally, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the client profile via map-based upsert
 4. **User role detection** — when the helper identifies whether a user is a "worker" or "client", the backend calls the auth service (`PUT /api/auth/user/:id/role`) to persist the role
 5. **System prompt management** — admin can read/update the helper prompt (`helper_prompt`), the worker profile prompt (`worker_profile_prompt`), the client profile prompt (`client_profile_prompt`), and the LLM provider (`llm_provider`) via REST endpoints
-6. **LLM provider runtime switch** — admin can toggle between `opencode` (external) and `ollama` (local) without restarting the container; empty = falls back to the helper's `USE_OLLAMA` env var
+6. **LLM provider runtime switch** — admin can toggle between `opencode` (external), `ollama` (local), and `mistral` (cloud) without restarting the container; empty = uses the helper's auto fallback chain (Mistral → OpenCode → Ollama)
 7. **Conversation persistence** — all chat messages (main, worker, client) are saved to the database and can be loaded on page reload via the conversations API
 8. **Profile reset** — worker and client profiles can be cleared via `DELETE /api/v1/worker/profile` and `DELETE /api/v1/client/profile`
 
@@ -94,12 +94,12 @@ User sends message
 POST /api/v1/chat ──► ChatHandler.ServeHTTP
        │
        ├─ getSystemPrompt() → cached system prompt (string)
-       ├─ getLLMProvider()  → cached provider ("opencode"/"ollama"/"")
+       ├─ getLLMProvider()  → cached provider ("opencode"/"ollama"/"mistral"/"")
        │
        ├─ helper.Ask() ──gRPC──► HelperService
        │                             │
        │                             ├─ picks adapter based on llm_provider
-       │                             │   (or falls back to env USE_OLLAMA)
+       │                             │   (or uses auto fallback chain)
        │                             └─ returns answer + detected_role
        │
        ├─ if detected_role != "":
@@ -240,7 +240,7 @@ POST /api/v1/client/chat ──► ChatHandler.HandleClientChat
 | PUT | `/api/v1/system-prompts/helper` | Yes | Update the helper prompt text |
 | PUT | `/api/v1/system-prompts/worker_profile` | Yes | Update the worker profile prompt text |
 | PUT | `/api/v1/system-prompts/client_profile` | Yes | Update the client profile prompt text |
-| PUT | `/api/v1/system-prompts/provider` | Yes | Set LLM provider ("opencode", "ollama", or "" for env default) |
+| PUT | `/api/v1/system-prompts/provider` | Yes | Set LLM provider ("opencode", "ollama", "mistral", or "" for auto fallback chain) |
 | PUT | `/api/v1/user/reset-role` | Yes* | Clear user role (reset to "") |
 | GET | `/api/v1/conversations` | Yes* | List conversations (supports `?type=worker&limit=N`) |
 | GET | `/api/v1/conversations/:id` | Yes* | Get conversation with full message history |
@@ -360,7 +360,7 @@ curl -X PUT http://localhost:8081/api/v1/system-prompts/provider \
   -H "Content-Type: application/json" \
   -d '{"content":"ollama"}'
 
-# Reset to env default
+# Reset to auto fallback chain (Mistral → OpenCode → Ollama)
 curl -X PUT http://localhost:8081/api/v1/system-prompts/provider \
   -H "Content-Type: application/json" \
   -d '{"content":""}'
@@ -387,7 +387,7 @@ Singleton row (`id=1`) with four key columns:
 | `helper_prompt` | `TEXT` | System prompt sent to the helper on every main chat request |
 | `worker_profile_prompt` | `TEXT` | System prompt sent to the helper on worker profile intake chat |
 | `client_profile_prompt` | `TEXT` | System prompt sent to the helper on client profile intake chat |
-| `llm_provider` | `VARCHAR(32)` | `"opencode"`, `"ollama"`, or `""` to use env default |
+| `llm_provider` | `VARCHAR(32)` | `"opencode"`, `"ollama"`, `"mistral"`, or `""` for auto fallback chain |
 
 If `worker_profile_prompt` is empty at startup, a default prompt is seeded automatically that instructs the LLM to gather all 22 profile fields conversationally and output `[FIELDS]JSON[/FIELDS]` blocks.
 
@@ -408,7 +408,7 @@ message AskRequest {
   string question = 1;
   repeated Message history = 2;
   string system_prompt = 3;   // loaded by backend from DB (helper or worker_profile or client_profile)
-  string llm_provider = 4;    // "opencode" | "ollama" | "" (= env default)
+  string llm_provider = 4;    // "opencode" | "ollama" | "mistral" | "" (= auto fallback chain)
   bool skip_role_detection = 5; // if true, don't append JSON role-detection instructions
 }
 ```

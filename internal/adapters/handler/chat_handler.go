@@ -618,10 +618,11 @@ func (h *ChatHandler) HandleClientChat(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	resp, err := h.client.Ask(ctx, &pb.AskRequest{
-		Question:     req.Message,
-		History:      history,
-		SystemPrompt: sp,
-		LlmProvider:  prov,
+		Question:          req.Message,
+		History:           history,
+		SystemPrompt:      sp,
+		LlmProvider:       prov,
+		SkipRoleDetection: true,
 	})
 	elapsed := time.Since(start)
 
@@ -1024,10 +1025,11 @@ func (h *ChatHandler) HandleWorkerChat(w http.ResponseWriter, r *http.Request) {
 
 	start := time.Now()
 	resp, err := h.client.Ask(ctx, &pb.AskRequest{
-		Question:     req.Message,
-		History:      history,
-		SystemPrompt: sp,
-		LlmProvider:  prov,
+		Question:          req.Message,
+		History:           history,
+		SystemPrompt:      sp,
+		LlmProvider:       prov,
+		SkipRoleDetection: true,
 	})
 	elapsed := time.Since(start)
 
