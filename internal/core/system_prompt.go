@@ -5,7 +5,6 @@ import "time"
 // SystemPrompt represents the singleton row in the system_prompts table.
 type SystemPrompt struct {
 	ID                          uint      `gorm:"primaryKey"`
-	HelperPrompt                string    `gorm:"column:helper_prompt;type:text;not null;default:''"`
 	WorkerProfilePrompt         string    `gorm:"column:worker_profile_prompt;type:text;not null;default:''"`
 	ClientProfilePrompt         string    `gorm:"column:client_profile_prompt;type:text;not null;default:''"`
 	FindTraderSearchPrompt      string    `gorm:"column:find_trader_search_prompt;type:text;not null;default:''"`

@@ -16,39 +16,34 @@ import (
 //   PUT  /api/v1/system-prompts/provider → updates the llm provider
 type SystemPromptHandler struct {
 	db                            *gorm.DB
-	onUpdate                      func(string) // helper prompt content refresh callback
-	onProviderUpdate              func(string) // llm provider refresh callback
-	onWorkerProfileUpd            func(string) // worker profile prompt refresh callback
-	onClientProfileUpd            func(string) // client profile prompt refresh callback
-	onFindTraderSearchUpd         func(string) // find-trader search prompt refresh callback
-	onFindTraderPresentationUpd   func(string) // find-trader presentation prompt refresh callback
+	onProviderUpdate              func(string)
+	onWorkerProfileUpd            func(string)
+	onClientProfileUpd            func(string)
+	onFindTraderSearchUpd         func(string)
+	onFindTraderPresentationUpd   func(string)
 }
 
 func NewSystemPromptHandler(db *gorm.DB, onUpdate ...func(string)) *SystemPromptHandler {
 	h := &SystemPromptHandler{db: db}
 	if len(onUpdate) > 0 && onUpdate[0] != nil {
-		h.onUpdate = onUpdate[0]
+		h.onProviderUpdate = onUpdate[0]
 	}
 	if len(onUpdate) > 1 && onUpdate[1] != nil {
-		h.onProviderUpdate = onUpdate[1]
+		h.onWorkerProfileUpd = onUpdate[1]
 	}
 	if len(onUpdate) > 2 && onUpdate[2] != nil {
-		h.onWorkerProfileUpd = onUpdate[2]
+		h.onClientProfileUpd = onUpdate[2]
 	}
 	if len(onUpdate) > 3 && onUpdate[3] != nil {
-		h.onClientProfileUpd = onUpdate[3]
+		h.onFindTraderSearchUpd = onUpdate[3]
 	}
 	if len(onUpdate) > 4 && onUpdate[4] != nil {
-		h.onFindTraderSearchUpd = onUpdate[4]
-	}
-	if len(onUpdate) > 5 && onUpdate[5] != nil {
-		h.onFindTraderPresentationUpd = onUpdate[5]
+		h.onFindTraderPresentationUpd = onUpdate[4]
 	}
 	return h
 }
 
 type systemPromptsDTO struct {
-	HelperPrompt                string `json:"helper_prompt"`
 	WorkerProfilePrompt         string `json:"worker_profile_prompt"`
 	ClientProfilePrompt         string `json:"client_profile_prompt"`
 	FindTraderSearchPrompt      string `json:"find_trader_search_prompt"`
@@ -59,7 +54,6 @@ type systemPromptsDTO struct {
 
 func toSystemDTO(sp *core.SystemPrompt) systemPromptsDTO {
 	return systemPromptsDTO{
-		HelperPrompt:                 sp.HelperPrompt,
 		WorkerProfilePrompt:          sp.WorkerProfilePrompt,
 		ClientProfilePrompt:          sp.ClientProfilePrompt,
 		FindTraderSearchPrompt:       sp.FindTraderSearchPrompt,
@@ -113,13 +107,12 @@ func (h *SystemPromptHandler) get(w http.ResponseWriter) {
 		json.NewEncoder(w).Encode(systemPromptsDTO{})
 		return
 	}
-	slog.Info("system-prompt: loaded", "helper_prompt_len", len(sp.HelperPrompt))
+	slog.Info("system-prompt: loaded", "worker_profile_prompt_len", len(sp.WorkerProfilePrompt))
 	json.NewEncoder(w).Encode(toSystemDTO(&sp))
 }
 
 func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col string) {
 	validCols := map[string]string{
-		"helper":               "helper_prompt",
 		"worker_profile":       "worker_profile_prompt",
 		"client_profile":       "client_profile_prompt",
 		"find_trader_search":   "find_trader_search_prompt",
@@ -163,10 +156,6 @@ func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col
 	slog.Info("system-prompt: updated", "col", columnName)
 
 	// Refresh the appropriate backend cache
-	if columnName == "helper_prompt" && h.onUpdate != nil {
-		h.onUpdate(req.Content)
-		slog.Info("system-prompt: backend cache refreshed")
-	}
 	if columnName == "llm_provider" && h.onProviderUpdate != nil {
 		h.onProviderUpdate(req.Content)
 		slog.Info("system-prompt: backend provider cache refreshed", "provider", req.Content)
