@@ -830,13 +830,15 @@ func (h *ChatHandler) resolveUserID(r *http.Request) string {
 	if userID := h.resolveUserIDViaAuth(r); userID != "" {
 		return userID
 	}
+	slog.Info("resolveUserID: auth service failed, falling back to DB lookup")
 	cookie, ok := sessionCookie(r)
 	if !ok {
-		slog.Debug("resolveUserID: no supported session cookie found")
+		slog.Warn("resolveUserID: no supported session cookie found")
 		return ""
 	}
 	token := rawSessionToken(cookie)
 	if token == "" {
+		slog.Warn("resolveUserID: empty token from cookie", "cookie_name", cookie.Name)
 		return ""
 	}
 	type dbSession struct {
@@ -845,9 +847,10 @@ func (h *ChatHandler) resolveUserID(r *http.Request) string {
 	var s dbSession
 	err := h.db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
 	if err != nil {
-		slog.Debug("resolveUserID: session not found in DB", "token_prefix", token[:min(len(token), 15)])
+		slog.Warn("resolveUserID: session not found in DB", "token_prefix", token[:min(len(token), 15)])
 		return ""
 	}
+	slog.Info("resolveUserID: found user via DB", "userID", s.UserID)
 	return s.UserID
 }
 
