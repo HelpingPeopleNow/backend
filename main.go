@@ -344,7 +344,6 @@ Keep it friendly and concise. If no workers match the search, be empathetic and 
 	mux.HandleFunc("/health", newHealthHandler(db))
 	mux.Handle("/api/v1/system-prompts", sysPromptHandler)
 	mux.Handle("/api/v1/system-prompts/", sysPromptHandler)
-	mux.Handle("/api/v1/chat", chatHandler)
 	mux.HandleFunc("/api/v1/worker/chat", chatHandler.HandleWorkerChat)
 	mux.Handle("/api/v1/worker/profile", workerHandler)
 	mux.HandleFunc("/api/v1/client/chat", chatHandler.HandleClientChat)
