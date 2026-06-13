@@ -6,11 +6,13 @@ import (
 )
 
 const (
-	canonicalSessionCookieName = "better-auth.session_token"
-	legacySessionCookieName    = "better-auth-session"
+	canonicalSessionCookieName    = "better-auth.session_token"
+	secureSessionCookieName       = "__Secure-better-auth.session_token"
+	legacySessionCookieName        = "better-auth-session"
 )
 
 var sessionCookieNames = []string{
+	secureSessionCookieName,
 	canonicalSessionCookieName,
 	legacySessionCookieName,
 }

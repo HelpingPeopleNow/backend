@@ -309,6 +309,10 @@ func (h *ChatHandler) handleIntake(ctx context.Context, mode string, req chatReq
 		convType = "client"
 	}
 
+	if userID == "" {
+		slog.Warn("chat: cannot save conversation — user not authenticated", "mode", mode)
+	}
+
 	respConvID := req.ConversationID
 	if userID != "" {
 		newID, saveErr := h.saveConversation(userID, req.ConversationID, convType, req.Message, answer, fields, nil)
@@ -472,6 +476,10 @@ func (h *ChatHandler) handleSearch(ctx context.Context, req chatRequest, history
 
 	finalAnswer := resp2.Answer
 	slog.Info("chat: search complete", "answer_len", len(finalAnswer), "worker_count", len(workerCards), "pass1_ms", elapsed1.Milliseconds(), "pass2_ms", elapsed2.Milliseconds())
+
+	if userID == "" {
+		slog.Warn("chat: cannot save search conversation — user not authenticated", "mode", "search")
+	}
 
 	respConvID := req.ConversationID
 	if userID != "" {
@@ -826,11 +834,13 @@ func parseFieldsFromAnswer(answer string) (string, json.RawMessage) {
 }
 
 // resolveUserID extracts the user ID from the better-auth session cookie.
+// Returns empty string only if no session cookie is present at all.
+// If a cookie exists but the session can't be resolved, logs a warning.
 func (h *ChatHandler) resolveUserID(r *http.Request) string {
 	if userID := h.resolveUserIDViaAuth(r); userID != "" {
 		return userID
 	}
-	slog.Info("resolveUserID: auth service failed, falling back to DB lookup")
+	slog.Debug("resolveUserID: auth service failed, falling back to DB lookup")
 	cookie, ok := sessionCookie(r)
 	if !ok {
 		slog.Warn("resolveUserID: no supported session cookie found")
@@ -857,24 +867,29 @@ func (h *ChatHandler) resolveUserID(r *http.Request) string {
 func (h *ChatHandler) resolveUserIDViaAuth(r *http.Request) string {
 	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://auth:8083/api/auth/user-id", nil)
 	if err != nil {
+		slog.Warn("resolveUserIDViaAuth: failed to create request", "error", err)
 		return ""
 	}
 	addSessionCookie(authReq, r)
 	client := &http.Client{Timeout: 3 * time.Second}
 	authResp, err := client.Do(authReq)
 	if err != nil {
+		slog.Warn("resolveUserIDViaAuth: auth service unreachable", "error", err)
 		return ""
 	}
 	defer authResp.Body.Close()
 	if authResp.StatusCode != http.StatusOK {
+		slog.Warn("resolveUserIDViaAuth: auth service returned non-OK", "status", authResp.StatusCode)
 		return ""
 	}
 	var result struct {
 		UserID string `json:"userId"`
 	}
 	if err := json.NewDecoder(authResp.Body).Decode(&result); err != nil {
+		slog.Warn("resolveUserIDViaAuth: failed to decode response", "error", err)
 		return ""
 	}
+	slog.Info("resolveUserIDViaAuth: resolved user", "userID", result.UserID)
 	return result.UserID
 }
 
