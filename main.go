@@ -144,6 +144,7 @@ func main() {
 	workerHandler := handler.NewWorkerHandler(db)
 	clientHandler := handler.NewClientHandler(db)
 	convHandler := handler.NewConversationHandler(db)
+	adminHandler := handler.NewAdminHandler(db)
 	// Load the system prompt from DB into the chat handler's cache
 	var sp core.SystemPrompt
 	if err := db.First(&sp, 1).Error; err != nil {
@@ -351,6 +352,7 @@ Keep it friendly and concise. If no workers match the search, be empathetic and 
 	mux.Handle("/api/v1/client/profile", clientHandler)
 	mux.Handle("/api/v1/conversations", convHandler)
 	mux.Handle("/api/v1/conversations/", convHandler)
+	mux.Handle("/api/v1/admin/", adminHandler)
 
 	handler := loggingMiddleware(corsMiddleware(mux))
 
