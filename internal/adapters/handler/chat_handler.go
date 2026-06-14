@@ -470,6 +470,12 @@ func (h *ChatHandler) handleSearch(ctx context.Context, req chatRequest, history
 			if w.Phone != "" {
 				sb.WriteString(fmt.Sprintf(", phone: %s", w.Phone))
 			}
+			if w.Bio != "" {
+				sb.WriteString(fmt.Sprintf(", bio: %s", w.Bio))
+			}
+			if len(w.Certifications) > 0 {
+				sb.WriteString(fmt.Sprintf(", certifications: %s", strings.Join(w.Certifications, ", ")))
+			}
 			if w.HasInsurance {
 				sb.WriteString(", insured")
 			}
