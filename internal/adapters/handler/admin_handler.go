@@ -31,8 +31,8 @@ type entityMeta struct {
 
 var entities = map[string]entityMeta{
 	"users": {
-		Table:   "users",
-		Columns: []string{"id", "name", "email", "role", "emailVerified", "image", "createdAt", "updatedAt"},
+		Table:   "\"user\"",
+		Columns: []string{"id", "name", "email", "\"is_admin\"", "\"emailVerified\"", "image", "\"createdAt\"", "\"updatedAt\""},
 	},
 	"worker-profiles": {
 		Table:   "worker_profiles",
@@ -54,6 +54,11 @@ var entities = map[string]entityMeta{
 
 func NewAdminHandler(db *gorm.DB) *AdminHandler {
 	return &AdminHandler{db: db}
+}
+
+// cleanCol strips surrounding quotes from a column name (e.g. "\"emailVerified\"" → "emailVerified").
+func cleanCol(col string) string {
+	return strings.Trim(col, `"`)
 }
 
 func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +104,7 @@ func (h *AdminHandler) listRows(w http.ResponseWriter, r *http.Request, meta ent
 	query := fmt.Sprintf("SELECT %s FROM %s", cols, meta.Table)
 
 	// Add ORDER BY based on primary key type
-	if meta.Table == "users" {
+	if meta.Table == "\"user\"" {
 		query += " ORDER BY \"createdAt\" DESC"
 	} else {
 		query += " ORDER BY id DESC"
@@ -139,9 +144,9 @@ func (h *AdminHandler) listRows(w http.ResponseWriter, r *http.Request, meta ent
 			v := vals[i]
 			// Convert []byte to string for JSON
 			if b, ok := v.([]byte); ok {
-				row[col] = string(b)
+				row[cleanCol(col)] = string(b)
 			} else {
-				row[col] = v
+				row[cleanCol(col)] = v
 			}
 		}
 		result = append(result, row)
@@ -156,7 +161,7 @@ func (h *AdminHandler) getRow(w http.ResponseWriter, meta entityMeta, id string)
 
 	// Users table uses text ID, others use bigint
 	var row map[string]interface{}
-	if meta.Table == "users" {
+	if meta.Table == "\"user\"" {
 		row = make(map[string]interface{})
 		vals := make([]interface{}, len(meta.Columns))
 		ptrs := make([]interface{}, len(meta.Columns))
@@ -170,9 +175,9 @@ func (h *AdminHandler) getRow(w http.ResponseWriter, meta entityMeta, id string)
 		for i, col := range meta.Columns {
 			v := vals[i]
 			if b, ok := v.([]byte); ok {
-				row[col] = string(b)
+				row[cleanCol(col)] = string(b)
 			} else {
-				row[col] = v
+				row[cleanCol(col)] = v
 			}
 		}
 	} else {
@@ -194,9 +199,9 @@ func (h *AdminHandler) getRow(w http.ResponseWriter, meta entityMeta, id string)
 		for i, col := range meta.Columns {
 			v := vals[i]
 			if b, ok := v.([]byte); ok {
-				row[col] = string(b)
+				row[cleanCol(col)] = string(b)
 			} else {
-				row[col] = v
+				row[cleanCol(col)] = v
 			}
 		}
 	}
@@ -255,7 +260,7 @@ func (h *AdminHandler) updateRow(w http.ResponseWriter, r *http.Request, meta en
 	query := fmt.Sprintf("UPDATE %s SET %s WHERE id = $%d", meta.Table, strings.Join(setClauses, ", "), argIdx)
 
 	// Users table uses text ID, others use numeric
-	if meta.Table == "users" {
+	if meta.Table == "\"user\"" {
 		args = append(args, id)
 	} else {
 		idInt, err := strconv.ParseUint(id, 10, 64)
@@ -285,7 +290,7 @@ func (h *AdminHandler) deleteRow(w http.ResponseWriter, meta entityMeta, id stri
 	query := fmt.Sprintf("DELETE FROM %s WHERE id = $1", meta.Table)
 
 	var result *gorm.DB
-	if meta.Table == "users" {
+	if meta.Table == "\"user\"" {
 		result = h.db.Exec(query, id)
 	} else {
 		idInt, err := strconv.ParseUint(id, 10, 64)

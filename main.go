@@ -90,6 +90,36 @@ func authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// adminMiddleware checks that the authenticated user has role "admin".
+// Must be used AFTER authMiddleware (which populates the session in context).
+func adminMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		session := GetSession(r.Context())
+		if session == nil {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+
+		// Better Auth session response: { user: { role: "..." }, session: { ... } }
+		userObj, ok := session["user"].(map[string]interface{})
+		if !ok {
+			slog.Warn("admin: no user in session", "path", r.URL.Path)
+			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
+			return
+		}
+
+		role, _ := userObj["is_admin"].(bool)
+		if !role {
+			slog.Warn("admin: non-admin user rejected", "is_admin", role, "path", r.URL.Path)
+			http.Error(w, `{"error":"forbidden: admin access required"}`, http.StatusForbidden)
+			return
+		}
+
+		slog.Info("admin: access granted", "path", r.URL.Path)
+		next.ServeHTTP(w, r)
+	})
+}
+
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -343,8 +373,8 @@ Keep it friendly and concise. If no workers match the search, be empathetic and 
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", newHealthHandler(db))
-	mux.Handle("/api/v1/system-prompts", sysPromptHandler)
-	mux.Handle("/api/v1/system-prompts/", sysPromptHandler)
+	mux.Handle("/api/v1/system-prompts", adminMiddleware(sysPromptHandler))
+	mux.Handle("/api/v1/system-prompts/", adminMiddleware(sysPromptHandler))
 	mux.HandleFunc("/api/v1/worker/chat", chatHandler.HandleWorkerChat)
 	mux.Handle("/api/v1/worker/profile", workerHandler)
 	mux.HandleFunc("/api/v1/client/chat", chatHandler.HandleClientChat)
@@ -352,7 +382,7 @@ Keep it friendly and concise. If no workers match the search, be empathetic and 
 	mux.Handle("/api/v1/client/profile", clientHandler)
 	mux.Handle("/api/v1/conversations", convHandler)
 	mux.Handle("/api/v1/conversations/", convHandler)
-	mux.Handle("/api/v1/admin/", adminHandler)
+	mux.Handle("/api/v1/admin/", adminMiddleware(adminHandler))
 
 	handler := loggingMiddleware(corsMiddleware(mux))
 
