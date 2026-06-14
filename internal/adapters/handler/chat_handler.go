@@ -59,6 +59,7 @@ type findTraderWorkerCard struct {
 	BusinessName     string   `json:"business_name"`
 	Bio              string   `json:"bio"`
 	City             string   `json:"city"`
+	Phone            string   `json:"phone"`
 	HourlyRate       float64  `json:"hourly_rate"`
 	FreeEstimate     bool     `json:"free_estimate"`
 	YearsExperience  int      `json:"years_experience"`
@@ -432,6 +433,7 @@ func (h *ChatHandler) handleSearch(ctx context.Context, req chatRequest, history
 					BusinessName:     w.BusinessName,
 					Bio:              w.Bio,
 					City:             w.City,
+					Phone:            w.Phone,
 					HourlyRate:       w.HourlyRate,
 					FreeEstimate:     w.FreeEstimate,
 					YearsExperience:  w.YearsExperience,
@@ -465,6 +467,9 @@ func (h *ChatHandler) handleSearch(ctx context.Context, req chatRequest, history
 		for i, w := range workerCards {
 			sb.WriteString(fmt.Sprintf("%d. %s - %s in %s, €%.0f/hr, %d years experience",
 				i+1, w.BusinessName, w.Profession, w.City, w.HourlyRate, w.YearsExperience))
+			if w.Phone != "" {
+				sb.WriteString(fmt.Sprintf(", phone: %s", w.Phone))
+			}
 			if w.HasInsurance {
 				sb.WriteString(", insured")
 			}
