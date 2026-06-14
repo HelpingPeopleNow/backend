@@ -129,7 +129,10 @@ func (h *ChatHandler) SetWorkerProfilePrompt(prompt string) {
 func (h *ChatHandler) getWorkerProfilePrompt() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return h.workerProfilePrompt
+	if h.workerProfilePrompt != "" {
+		return h.workerProfilePrompt
+	}
+	return defaultWorkerProfilePrompt
 }
 
 func (h *ChatHandler) SetClientProfilePrompt(prompt string) {
@@ -145,7 +148,10 @@ func (h *ChatHandler) SetClientProfilePrompt(prompt string) {
 func (h *ChatHandler) getClientProfilePrompt() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return h.clientProfilePrompt
+	if h.clientProfilePrompt != "" {
+		return h.clientProfilePrompt
+	}
+	return defaultClientProfilePrompt
 }
 
 func (h *ChatHandler) SetFindTraderSearchPrompt(prompt string) {
@@ -158,7 +164,10 @@ func (h *ChatHandler) SetFindTraderSearchPrompt(prompt string) {
 func (h *ChatHandler) getFindTraderSearchPrompt() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return h.findTraderSearchPrompt
+	if h.findTraderSearchPrompt != "" {
+		return h.findTraderSearchPrompt
+	}
+	return defaultFindTraderSearchPrompt
 }
 
 func (h *ChatHandler) SetFindTraderPresentationPrompt(prompt string) {
@@ -171,7 +180,10 @@ func (h *ChatHandler) SetFindTraderPresentationPrompt(prompt string) {
 func (h *ChatHandler) getFindTraderPresentationPrompt() string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	return h.findTraderPresentationPrompt
+	if h.findTraderPresentationPrompt != "" {
+		return h.findTraderPresentationPrompt
+	}
+	return defaultFindTraderPresentationPrompt
 }
 
 func (h *ChatHandler) SetLLMProvider(provider string) {
@@ -277,7 +289,7 @@ func (h *ChatHandler) handleIntake(ctx context.Context, mode string, req chatReq
 		sp = h.getClientProfilePrompt()
 	}
 	if sp == "" {
-		sp = "You are a friendly profile-building assistant. Help the user fill out their profile through natural conversation."
+		sp = "Profile prompt not configured. Please contact an administrator."
 	}
 
 	// Language enforcement: append instruction so LLM responds in the user's UI language
@@ -448,7 +460,7 @@ func (h *ChatHandler) handleSearch(ctx context.Context, req chatRequest, history
 	// Pass 2: present results
 	presentationSP := h.getFindTraderPresentationPrompt()
 	if presentationSP == "" {
-		presentationSP = "You are a helpful assistant. Present search results conversationally."
+		presentationSP = "Presentation prompt not configured. Please contact an administrator."
 	}
 
 	// Language enforcement for search pass 2
