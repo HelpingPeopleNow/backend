@@ -38,6 +38,7 @@ type chatRequest struct {
 	Message        string        `json:"message"`
 	History        []historyItem `json:"history,omitempty"`
 	ConversationID string        `json:"conversation_id,omitempty"`
+	Lang           string        `json:"lang,omitempty"`
 }
 
 type historyItem struct {
@@ -278,6 +279,14 @@ func (h *ChatHandler) handleIntake(ctx context.Context, mode string, req chatReq
 		sp = "You are a friendly profile-building assistant. Help the user fill out their profile through natural conversation."
 	}
 
+	// Language enforcement: append instruction so LLM responds in the user's UI language
+	if req.Lang == "es" {
+		sp += "\n\nIMPORTANTE: Responde SIEMPRE en español al usuario. Todas tus respuestas deben ser en español."
+	} else if req.Lang == "en" {
+		sp += "\n\nIMPORTANT: Always respond in English to the user. All your responses must be in English."
+	}
+	slog.Info("chat: intake", "mode", mode, "lang", req.Lang, "prompt_len", len(sp))
+
 	ctx2, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -362,6 +371,13 @@ func (h *ChatHandler) handleSearch(ctx context.Context, req chatRequest, history
 		searchSP = fmt.Sprintf("The client is based in %s. Use this as the default city unless they specify a different one.\n\n%s", clientCity, searchSP)
 	}
 
+	// Language enforcement for search pass 1
+	if req.Lang == "es" {
+		searchSP += "\n\nIMPORTANTE: Responde SIEMPRE en español al usuario."
+	} else if req.Lang == "en" {
+		searchSP += "\n\nIMPORTANT: Always respond in English to the user."
+	}
+
 	// Pass 1: extract search params
 	ctx1, cancel1 := context.WithTimeout(ctx, timeout)
 	defer cancel1()
@@ -431,6 +447,13 @@ func (h *ChatHandler) handleSearch(ctx context.Context, req chatRequest, history
 	presentationSP := h.getFindTraderPresentationPrompt()
 	if presentationSP == "" {
 		presentationSP = "You are a helpful assistant. Present search results conversationally."
+	}
+
+	// Language enforcement for search pass 2
+	if req.Lang == "es" {
+		presentationSP += "\n\nIMPORTANTE: Responde SIEMPRE en español al usuario. Presenta los resultados en español."
+	} else if req.Lang == "en" {
+		presentationSP += "\n\nIMPORTANT: Always respond in English to the user. Present results in English."
 	}
 
 	var pass2Question string
