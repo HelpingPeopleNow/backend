@@ -51,7 +51,7 @@ func authMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Build request to auth service, forwarding the session cookie
-		authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://auth:8083/api/auth/get-session", nil)
+		authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://helpingpeoplenow-auth:8083/api/auth/get-session", nil)
 		if err != nil {
 			slog.Error("auth: failed to create request", "error", err)
 			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
@@ -90,27 +90,66 @@ func authMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// adminMiddleware checks that the authenticated user has role "admin".
-// Must be used AFTER authMiddleware (which populates the session in context).
+// adminMiddleware validates the session via the auth service and checks is_admin.
 func adminMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		session := GetSession(r.Context())
-		if session == nil {
+		// Extract session cookie from the request
+		cookie, err := r.Cookie("__Secure-better-auth.session_token")
+		if err != nil || cookie.Value == "" {
+			cookie, err = r.Cookie("better-auth.session_token")
+			if err != nil || cookie.Value == "" {
+				cookie, err = r.Cookie("better-auth-session")
+				if err != nil || cookie.Value == "" {
+					slog.Warn("admin: missing session cookie", "path", r.URL.Path)
+					http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+					return
+				}
+			}
+		}
+
+		// Validate session with auth service
+		authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://helpingpeoplenow-auth:8083/api/auth/get-session", nil)
+		if err != nil {
+			slog.Error("admin: failed to create auth request", "error", err)
+			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+			return
+		}
+		authReq.AddCookie(cookie)
+
+		client := &http.Client{Timeout: 5 * time.Second}
+		authResp, err := client.Do(authReq)
+		if err != nil {
+			slog.Error("admin: auth service unavailable", "error", err)
+			http.Error(w, `{"error":"auth service unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		defer authResp.Body.Close()
+
+		if authResp.StatusCode != http.StatusOK {
+			slog.Warn("admin: invalid session", "status", authResp.StatusCode, "path", r.URL.Path)
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
 
-		// Better Auth session response: { user: { role: "..." }, session: { ... } }
-		userObj, ok := session["user"].(map[string]interface{})
+		// Parse session response
+		var sessionInfo map[string]interface{}
+		if err := json.NewDecoder(authResp.Body).Decode(&sessionInfo); err != nil {
+			slog.Error("admin: failed to decode session", "error", err)
+			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
+			return
+		}
+
+		// Check is_admin from user object
+		userObj, ok := sessionInfo["user"].(map[string]interface{})
 		if !ok {
 			slog.Warn("admin: no user in session", "path", r.URL.Path)
 			http.Error(w, `{"error":"forbidden"}`, http.StatusForbidden)
 			return
 		}
 
-		role, _ := userObj["is_admin"].(bool)
-		if !role {
-			slog.Warn("admin: non-admin user rejected", "is_admin", role, "path", r.URL.Path)
+		isAdmin, _ := userObj["is_admin"].(bool)
+		if !isAdmin {
+			slog.Warn("admin: non-admin user rejected", "path", r.URL.Path)
 			http.Error(w, `{"error":"forbidden: admin access required"}`, http.StatusForbidden)
 			return
 		}
