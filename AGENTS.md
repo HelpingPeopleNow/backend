@@ -1,6 +1,6 @@
 # backend
 
-Go REST API (stdlib `net/http`, `log/slog`) with hexagonal architecture. Unified chat dispatch, manages system prompts/LLM provider, handles worker/client profiles, persists conversations.
+Go REST API (stdlib `net/http`, `log/slog`) with hexagonal architecture. Chat is split into dedicated per-role endpoints (worker/chat, client/chat, client/find-chat). Manages system prompts/LLM provider, handles worker/client profiles, persists conversations.
 
 ## Commands
 
@@ -21,14 +21,16 @@ No tests, no lint/typecheck config, no CI.
 - **Client profile fields**: `FullName`, `Phone`, `City`, `Address`, `Bio`, `PreferredContact`, `PropertyType`, `Notes` — all strings.
 - **System prompt is a singleton row** (`id=1`) with four columns: `worker_profile_prompt`, `client_profile_prompt`, `find_trader_search_prompt`, `find_trader_presentation_prompt`, `llm_provider`. Upserted via raw SQL.
 - **Map-based profile merge** — `handleIntake()` loads the existing profile from DB, then only overwrite fields present in the `[FIELDS]` block from the LLM response.
-- **Unified chat endpoint** — `POST /api/v1/chat` dispatches on `req.Mode` (`worker_intake` | `client_intake` | `search`).
+- **Chat is split into dedicated per-role endpoints** (`worker/chat`, `client/chat`, `client/find-chat`).
 - **Conversations** — `ConversationHandler` lists/fetches saved conversations from the `conversations` table with `messages` sub-table. Used by frontend to resume chat on page reload.
 
 ## Handlers
 
 | Handler | Path | Methods | Purpose |
 |---------|------|---------|---------|
-| `ChatHandler` | `/api/v1/chat` | POST | Unified chat dispatch (worker_intake, client_intake, search) |
+| `WorkerHandler` | `/api/v1/worker/chat` | POST | Worker chat endpoint (worker_intake) |
+| `ClientHandler` | `/api/v1/client/chat` | POST | Client chat endpoint (client_intake) |
+| `ClientHandler` | `/api/v1/client/find-chat` | POST | Find-chat endpoint (search) |
 | `WorkerHandler` | `/api/v1/worker/profile` | GET, DELETE | Worker profile read/reset |
 | `ClientHandler` | `/api/v1/client/profile` | GET, DELETE | Client profile read/reset |
 | `SystemPromptHandler` | `/api/v1/system-prompts` | GET, PUT | System prompts + provider CRUD |
@@ -45,6 +47,7 @@ No tests, no lint/typecheck config, no CI.
 - PUT endpoints for worker/client profiles were **removed** — profiles are now saved automatically by the chat handlers. Only DELETE (reset) endpoints remain.
 - `user.role` column exists in DB but is no longer written by the backend.
 - `helper_prompt` column exists in `system_prompts` table but is unmapped by GORM.
+- `chatRequest` struct includes `Lang` string — backend appends language instruction to system prompt based on value (`es` → Spanish, `en` → English).
 
 ## Env vars
 

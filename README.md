@@ -1,6 +1,6 @@
 # HelpingPeopleNow Backend
 
-Go REST API with hexagonal architecture. Orchestrates the chat flow: receives messages from the frontend, combines them with system prompts and LLM provider config, sends them to the helper service via gRPC, and updates user roles based on AI classification.
+Go REST API with hexagonal architecture. Orchestrates the chat flow: receives messages from the frontend, combines them with system prompts and LLM provider config, sends them to the helper service via gRPC, and appends a language instruction based on the request's `lang` parameter.
 
 **Container:** `helpingpeoplenow-backend` | **Port:** `:8081`
 
@@ -22,19 +22,16 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
 
 ## What It Does
 
-1. **Main chat** — receives `POST /api/v1/chat` from the frontend, loads the system prompt + LLM provider from the in-memory cache, calls the helper via gRPC, returns the AI answer + detected user role
-2. **Worker profile intake chat** — receives `POST /api/v1/worker/chat`, uses a separate `worker_profile_prompt` system prompt designed to gather worker profile fields conversationally, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the worker profile via map-based upsert
-3. **Client profile intake chat** — receives `POST /api/v1/client/chat`, uses a separate `client_profile_prompt` system prompt designed to gather client profile fields conversationally, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the client profile via map-based upsert
-4. **User role detection** — when the helper identifies whether a user is a "worker" or "client", the backend calls the auth service (`PUT /api/auth/user/:id/role`) to persist the role
-5. **System prompt management** — admin can read/update the helper prompt (`helper_prompt`), the worker profile prompt (`worker_profile_prompt`), the client profile prompt (`client_profile_prompt`), and the LLM provider (`llm_provider`) via REST endpoints
-6. **LLM provider runtime switch** — admin can toggle between `opencode` (external), `ollama` (local), and `mistral` (cloud) without restarting the container; empty = uses the helper's auto fallback chain (Mistral → OpenCode → Ollama)
-7. **Conversation persistence** — all chat messages (main, worker, client) are saved to the database and can be loaded on page reload via the conversations API
-8. **Profile reset** — worker and client profiles can be cleared via `DELETE /api/v1/worker/profile` and `DELETE /api/v1/client/profile`
+1. **Worker profile intake chat** — receives `POST /api/v1/worker/chat`, uses a separate `worker_profile_prompt` system prompt designed to gather worker profile fields conversationally, appends a language instruction to the system prompt based on the `lang` parameter, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the worker profile via map-based upsert
+2. **Client profile intake chat** — receives `POST /api/v1/client/chat`, uses a separate `client_profile_prompt` system prompt designed to gather client profile fields conversationally, appends a language instruction to the system prompt based on the `lang` parameter, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the client profile via map-based upsert
+3. **System prompt management** — admin can read/update the helper prompt (`helper_prompt`), the worker profile prompt (`worker_profile_prompt`), the client profile prompt (`client_profile_prompt`), and the LLM provider (`llm_provider`) via REST endpoints
+4. **LLM provider runtime switch** — admin can toggle between `opencode` (external), `ollama` (local), and `mistral` (cloud) without restarting the container; empty = uses the helper's auto fallback chain (Mistral → OpenCode → Ollama)
+5. **Conversation persistence** — all chat messages (worker, client) are saved to the database and can be loaded on page reload via the conversations API
+6. **Profile reset** — worker and client profiles can be cleared via `DELETE /api/v1/worker/profile` and `DELETE /api/v1/client/profile`
 
 ---
 
 ## Architecture
-
 ```
 ┌───────────────────────────────────────────────────────────────┐
 │                         main.go                               │
@@ -43,12 +40,12 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
         │           │               │               │
  ┌──────▼──────┐ ┌──▼──────────┐ ┌──▼──────────┐ ┌──▼──────────┐
  │ ChatHandler │ │ WorkerHandler│ │ClientHandler│ │ConvHandler  │
- │ (chat +     │ │ (GET/DELETE  │ │(GET/DELETE  │ │(list/get    │
- │  worker +   │ │  profile)    │ │ profile)    │ │ conversations)│
- │  client     │ └─────────────┘ └─────────────┘ └─────────────┘
- │  chat +     │
+ │ (worker +   │ │ (GET/DELETE  │ │(GET/DELETE  │ │(list/get    │
+ │  client     │ │  profile)    │ │ profile)    │ │ conversations)│
+ │  chat +     │ └─────────────┘ └─────────────┘ └─────────────┘
+ │  find-chat  │
  │  gRPC +     │ ┌──────────────────────┐
- │  roles)     │ │ SystemPromptHandler  │
+ │  lang)      │ │ SystemPromptHandler  │
  └──────┬──────┘ │ (CRUD for            │
         │        │  helper_prompt +     │
         │        │  worker_profile +    │
@@ -70,8 +67,7 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
  │           gRPC Client               │
  │   helper.HelperService.Ask()        │
  │   (sends question + history +       │
- │    system_prompt + llm_provider +   │
- │    skip_role_detection)             │
+ │    system_prompt + llm_provider)    │
  └─────────────────────────────────────┘
 ```
 
@@ -85,32 +81,6 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
 
 ## Request Flows
 
-### Main Chat (`/api/v1/chat`)
-
-```
-User sends message
-       │
-       ▼
-POST /api/v1/chat ──► ChatHandler.ServeHTTP
-       │
-       ├─ getSystemPrompt() → cached system prompt (string)
-       ├─ getLLMProvider()  → cached provider ("opencode"/"ollama"/"mistral"/"")
-       │
-       ├─ helper.Ask() ──gRPC──► HelperService
-       │                             │
-       │                             ├─ picks adapter based on llm_provider
-       │                             │   (or uses auto fallback chain)
-       │                             └─ returns answer + detected_role
-       │
-       ├─ if detected_role != "":
-       │   read cookie from request
-       │   split JWT on "." for raw session token
-       │   DB: SELECT user_id FROM session WHERE token = ?
-       │   PUT /api/auth/user/{id}/role (auth service) → update role
-       │
-       └─ return { answer, role_updated }
-```
-
 ### Worker Profile Intake Chat (`/api/v1/worker/chat`)
 
 ```
@@ -121,6 +91,10 @@ POST /api/v1/worker/chat ──► ChatHandler.HandleWorkerChat
        │
        ├─ getWorkerProfilePrompt() → cached worker prompt (string)
        ├─ getLLMProvider()         → cached provider
+       │
+       ├─ append language instruction to system prompt:
+       │   if lang == "es": "IMPORTANTE: Responde SIEMPRE en español al usuario"
+       │   if lang == "en": "IMPORTANT: Always respond in English"
        │
        ├─ helper.Ask() ──gRPC──► HelperService
        │                             │
@@ -153,6 +127,10 @@ POST /api/v1/client/chat ──► ChatHandler.HandleClientChat
        │
        ├─ getClientProfilePrompt() → cached client prompt (string)
        ├─ getLLMProvider()          → cached provider
+       │
+       ├─ append language instruction to system prompt:
+       │   if lang == "es": "IMPORTANTE: Responde SIEMPRE en español al usuario"
+       │   if lang == "en": "IMPORTANT: Always respond in English"
        │
        ├─ helper.Ask() ──gRPC──► HelperService
        │                             │
@@ -229,9 +207,9 @@ POST /api/v1/client/chat ──► ChatHandler.HandleClientChat
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/health` | No | Health check → `{"status":"ok"}` |
-| POST | `/api/v1/chat` | Yes | Chat with AI → `{"answer","detected_role","role_updated"}` |
 | POST | `/api/v1/worker/chat` | No* | Worker profile intake chat → `{"answer","detected_fields","conversation_id"}` |
 | POST | `/api/v1/client/chat` | No* | Client profile intake chat → `{"answer","detected_fields","conversation_id"}` |
+| POST | `/api/v1/client/find-chat` | No* | Client find-chat (search) → `{"answer","conversation_id"}` |
 | GET | `/api/v1/worker/profile` | Yes* | Get worker profile for authenticated user |
 | DELETE | `/api/v1/worker/profile` | Yes* | Clear worker profile for authenticated user |
 | GET | `/api/v1/client/profile` | Yes* | Get client profile for authenticated user |
@@ -259,31 +237,12 @@ curl http://localhost:8081/health
 
 Returns `200 OK` with `{"status":"ok"}`. Because there is no request body, session, or database dependency, this endpoint is fast and reliable for uptime checks.
 
-### Main Chat
-
-```bash
-curl -X POST http://localhost:8081/api/v1/chat \
-  -H "Content-Type: application/json" \
-  -H "Cookie: better-auth.something=..." \
-  -d '{"message":"I need a plumber","history":[]}'
-```
-
-Response:
-
-```json
-{
-  "answer": "Great! I can connect you with local plumbers. What area are you in?",
-  "detected_role": "client",
-  "role_updated": true
-}
-```
-
 ### Worker Profile Intake Chat
 
 ```bash
 curl -X POST http://localhost:8081/api/v1/worker/chat \
   -H "Content-Type: application/json" \
-  -d '{"message":"I am a plumber in Madrid","history":[]}'
+  -d '{"message":"I am a plumber in Madrid","history":[],"lang":"en"}'
 ```
 
 Response:
@@ -304,7 +263,7 @@ Response:
 ```bash
 curl -X POST http://localhost:8081/api/v1/client/chat \
   -H "Content-Type: application/json" \
-  -d '{"message":"Hi, I need help fixing my bathroom","history":[]}'
+  -d '{"message":"Hi, I need help fixing my bathroom","history":[],"lang":"en"}'
 ```
 
 Response:
@@ -384,7 +343,7 @@ Singleton row (`id=1`) with four key columns:
 
 | Column | Type | Purpose |
 |--------|------|---------|
-| `helper_prompt` | `TEXT` | System prompt sent to the helper on every main chat request |
+| `helper_prompt` | `TEXT` | System prompt sent to the helper on every chat request |
 | `worker_profile_prompt` | `TEXT` | System prompt sent to the helper on worker profile intake chat |
 | `client_profile_prompt` | `TEXT` | System prompt sent to the helper on client profile intake chat |
 | `llm_provider` | `VARCHAR(32)` | `"opencode"`, `"ollama"`, `"mistral"`, or `""` for auto fallback chain |
@@ -409,7 +368,6 @@ message AskRequest {
   repeated Message history = 2;
   string system_prompt = 3;   // loaded by backend from DB (helper or worker_profile or client_profile)
   string llm_provider = 4;    // "opencode" | "ollama" | "mistral" | "" (= auto fallback chain)
-  bool skip_role_detection = 5; // if true, don't append JSON role-detection instructions
 }
 ```
 
@@ -419,14 +377,14 @@ The `ChatHandler` dials the helper at startup and reconnects if the connection d
 
 ---
 
-## User Role Detection Flow
+## Language (`lang`) Parameter
 
-1. Helper returns `detected_role` in `AskResponse` (parsed from the LLM text response)
-2. Backend reads the session cookie, splits the JWT on `"."` to extract the raw session token
-3. Backend looks up the user ID via `SELECT userId FROM session WHERE token = ?`
-4. Backend calls `PUT /api/auth/user/{id}/role` on the auth service (the role authority)
-5. The frontend checks the user's role from the session and redirects to `/worker` or `/client`
-6. If role update fails, the backend logs the error but still returns the chat response (non-blocking)
+All chat endpoints accept a `lang` field in the JSON request body. The backend appends a language instruction to the system prompt before sending it to the helper:
+
+- `lang: "es"` → appends `IMPORTANTE: Responde SIEMPRE en español al usuario`
+- `lang: "en"` → appends `IMPORTANT: Always respond in English`
+
+This instruction is appended to the system prompt for both `handleIntake` (worker/client) and both passes of `handleSearch`.
 
 ---
 
@@ -437,9 +395,8 @@ All handlers use Go's `log/slog` with structured key-value pairs:
 | Component | Events |
 |-----------|--------|
 | `main.go` | Startup, shutdown, request method/path/duration |
-| `ChatHandler` (chat) | gRPC connection, message sizes, system prompt length, provider, role updates |
-| `ChatHandler` (worker) | Message sizes, prompt length, provider, detected_fields JSON, field counts |
-| `ChatHandler` (client) | Message sizes, prompt length, provider, detected_fields JSON, field counts |
+| `ChatHandler` (worker) | Message sizes, prompt length, provider, lang, detected_fields JSON, field counts |
+| `ChatHandler` (client) | Message sizes, prompt length, provider, lang, detected_fields JSON, field counts |
 | `SystemPromptHandler` | GET/PUT operations, column name, cache refresh |
 | `AuthMiddleware` | Session validation, missing/invalid cookies |
 | `ConversationHandler` | Conversation list/get operations, user ID, conversation count |
@@ -500,7 +457,7 @@ backend/
     │   └── client.go             # ClientProfile GORM model + DTO
     └── adapters/
         └── handler/
-            ├── chat_handler.go           # Main chat + worker/client profile chat + gRPC client + role sync
+            ├── chat_handler.go           # Worker/client profile chat + find-chat + gRPC client + lang
             ├── system_prompt_handler.go  # System prompt CRUD (helper, worker, client, provider)
             ├── worker_handler.go         # Worker profile (GET/DELETE)
             ├── client_handler.go         # Client profile (GET/DELETE)
