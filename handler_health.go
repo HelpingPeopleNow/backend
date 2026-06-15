@@ -22,9 +22,6 @@ type healthResponse struct {
 // helper gRPC service health endpoint before reporting status.
 func newHealthHandler(db *gorm.DB) http.HandlerFunc {
 	helperHealthURL := os.Getenv("HELPER_HEALTH_URL")
-	if helperHealthURL == "" {
-		helperHealthURL = "http://helpingpeoplenow-helper:8084/health"
-	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 

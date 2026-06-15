@@ -103,7 +103,7 @@ func (h *AdminHandler) listRows(w http.ResponseWriter, r *http.Request, meta ent
 	cols := strings.Join(meta.Columns, ", ")
 	query := fmt.Sprintf("SELECT %s FROM %s", cols, meta.Table)
 
-	// Add ORDER BY based on primary key type
+	// Users table uses createdAt, others use id for ordering
 	if meta.Table == "\"user\"" {
 		query += " ORDER BY \"createdAt\" DESC"
 	} else {
@@ -159,50 +159,22 @@ func (h *AdminHandler) getRow(w http.ResponseWriter, meta entityMeta, id string)
 	cols := strings.Join(meta.Columns, ", ")
 	query := fmt.Sprintf("SELECT %s FROM %s WHERE id = $1", cols, meta.Table)
 
-	// Users table uses text ID, others use bigint
-	var row map[string]interface{}
-	if meta.Table == "\"user\"" {
-		row = make(map[string]interface{})
-		vals := make([]interface{}, len(meta.Columns))
-		ptrs := make([]interface{}, len(meta.Columns))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		if err := h.db.Raw(query, id).Row().Scan(ptrs...); err != nil {
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-			return
-		}
-		for i, col := range meta.Columns {
-			v := vals[i]
-			if b, ok := v.([]byte); ok {
-				row[cleanCol(col)] = string(b)
-			} else {
-				row[cleanCol(col)] = v
-			}
-		}
-	} else {
-		idInt, err := strconv.ParseUint(id, 10, 64)
-		if err != nil {
-			http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
-			return
-		}
-		row = make(map[string]interface{})
-		vals := make([]interface{}, len(meta.Columns))
-		ptrs := make([]interface{}, len(meta.Columns))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		if err := h.db.Raw(query, idInt).Row().Scan(ptrs...); err != nil {
-			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
-			return
-		}
-		for i, col := range meta.Columns {
-			v := vals[i]
-			if b, ok := v.([]byte); ok {
-				row[cleanCol(col)] = string(b)
-			} else {
-				row[cleanCol(col)] = v
-			}
+	row := make(map[string]interface{})
+	vals := make([]interface{}, len(meta.Columns))
+	ptrs := make([]interface{}, len(meta.Columns))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	if err := h.db.Raw(query, id).Row().Scan(ptrs...); err != nil {
+		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		return
+	}
+	for i, col := range meta.Columns {
+		v := vals[i]
+		if b, ok := v.([]byte); ok {
+			row[cleanCol(col)] = string(b)
+		} else {
+			row[cleanCol(col)] = v
 		}
 	}
 
@@ -259,17 +231,8 @@ func (h *AdminHandler) updateRow(w http.ResponseWriter, r *http.Request, meta en
 
 	query := fmt.Sprintf("UPDATE %s SET %s WHERE id = $%d", meta.Table, strings.Join(setClauses, ", "), argIdx)
 
-	// Users table uses text ID, others use numeric
-	if meta.Table == "\"user\"" {
-		args = append(args, id)
-	} else {
-		idInt, err := strconv.ParseUint(id, 10, 64)
-		if err != nil {
-			http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
-			return
-		}
-		args = append(args, idInt)
-	}
+	// All IDs are text/UUID
+	args = append(args, id)
 
 	result := h.db.Exec(query, args...)
 	if result.Error != nil {
@@ -289,17 +252,7 @@ func (h *AdminHandler) updateRow(w http.ResponseWriter, r *http.Request, meta en
 func (h *AdminHandler) deleteRow(w http.ResponseWriter, meta entityMeta, id string) {
 	query := fmt.Sprintf("DELETE FROM %s WHERE id = $1", meta.Table)
 
-	var result *gorm.DB
-	if meta.Table == "\"user\"" {
-		result = h.db.Exec(query, id)
-	} else {
-		idInt, err := strconv.ParseUint(id, 10, 64)
-		if err != nil {
-			http.Error(w, `{"error":"invalid id"}`, http.StatusBadRequest)
-			return
-		}
-		result = h.db.Exec(query, idInt)
-	}
+	result := h.db.Exec(query, id)
 
 	if result.Error != nil {
 		slog.Error("admin: delete failed", "entity", meta.Table, "id", id, "error", result.Error)

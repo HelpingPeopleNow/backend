@@ -11,6 +11,7 @@ import (
 	"github.com/HelpingPeopleNow/backend/database"
 	"github.com/HelpingPeopleNow/backend/internal/adapters/handler"
 	"github.com/HelpingPeopleNow/backend/internal/core"
+	"gorm.io/gorm"
 )
 
 // contextKey is used for storing values in request context to avoid collisions.
@@ -51,7 +52,7 @@ func authMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Build request to auth service, forwarding the session cookie
-		authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://helpingpeoplenow-auth:8083/api/auth/get-session", nil)
+		authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, os.Getenv("AUTH_SERVICE_URL")+"/api/auth/get-session", nil)
 		if err != nil {
 			slog.Error("auth: failed to create request", "error", err)
 			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
@@ -108,7 +109,7 @@ func adminMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Validate session with auth service
-		authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://helpingpeoplenow-auth:8083/api/auth/get-session", nil)
+		authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, os.Getenv("AUTH_SERVICE_URL")+"/api/auth/get-session", nil)
 		if err != nil {
 			slog.Error("admin: failed to create auth request", "error", err)
 			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
@@ -190,10 +191,28 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func requireEnv(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		slog.Error("missing required environment variable", "key", key)
+		os.Exit(1)
+	}
+	return v
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})))
+
+	// Validate required env vars before doing anything
+	requireEnv("DB_HOST")
+	requireEnv("DB_USER")
+	requireEnv("DB_PASSWORD")
+	requireEnv("DB_NAME")
+	requireEnv("AUTH_SERVICE_URL")
+	requireEnv("HELPER_GRPC_ADDR")
+	requireEnv("HELPER_HEALTH_URL")
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -209,6 +228,19 @@ func main() {
 	}
 	slog.Info("database connected")
 
+	// Auto-migrate schema — creates tables if missing, adds columns if changed
+	if err := db.AutoMigrate(
+		&core.WorkerProfile{},
+		&core.ClientProfile{},
+		&core.Conversation{},
+		&core.Message{},
+		&core.SystemPrompt{},
+	); err != nil {
+		slog.Error("auto-migrate failed", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("auto-migrate complete")
+
 	chatHandler := handler.NewChatHandler(db)
 	workerHandler := handler.NewWorkerHandler(db)
 	clientHandler := handler.NewClientHandler(db)
@@ -216,10 +248,10 @@ func main() {
 	adminHandler := handler.NewAdminHandler(db)
 	// Load the system prompt from DB into the chat handler's cache
 	var sp core.SystemPrompt
-	if err := db.First(&sp, 1).Error; err != nil {
-		slog.Info("system_prompt: row 1 not found, creating empty row")
-		db.Exec(`INSERT INTO system_prompts (id, worker_profile_prompt, client_profile_prompt) VALUES (1, '', '') ON CONFLICT (id) DO NOTHING`)
-		db.First(&sp, 1)
+	if err := db.First(&sp).Error; err != nil {
+		slog.Info("system_prompt: not found, creating empty row")
+		sp = core.SystemPrompt{}
+		db.Create(&sp)
 	}
 	{
 		if sp.LLMProvider != "" {
@@ -277,7 +309,10 @@ HANDLING UPDATES:
 FIELD CLEARING:
 - When a user explicitly asks to remove a field value, set it to null in [FIELDS]: "phone": null
 - This signals the system to clear that field.`
-			err = db.Exec(`INSERT INTO system_prompts (id, worker_profile_prompt, updated_at) VALUES (1, $1, NOW()) ON CONFLICT (id) DO UPDATE SET worker_profile_prompt = EXCLUDED.worker_profile_prompt, updated_at = NOW()`, defaultWorkerPrompt).Error
+			err = db.Model(&sp).Updates(map[string]interface{}{
+				"worker_profile_prompt": defaultWorkerPrompt,
+				"updated_at":           gorm.Expr("NOW()"),
+			}).Error
 			if err != nil {
 				slog.Warn("failed to seed worker_profile_prompt", "error", err)
 			} else {
@@ -329,7 +364,10 @@ STRICT SCOPE:
 - You are a profile-building assistant ONLY. Your SOLE purpose is to collect client profile information.
 - If the user asks anything outside of profile building, politely decline: "I'm here to help you build your client profile! Let's continue with that."
 - NEVER provide general knowledge, recipes, advice, jokes, or any information unrelated to profile building.`
-			err = db.Exec(`INSERT INTO system_prompts (id, client_profile_prompt, updated_at) VALUES (1, $1, NOW()) ON CONFLICT (id) DO UPDATE SET client_profile_prompt = EXCLUDED.client_profile_prompt, updated_at = NOW()`, defaultClientPrompt).Error
+			err = db.Model(&sp).Updates(map[string]interface{}{
+				"client_profile_prompt": defaultClientPrompt,
+				"updated_at":           gorm.Expr("NOW()"),
+			}).Error
 			if err != nil {
 				slog.Warn("failed to seed client_profile_prompt", "error", err)
 			} else {
@@ -359,7 +397,10 @@ Rules:
 - ALWAYS include [SEARCH] in EVERY response
 - Talk naturally — greet, confirm understanding, let them know you're searching
 - STRICT SCOPE — only help with finding tradespeople`
-			err = db.Exec(`INSERT INTO system_prompts (id, find_trader_search_prompt, updated_at) VALUES (1, $1, NOW()) ON CONFLICT (id) DO UPDATE SET find_trader_search_prompt = EXCLUDED.find_trader_search_prompt, updated_at = NOW()`, defaultFindTraderSearchPrompt).Error
+			err = db.Model(&sp).Updates(map[string]interface{}{
+				"find_trader_search_prompt": defaultFindTraderSearchPrompt,
+				"updated_at":               gorm.Expr("NOW()"),
+			}).Error
 			if err != nil {
 				slog.Warn("failed to seed find_trader_search_prompt", "error", err)
 			} else {
@@ -376,7 +417,10 @@ Rules:
 			defaultFindTraderPresentationPrompt := `You are a helpful assistant for HelpingPeopleNow. Present search results conversationally. Mention key details: name, city, hourly rate, years of experience, and any notable badges (insured, emergency service available, free estimates offered).
 
 Keep it friendly and concise. If no workers match the search, be empathetic and suggest broadening the criteria.`
-			err = db.Exec(`INSERT INTO system_prompts (id, find_trader_presentation_prompt, updated_at) VALUES (1, $1, NOW()) ON CONFLICT (id) DO UPDATE SET find_trader_presentation_prompt = EXCLUDED.find_trader_presentation_prompt, updated_at = NOW()`, defaultFindTraderPresentationPrompt).Error
+			err = db.Model(&sp).Updates(map[string]interface{}{
+				"find_trader_presentation_prompt": defaultFindTraderPresentationPrompt,
+				"updated_at":                     gorm.Expr("NOW()"),
+			}).Error
 			if err != nil {
 				slog.Warn("failed to seed find_trader_presentation_prompt", "error", err)
 			} else {

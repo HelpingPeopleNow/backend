@@ -5,8 +5,8 @@ import "time"
 // WorkerProfile holds all professional details for a worker user.
 // One-to-one with user.id (UserId is the FK).
 type WorkerProfile struct {
-	ID               uint      `gorm:"primaryKey" json:"id"`
-	UserID           string    `gorm:"uniqueIndex;not null" json:"user_id"`
+	ID               string    `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+	UserID           string    `gorm:"type:text;uniqueIndex;not null" json:"user_id"`
 	Profession       string    `json:"profession"`
 	BusinessName     string    `json:"business_name"`
 	Bio              string    `json:"bio"`
@@ -30,7 +30,7 @@ type WorkerProfile struct {
 
 // WorkerProfileDTO is the JSON-facing shape returned to the frontend.
 type WorkerProfileDTO struct {
-	ID               uint      `json:"id"`
+	ID               string    `json:"id"`
 	UserID           string    `json:"user_id"`
 	Profession       string    `json:"profession"`
 	BusinessName     string    `json:"business_name"`

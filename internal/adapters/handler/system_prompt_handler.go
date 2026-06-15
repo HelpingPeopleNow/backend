@@ -101,9 +101,9 @@ func (h *SystemPromptHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 func (h *SystemPromptHandler) get(w http.ResponseWriter) {
 	var sp core.SystemPrompt
-	err := h.db.First(&sp, 1).Error
+	err := h.db.First(&sp).Error
 	if err != nil {
-		slog.Warn("system-prompt: row 1 not found, returning defaults", "error", err)
+		slog.Warn("system-prompt: row not found, returning defaults", "error", err)
 		json.NewEncoder(w).Encode(systemPromptsDTO{})
 		return
 	}
@@ -139,20 +139,32 @@ func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col
 	}
 
 	slog.Info("system-prompt: updating", "col", columnName, "content_len", len(req.Content))
-	err := h.db.Exec(
-		`INSERT INTO system_prompts (id, `+columnName+`, updated_at)
-		 VALUES (1, $1, NOW())
-		 ON CONFLICT (id) DO UPDATE SET `+columnName+` = EXCLUDED.`+columnName+`, updated_at = NOW()`,
-		req.Content,
-	).Error
-	if err != nil {
+
+	// Upsert the singleton row using GORM
+	var sp core.SystemPrompt
+	err := h.db.First(&sp).Error
+	if err == gorm.ErrRecordNotFound {
+		sp = core.SystemPrompt{}
+		if err := h.db.Create(&sp).Error; err != nil {
+			slog.Error("system-prompt: create failed", "error", err)
+			http.Error(w, `{"error":"create failed: `+err.Error()+`"}`, http.StatusInternalServerError)
+			return
+		}
+	} else if err != nil {
+		slog.Error("system-prompt: query failed", "error", err)
+		http.Error(w, `{"error":"query failed: `+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Update the specific column
+ updates := map[string]interface{}{columnName: req.Content, "updated_at": gorm.Expr("NOW()")}
+	if err := h.db.Model(&sp).Updates(updates).Error; err != nil {
 		slog.Error("system-prompt: update failed", "error", err)
 		http.Error(w, `{"error":"update failed: `+err.Error()+`"}`, http.StatusInternalServerError)
 		return
 	}
 
-	var sp core.SystemPrompt
-	h.db.First(&sp, 1)
+	h.db.First(&sp)
 	slog.Info("system-prompt: updated", "col", columnName)
 
 	// Refresh the appropriate backend cache

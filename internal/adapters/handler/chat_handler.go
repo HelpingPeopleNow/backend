@@ -54,7 +54,7 @@ type chatResponse struct {
 }
 
 type findTraderWorkerCard struct {
-	ID               uint     `json:"id"`
+	ID               string   `json:"id"`
 	Profession       string   `json:"profession"`
 	BusinessName     string   `json:"business_name"`
 	Bio              string   `json:"bio"`
@@ -88,13 +88,7 @@ func dialHelper(addr string) (*grpc.ClientConn, pb.HelperServiceClient) {
 
 func NewChatHandler(db *gorm.DB) *ChatHandler {
 	helperAddr := os.Getenv("HELPER_GRPC_ADDR")
-	if helperAddr == "" {
-		helperAddr = "helpingpeoplenow-helper:50051"
-	}
 	authURL := os.Getenv("AUTH_SERVICE_URL")
-	if authURL == "" {
-		authURL = "http://auth:8083"
-	}
 	conn, client := dialHelper(helperAddr)
 	return &ChatHandler{conn: conn, client: client, authURL: authURL, db: db}
 }
@@ -104,9 +98,6 @@ func (h *ChatHandler) ensureClient() error {
 		return nil
 	}
 	helperAddr := os.Getenv("HELPER_GRPC_ADDR")
-	if helperAddr == "" {
-		helperAddr = "helpingpeoplenow-helper:50051"
-	}
 	conn, client := dialHelper(helperAddr)
 	h.conn = conn
 	h.client = client
