@@ -6,15 +6,13 @@ import (
 )
 
 const (
-	canonicalSessionCookieName    = "better-auth.session_token"
-	secureSessionCookieName       = "__Secure-better-auth.session_token"
-	legacySessionCookieName        = "better-auth-session"
+	canonicalSessionCookieName = "better-auth.session_token"
+	secureSessionCookieName    = "__Secure-better-auth.session_token"
 )
 
 var sessionCookieNames = []string{
 	secureSessionCookieName,
 	canonicalSessionCookieName,
-	legacySessionCookieName,
 }
 
 func sessionCookie(r *http.Request) (*http.Cookie, bool) {

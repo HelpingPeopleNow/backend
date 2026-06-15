@@ -45,6 +45,18 @@ func Connect() (*gorm.DB, error) {
 	// Ensure find_trader_presentation_prompt column exists (for existing DBs that pre-date this column)
 	db.Exec(`ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS find_trader_presentation_prompt TEXT NOT NULL DEFAULT ''`)
 
+	// Migrate system_prompts id from uuid to integer singleton (id=1)
+	db.Exec(`DO $$ BEGIN
+		IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='system_prompts' AND column_name='id' AND data_type='uuid') THEN
+			ALTER TABLE system_prompts ADD COLUMN id_new integer DEFAULT 1;
+			UPDATE system_prompts SET id_new = 1;
+			ALTER TABLE system_prompts DROP CONSTRAINT IF EXISTS system_prompts_pkey;
+			ALTER TABLE system_prompts DROP COLUMN id;
+			ALTER TABLE system_prompts RENAME COLUMN id_new TO id;
+			ALTER TABLE system_prompts ADD PRIMARY KEY (id);
+		END IF;
+	END $$;`)
+
 	// Drop the old messages JSONB column (moved to separate messages table)
 	db.Exec(`ALTER TABLE conversations DROP COLUMN IF EXISTS messages;`)
 	// Drop the old title column (unused)

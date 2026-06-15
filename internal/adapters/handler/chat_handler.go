@@ -809,8 +809,7 @@ func (h *ChatHandler) searchWorkers(profession, city string, emergency, freeEsti
 	}
 
 	if city != "" {
-		escapedCity := strings.ReplaceAll(city, "'", "''")
-		query = query.Order(fmt.Sprintf("CASE WHEN LOWER(city) = LOWER('%s') THEN 0 ELSE 1 END, created_at DESC", escapedCity))
+		query = query.Order(gorm.Expr("CASE WHEN LOWER(city) = LOWER(?) THEN 0 ELSE 1 END, created_at DESC", city))
 	} else {
 		query = query.Order("created_at DESC")
 	}

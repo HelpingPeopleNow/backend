@@ -101,12 +101,7 @@ func (h *SystemPromptHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 func (h *SystemPromptHandler) get(w http.ResponseWriter) {
 	var sp core.SystemPrompt
-	err := h.db.First(&sp).Error
-	if err != nil {
-		slog.Warn("system-prompt: row not found, returning defaults", "error", err)
-		json.NewEncoder(w).Encode(systemPromptsDTO{})
-		return
-	}
+	h.db.FirstOrCreate(&sp)
 	slog.Info("system-prompt: loaded", "worker_profile_prompt_len", len(sp.WorkerProfilePrompt))
 	json.NewEncoder(w).Encode(toSystemDTO(&sp))
 }
@@ -140,21 +135,9 @@ func (h *SystemPromptHandler) update(w http.ResponseWriter, r *http.Request, col
 
 	slog.Info("system-prompt: updating", "col", columnName, "content_len", len(req.Content))
 
-	// Upsert the singleton row using GORM
+	// Ensure the singleton row exists, then update
 	var sp core.SystemPrompt
-	err := h.db.First(&sp).Error
-	if err == gorm.ErrRecordNotFound {
-		sp = core.SystemPrompt{}
-		if err := h.db.Create(&sp).Error; err != nil {
-			slog.Error("system-prompt: create failed", "error", err)
-			http.Error(w, `{"error":"create failed: `+err.Error()+`"}`, http.StatusInternalServerError)
-			return
-		}
-	} else if err != nil {
-		slog.Error("system-prompt: query failed", "error", err)
-		http.Error(w, `{"error":"query failed: `+err.Error()+`"}`, http.StatusInternalServerError)
-		return
-	}
+	h.db.FirstOrCreate(&sp)
 
 	// Update the specific column
  updates := map[string]interface{}{columnName: req.Content, "updated_at": gorm.Expr("NOW()")}

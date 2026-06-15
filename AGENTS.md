@@ -13,9 +13,8 @@ No tests, no lint/typecheck config, no CI.
 
 ## Architecture
 
-- **No middleware auth** — the `authMiddleware` in `main.go:38` is dead code (never wired). Each handler does its own session validation.
+- **Session cookie names** — each handler checks `__Secure-better-auth.session_token` first, then falls back to `better-auth.session_token`. The legacy `better-auth-session` cookie name has been removed.
 - **SystemPromptHandler has no auth** — any authenticated session can read/write system prompts.
-- **Two incompatible cookie names** — hand-coded DB lookups use `better-auth.session_token` (the real one); the dead `authMiddleware` uses `better-auth-session`.
 - **No service/repository layer** — handlers inject `*gorm.DB` and `*grpc.ClientConn` directly.
 - **Worker profile arrays** (certifications, languages, social_links) stored as JSON strings in DB, marshalled/unmarshalled at handler boundaries (`worker_handler.go:119-157`).
 - **Client profile fields**: `FullName`, `Phone`, `City`, `Address`, `Bio`, `PreferredContact`, `PropertyType`, `Notes` — all strings.
@@ -38,12 +37,12 @@ No tests, no lint/typecheck config, no CI.
 
 ## Gotchas
 
-- `authMiddleware` func in `main.go` is **unused** — do not try to wire it or reference it in middleware chains.
+- `authMiddleware` was removed — each handler does its own session validation via `sessionCookie()` + `rawSessionToken()`.
 - `extractUserIDFromRequest` (`worker_handler.go:177`) does direct DB lookup for session.
 - gRPC client uses `insecure.NewCredentials()` with `grpc.WithBlock()` at startup; failure is non-fatal and `ensureClient()` re-dials on each request if nil.
 - Startup cache priming quirk: `NewChatHandler` is called first, then system prompt loaded into it, then a **second** `NewSystemPromptHandler` with `onUpdate` callbacks replaces the first one (`main.go:143-171`).
 - Rate limit detection: gRPC error containing `"429"` or `"rate limit"` returns friendly JSON instead of HTTP error.
-- CORS is wide open (`Access-Control-Allow-Origin: *`).
+- CORS reflects the request `Origin` header with `Access-Control-Allow-Credentials: true`. Safe because `Origin` is set by the browser and cannot be spoofed cross-origin. When same-origin (no `Origin` header), no CORS headers are set at all.
 - PUT endpoints for worker/client profiles were **removed** — profiles are now saved automatically by the chat handlers. Only DELETE (reset) endpoints remain.
 - `user.role` column exists in DB but is no longer written by the backend.
 - `helper_prompt` column exists in `system_prompts` table but is unmapped by GORM.

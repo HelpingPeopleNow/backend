@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -14,82 +13,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// contextKey is used for storing values in request context to avoid collisions.
-type contextKey string
 
-const sessionKey contextKey = "session"
-
-// GetSession retrieves the session info stored in the request context by authMiddleware.
-// Returns nil if no session info is present.
-func GetSession(ctx context.Context) map[string]interface{} {
-	v := ctx.Value(sessionKey)
-	if v == nil {
-		return nil
-	}
-	session, ok := v.(map[string]interface{})
-	if !ok {
-		return nil
-	}
-	return session
-}
-
-// authMiddleware validates the better-auth-session cookie via the auth service.
-// It skips validation for public endpoints (GET /health, GET /api/v1/hello)
-// and stores session/user info in the request context on success.
-func authMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Public endpoints — skip session validation
-		if r.Method == http.MethodGet && (r.URL.Path == "/health" || r.URL.Path == "/api/v1/hello") {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		cookie, err := r.Cookie("better-auth-session")
-		if err != nil {
-			slog.Warn("auth: missing session cookie", "path", r.URL.Path)
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-			return
-		}
-
-		// Build request to auth service, forwarding the session cookie
-		authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, os.Getenv("AUTH_SERVICE_URL")+"/api/auth/get-session", nil)
-		if err != nil {
-			slog.Error("auth: failed to create request", "error", err)
-			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
-			return
-		}
-		authReq.AddCookie(cookie)
-
-		client := &http.Client{Timeout: 5 * time.Second}
-		authResp, err := client.Do(authReq)
-		if err != nil {
-			slog.Error("auth: session validation request failed", "error", err)
-			http.Error(w, `{"error":"auth service unavailable"}`, http.StatusServiceUnavailable)
-			return
-		}
-		defer authResp.Body.Close()
-
-		if authResp.StatusCode != http.StatusOK {
-			slog.Warn("auth: invalid session", "status", authResp.StatusCode, "path", r.URL.Path)
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-			return
-		}
-
-		// Parse session info from the auth service response
-		var sessionInfo map[string]interface{}
-		if err := json.NewDecoder(authResp.Body).Decode(&sessionInfo); err != nil {
-			slog.Error("auth: failed to decode session response", "error", err)
-			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
-			return
-		}
-
-		slog.Info("auth: session validated", "path", r.URL.Path)
-
-		// Store session info in request context and continue
-		ctx := context.WithValue(r.Context(), sessionKey, sessionInfo)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
 
 // adminMiddleware validates the session via the auth service and checks is_admin.
 func adminMiddleware(next http.Handler) http.Handler {
@@ -99,12 +23,9 @@ func adminMiddleware(next http.Handler) http.Handler {
 		if err != nil || cookie.Value == "" {
 			cookie, err = r.Cookie("better-auth.session_token")
 			if err != nil || cookie.Value == "" {
-				cookie, err = r.Cookie("better-auth-session")
-				if err != nil || cookie.Value == "" {
-					slog.Warn("admin: missing session cookie", "path", r.URL.Path)
-					http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-					return
-				}
+				slog.Warn("admin: missing session cookie", "path", r.URL.Path)
+				http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+				return
 			}
 		}
 
@@ -180,7 +101,11 @@ func loggingMiddleware(next http.Handler) http.Handler {
 
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if origin := r.Header.Get("Origin"); origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Vary", "Origin")
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		if r.Method == http.MethodOptions {
@@ -248,11 +173,7 @@ func main() {
 	adminHandler := handler.NewAdminHandler(db)
 	// Load the system prompt from DB into the chat handler's cache
 	var sp core.SystemPrompt
-	if err := db.First(&sp).Error; err != nil {
-		slog.Info("system_prompt: not found, creating empty row")
-		sp = core.SystemPrompt{}
-		db.Create(&sp)
-	}
+	db.FirstOrCreate(&sp)
 	{
 		if sp.LLMProvider != "" {
 			chatHandler.SetLLMProvider(sp.LLMProvider)
@@ -456,12 +377,19 @@ Keep it friendly and concise. If no workers match the search, be empathetic and 
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", newHealthHandler(db))
-	mux.Handle("/api/v1/system-prompts", adminMiddleware(sysPromptHandler))
-	mux.Handle("/api/v1/system-prompts/", adminMiddleware(sysPromptHandler))
-	mux.HandleFunc("/api/v1/worker/chat", chatHandler.HandleWorkerChat)
+	sysPromptsRouter := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			adminMiddleware(sysPromptHandler).ServeHTTP(w, r)
+		} else {
+			sysPromptHandler.ServeHTTP(w, r)
+		}
+	})
+	mux.Handle("/api/v1/system-prompts", sysPromptsRouter)
+	mux.Handle("/api/v1/system-prompts/", sysPromptsRouter)
+	mux.Handle("/api/v1/worker/chat", http.HandlerFunc(chatHandler.HandleWorkerChat))
 	mux.Handle("/api/v1/worker/profile", workerHandler)
-	mux.HandleFunc("/api/v1/client/chat", chatHandler.HandleClientChat)
-	mux.HandleFunc("/api/v1/client/find-chat", chatHandler.HandleFindTradersChat)
+	mux.Handle("/api/v1/client/chat", http.HandlerFunc(chatHandler.HandleClientChat))
+	mux.Handle("/api/v1/client/find-chat", http.HandlerFunc(chatHandler.HandleFindTradersChat))
 	mux.Handle("/api/v1/client/profile", clientHandler)
 	mux.Handle("/api/v1/conversations", convHandler)
 	mux.Handle("/api/v1/conversations/", convHandler)
