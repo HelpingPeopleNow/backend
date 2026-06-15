@@ -43,6 +43,26 @@ func NewSystemPromptHandler(db *gorm.DB, onUpdate ...func(string)) *SystemPrompt
 	return h
 }
 
+func (h *SystemPromptHandler) SetOnProviderUpdate(fn func(string)) {
+	h.onProviderUpdate = fn
+}
+
+func (h *SystemPromptHandler) SetOnWorkerProfileUpdate(fn func(string)) {
+	h.onWorkerProfileUpd = fn
+}
+
+func (h *SystemPromptHandler) SetOnClientProfileUpdate(fn func(string)) {
+	h.onClientProfileUpd = fn
+}
+
+func (h *SystemPromptHandler) SetOnFindTraderSearchUpdate(fn func(string)) {
+	h.onFindTraderSearchUpd = fn
+}
+
+func (h *SystemPromptHandler) SetOnFindTraderPresentationUpdate(fn func(string)) {
+	h.onFindTraderPresentationUpd = fn
+}
+
 type systemPromptsDTO struct {
 	WorkerProfilePrompt         string `json:"worker_profile_prompt"`
 	ClientProfilePrompt         string `json:"client_profile_prompt"`

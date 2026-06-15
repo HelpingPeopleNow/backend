@@ -100,27 +100,24 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AdminHandler) listRows(w http.ResponseWriter, r *http.Request, meta entityMeta) {
-	cols := strings.Join(meta.Columns, ", ")
-	query := fmt.Sprintf("SELECT %s FROM %s", cols, meta.Table)
+	q := h.db.Table(meta.Table).Select(strings.Join(meta.Columns, ", "))
 
-	// Users table uses createdAt, others use id for ordering
 	if meta.Table == "\"user\"" {
-		query += " ORDER BY \"createdAt\" DESC"
+		q = q.Order("\"createdAt\" DESC")
 	} else {
-		query += " ORDER BY id DESC"
+		q = q.Order("id DESC")
 	}
 
-	// Limit
 	limitStr := r.URL.Query().Get("limit")
 	if limitStr != "" {
 		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 500 {
-			query += fmt.Sprintf(" LIMIT %d", l)
+			q = q.Limit(l)
 		}
 	} else {
-		query += " LIMIT 100"
+		q = q.Limit(100)
 	}
 
-	rows, err := h.db.Raw(query).Rows()
+	rows, err := q.Rows()
 	if err != nil {
 		slog.Error("admin: list query failed", "entity", meta.Table, "error", err)
 		http.Error(w, fmt.Sprintf(`{"error":"query failed: %s"}`, err.Error()), http.StatusInternalServerError)
@@ -142,7 +139,6 @@ func (h *AdminHandler) listRows(w http.ResponseWriter, r *http.Request, meta ent
 		row := make(map[string]interface{})
 		for i, col := range meta.Columns {
 			v := vals[i]
-			// Convert []byte to string for JSON
 			if b, ok := v.([]byte); ok {
 				row[cleanCol(col)] = string(b)
 			} else {
@@ -156,16 +152,13 @@ func (h *AdminHandler) listRows(w http.ResponseWriter, r *http.Request, meta ent
 }
 
 func (h *AdminHandler) getRow(w http.ResponseWriter, meta entityMeta, id string) {
-	cols := strings.Join(meta.Columns, ", ")
-	query := fmt.Sprintf("SELECT %s FROM %s WHERE id = $1", cols, meta.Table)
-
 	row := make(map[string]interface{})
 	vals := make([]interface{}, len(meta.Columns))
 	ptrs := make([]interface{}, len(meta.Columns))
 	for i := range vals {
 		ptrs[i] = &vals[i]
 	}
-	if err := h.db.Raw(query, id).Row().Scan(ptrs...); err != nil {
+	if err := h.db.Table(meta.Table).Select(strings.Join(meta.Columns, ", ")).Where("id = ?", id).Row().Scan(ptrs...); err != nil {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
@@ -194,47 +187,35 @@ func (h *AdminHandler) updateRow(w http.ResponseWriter, r *http.Request, meta en
 		return
 	}
 
-	// Filter to only allowed columns
-	allowed := make(map[string]bool)
+	// Map clean column names to original (quoted) names for whitelist check
+	allowed := make(map[string]string)
 	for _, col := range meta.Columns {
-		allowed[col] = true
+		allowed[cleanCol(col)] = col
 	}
 
-	setClauses := []string{}
-	args := []interface{}{}
-	argIdx := 1
+	filtered := make(map[string]interface{})
 	for col, val := range updates {
-		if !allowed[col] || col == "id" {
+		originalCol, ok := allowed[col]
+		if !ok || col == "id" {
 			continue
 		}
-		setClauses = append(setClauses, fmt.Sprintf("%s = $%d", col, argIdx))
-		args = append(args, val)
-		argIdx++
+		filtered[cleanCol(originalCol)] = val
 	}
 
-	if len(setClauses) == 0 {
+	if len(filtered) == 0 {
 		http.Error(w, `{"error":"no valid fields to update"}`, http.StatusBadRequest)
 		return
 	}
 
-	// Add updated_at if column exists
-	hasUpdatedAt := false
+	// Set updated_at if column exists
 	for _, col := range meta.Columns {
 		if col == "updated_at" || col == "updatedAt" {
-			hasUpdatedAt = true
+			filtered["updated_at"] = gorm.Expr("NOW()")
 			break
 		}
 	}
-	if hasUpdatedAt {
-		setClauses = append(setClauses, fmt.Sprintf("updated_at = NOW()"))
-	}
 
-	query := fmt.Sprintf("UPDATE %s SET %s WHERE id = $%d", meta.Table, strings.Join(setClauses, ", "), argIdx)
-
-	// All IDs are text/UUID
-	args = append(args, id)
-
-	result := h.db.Exec(query, args...)
+	result := h.db.Table(meta.Table).Where("id = ?", id).Updates(filtered)
 	if result.Error != nil {
 		slog.Error("admin: update failed", "entity", meta.Table, "id", id, "error", result.Error)
 		http.Error(w, fmt.Sprintf(`{"error":"update failed: %s"}`, result.Error.Error()), http.StatusInternalServerError)
@@ -250,9 +231,7 @@ func (h *AdminHandler) updateRow(w http.ResponseWriter, r *http.Request, meta en
 }
 
 func (h *AdminHandler) deleteRow(w http.ResponseWriter, meta entityMeta, id string) {
-	query := fmt.Sprintf("DELETE FROM %s WHERE id = $1", meta.Table)
-
-	result := h.db.Exec(query, id)
+	result := h.db.Exec("DELETE FROM ? WHERE id = ?", gorm.Expr(meta.Table), id)
 
 	if result.Error != nil {
 		slog.Error("admin: delete failed", "entity", meta.Table, "id", id, "error", result.Error)

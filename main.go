@@ -166,11 +166,15 @@ func main() {
 	}
 	slog.Info("auto-migrate complete")
 
+	// Create SysPromptHandler first (no callbacks yet — no handlers to notify)
+	sysPromptHandler := handler.NewSystemPromptHandler(db)
+
 	chatHandler := handler.NewChatHandler(db)
 	workerHandler := handler.NewWorkerHandler(db)
 	clientHandler := handler.NewClientHandler(db)
 	convHandler := handler.NewConversationHandler(db)
 	adminHandler := handler.NewAdminHandler(db)
+
 	// Load the system prompt from DB into the chat handler's cache
 	var sp core.SystemPrompt
 	db.FirstOrCreate(&sp)
@@ -351,29 +355,29 @@ Keep it friendly and concise. If no workers match the search, be empathetic and 
 		}
 	}
 
-	// Wire the refresh callbacks: when admin updates, refresh the caches
-	sysPromptHandler := handler.NewSystemPromptHandler(db,
-		func(provider string) { // onProviderUpdate: llm provider
-			chatHandler.SetLLMProvider(provider)
-			slog.Info("llm_provider cache refreshed via admin update", "provider", provider)
-		},
-		func(prompt string) { // onWorkerProfileUpd: worker profile prompt
-			chatHandler.SetWorkerProfilePrompt(prompt)
-			slog.Info("worker_profile_prompt cache refreshed via admin update")
-		},
-		func(prompt string) { // onClientProfileUpd: client profile prompt
-			chatHandler.SetClientProfilePrompt(prompt)
-			slog.Info("client_profile_prompt cache refreshed via admin update")
-		},
-		func(prompt string) { // onFindTraderSearchUpd: find-trader search prompt
-			chatHandler.SetFindTraderSearchPrompt(prompt)
-			slog.Info("find_trader_search_prompt cache refreshed via admin update")
-		},
-		func(prompt string) { // onFindTraderPresentationUpd: find-trader presentation prompt
-			chatHandler.SetFindTraderPresentationPrompt(prompt)
-			slog.Info("find_trader_presentation_prompt cache refreshed via admin update")
-		},
-	)
+	// Wire the refresh callbacks: when admin updates, refresh the caches.
+	// sysPromptHandler was created before chatHandler, so callbacks are set here
+	// to ensure they close over the correct handler instance.
+	sysPromptHandler.SetOnProviderUpdate(func(provider string) {
+		chatHandler.SetLLMProvider(provider)
+		slog.Info("llm_provider cache refreshed via admin update", "provider", provider)
+	})
+	sysPromptHandler.SetOnWorkerProfileUpdate(func(prompt string) {
+		chatHandler.SetWorkerProfilePrompt(prompt)
+		slog.Info("worker_profile_prompt cache refreshed via admin update")
+	})
+	sysPromptHandler.SetOnClientProfileUpdate(func(prompt string) {
+		chatHandler.SetClientProfilePrompt(prompt)
+		slog.Info("client_profile_prompt cache refreshed via admin update")
+	})
+	sysPromptHandler.SetOnFindTraderSearchUpdate(func(prompt string) {
+		chatHandler.SetFindTraderSearchPrompt(prompt)
+		slog.Info("find_trader_search_prompt cache refreshed via admin update")
+	})
+	sysPromptHandler.SetOnFindTraderPresentationUpdate(func(prompt string) {
+		chatHandler.SetFindTraderPresentationPrompt(prompt)
+		slog.Info("find_trader_presentation_prompt cache refreshed via admin update")
+	})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", newHealthHandler(db))
