@@ -836,7 +836,12 @@ func parseSearchFromAnswer(answer string) (string, json.RawMessage) {
 	if closeIdx < 0 {
 		return answer, nil
 	}
-	raw := afterOpen[:closeIdx]
+	raw := strings.TrimSpace(afterOpen[:closeIdx])
+	// Handle empty [SEARCH][/SEARCH] — strip the tags, return no search params
+	if raw == "" {
+		cleaned := strings.TrimSpace(answer[:lastOpen] + afterOpen[closeIdx+len(closeTag):])
+		return cleaned, nil
+	}
 	var dummy interface{}
 	if err := json.Unmarshal([]byte(raw), &dummy); err != nil {
 		slog.Warn("chat: [SEARCH] content is not valid JSON", "raw", raw[:min(len(raw), 100)], "error", err)
@@ -859,7 +864,12 @@ func parseFieldsFromAnswer(answer string) (string, json.RawMessage) {
 	if closeIdx < 0 {
 		return answer, nil
 	}
-	raw := afterOpen[:closeIdx]
+	raw := strings.TrimSpace(afterOpen[:closeIdx])
+	// Handle empty [FIELDS][/FIELDS] — strip the tags, return no fields
+	if raw == "" {
+		cleaned := strings.TrimSpace(answer[:lastOpen] + afterOpen[closeIdx+len(closeTag):])
+		return cleaned, nil
+	}
 	var dummy interface{}
 	if err := json.Unmarshal([]byte(raw), &dummy); err != nil {
 		slog.Warn("chat: [FIELDS] content is not valid JSON", "raw", raw[:min(len(raw), 100)], "error", err)
