@@ -400,7 +400,27 @@ func (h *ChatHandler) handleSearch(ctx context.Context, req chatRequest, history
 		return chatResponse{}, err
 	}
 
-	_, searchParams := parseSearchFromAnswer(resp1.Answer)
+	pass1Clean, searchParams := parseSearchFromAnswer(resp1.Answer)
+
+	// If the LLM didn't produce search params, it treated this as a greeting
+	// or non-search message — return the conversational response directly
+	// instead of running Pass 2 which would incorrectly say "no matches found".
+	if searchParams == nil {
+		slog.Info("chat: search pass 1 — no search params, returning conversational response", "answer_len", len(pass1Clean))
+		respConvID := req.ConversationID
+		if userID != "" {
+			newID, saveErr := h.saveConversation(userID, req.ConversationID, "client-find", req.Message, pass1Clean, nil, nil)
+			if saveErr != nil {
+				slog.Warn("chat: failed to save search conversation", "error", saveErr)
+			} else {
+				respConvID = newID
+			}
+		}
+		return chatResponse{
+			Answer:         pass1Clean,
+			ConversationID: respConvID,
+		}, nil
+	}
 
 	var workerCards []findTraderWorkerCard
 	if searchParams != nil {
