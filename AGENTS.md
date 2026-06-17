@@ -14,7 +14,7 @@ No tests, no lint/typecheck config, no CI.
 ## Architecture
 
 - **Session cookie names** — each handler checks `__Secure-better-auth.session_token` first, then falls back to `better-auth.session_token`. The legacy `better-auth-session` cookie name has been removed.
-- **SystemPromptHandler has no auth** — any authenticated session can read/write system prompts.
+- **SystemPromptHandler is admin-protected** — both GET and PUT require admin via `adminMiddleware`.
 - **No service/repository layer** — handlers inject `*gorm.DB` and `*grpc.ClientConn` directly.
 - **Worker profile arrays** (certifications, languages, social_links) stored as JSON strings in DB, marshalled/unmarshalled at handler boundaries (`worker_handler.go:119-157`).
 - **Client profile fields**: `FullName`, `Phone`, `City`, `Address`, `Bio`, `PreferredContact`, `PropertyType`, `Notes` — all strings.
