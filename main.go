@@ -381,15 +381,8 @@ Keep it friendly and concise. If no workers match the search, be empathetic and 
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", newHealthHandler(db))
-	sysPromptsRouter := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPut {
-			adminMiddleware(sysPromptHandler).ServeHTTP(w, r)
-		} else {
-			sysPromptHandler.ServeHTTP(w, r)
-		}
-	})
-	mux.Handle("/api/v1/system-prompts", sysPromptsRouter)
-	mux.Handle("/api/v1/system-prompts/", sysPromptsRouter)
+	mux.Handle("/api/v1/system-prompts", adminMiddleware(sysPromptHandler))
+	mux.Handle("/api/v1/system-prompts/", adminMiddleware(sysPromptHandler))
 	mux.Handle("/api/v1/worker/chat", http.HandlerFunc(chatHandler.HandleWorkerChat))
 	mux.Handle("/api/v1/worker/profile", workerHandler)
 	mux.Handle("/api/v1/client/chat", http.HandlerFunc(chatHandler.HandleClientChat))
