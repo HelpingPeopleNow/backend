@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
@@ -116,7 +117,7 @@ func toWorkerDTO(wp *core.WorkerProfile) *core.WorkerProfileDTO {
 // a direct DB query using the raw session token.
 func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
 	// Tries via auth service first
-	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://auth:8083/api/auth/user-id", nil)
+	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, os.Getenv("AUTH_SERVICE_URL")+"/api/auth/user-id", nil)
 	if err == nil {
 		addSessionCookie(authReq, r)
 		client := &http.Client{Timeout: 3 * time.Second}

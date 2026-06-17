@@ -931,7 +931,7 @@ func (h *ChatHandler) resolveUserID(r *http.Request) string {
 }
 
 func (h *ChatHandler) resolveUserIDViaAuth(r *http.Request) string {
-	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "http://auth:8083/api/auth/user-id", nil)
+	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, h.authURL+"/api/auth/user-id", nil)
 	if err != nil {
 		slog.Warn("resolveUserIDViaAuth: failed to create request", "error", err)
 		return ""
