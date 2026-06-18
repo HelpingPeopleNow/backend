@@ -65,12 +65,14 @@ func (h *ConversationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
+		IncrConversation("get")
 		h.getOne(w, r, convID)
 		return
 	}
 
 	switch r.Method {
 	case http.MethodGet:
+		IncrConversation("list")
 		h.list(w, r)
 	default:
 		slog.Warn("conv-handler: invalid method", "method", r.Method)

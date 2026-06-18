@@ -222,6 +222,9 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("chat request", "mode", mode, "msg_len", len(req.Message), "history_len", len(req.History), "conv_id", req.ConversationID)
 
+	// Record Prometheus metrics
+	IncrChatRequests(mode)
+
 	if err := h.ensureClient(); err != nil {
 		slog.Error("chat: helper unreachable")
 		http.Error(w, `{"error":"helper service unreachable"}`, http.StatusServiceUnavailable)
@@ -304,8 +307,11 @@ func (h *ChatHandler) handleIntake(ctx context.Context, mode string, req chatReq
 	elapsed := time.Since(start)
 	if err != nil {
 		slog.Error("chat: intake gRPC failed", "mode", mode, "error", err, "duration_ms", elapsed.Milliseconds())
+		ObserveChatLLMDuration(prov, mode, elapsed.Seconds())
+		IncrChatLLMErrors(prov, "grpc_error")
 		return chatResponse{}, err
 	}
+	ObserveChatLLMDuration(prov, mode, elapsed.Seconds())
 
 	answer, fields := parseFieldsFromAnswer(resp.Answer)
 	if fields != nil {
@@ -396,8 +402,11 @@ func (h *ChatHandler) handleSearch(ctx context.Context, req chatRequest, history
 	elapsed1 := time.Since(start1)
 	if err != nil {
 		slog.Error("chat: search pass 1 gRPC failed", "error", err, "duration_ms", elapsed1.Milliseconds())
+		ObserveChatLLMDuration(prov, "search", elapsed1.Seconds())
+		IncrChatLLMErrors(prov, "grpc_error")
 		return chatResponse{}, err
 	}
+	ObserveChatLLMDuration(prov, "search", elapsed1.Seconds())
 
 	pass1Clean, searchParams := parseSearchFromAnswer(resp1.Answer)
 
@@ -527,8 +536,11 @@ func (h *ChatHandler) handleSearch(ctx context.Context, req chatRequest, history
 	elapsed2 := time.Since(start2)
 	if err != nil {
 		slog.Error("chat: search pass 2 gRPC failed", "error", err, "duration_ms", elapsed2.Milliseconds())
+		ObserveChatLLMDuration(prov, "search", elapsed2.Seconds())
+		IncrChatLLMErrors(prov, "grpc_error")
 		return chatResponse{}, err
 	}
+	ObserveChatLLMDuration(prov, "search", elapsed2.Seconds())
 
 	finalAnswer := resp2.Answer
 	slog.Info("chat: search complete", "answer_len", len(finalAnswer), "worker_count", len(workerCards), "pass1_ms", elapsed1.Milliseconds(), "pass2_ms", elapsed2.Milliseconds())
@@ -695,12 +707,14 @@ func (h *ChatHandler) upsertWorkerProfile(userID string, fields json.RawMessage)
 			slog.Warn("chat: failed to save worker profile", "error", err)
 		} else {
 			slog.Info("chat: worker profile saved", "user_id", userID, "profession", wp.Profession)
+			IncrProfileSave("worker")
 		}
 	} else {
 		if err := h.db.Create(&wp).Error; err != nil {
 			slog.Warn("chat: failed to create worker profile", "error", err)
 		} else {
 			slog.Info("chat: worker profile created", "user_id", userID, "profession", wp.Profession)
+			IncrProfileSave("worker")
 		}
 	}
 }
@@ -733,12 +747,14 @@ func (h *ChatHandler) upsertClientProfile(userID string, fields json.RawMessage)
 			slog.Warn("chat: failed to save client profile", "error", err)
 		} else {
 			slog.Info("chat: client profile saved", "user_id", userID, "full_name", cp.FullName)
+			IncrProfileSave("client")
 		}
 	} else {
 		if err := h.db.Create(&cp).Error; err != nil {
 			slog.Warn("chat: failed to create client profile", "error", err)
 		} else {
 			slog.Info("chat: client profile created", "user_id", userID, "full_name", cp.FullName)
+			IncrProfileSave("client")
 		}
 	}
 }
@@ -920,9 +936,12 @@ func (h *ChatHandler) resolveUserID(r *http.Request) string {
 		UserID string `gorm:"column:userId"`
 	}
 	var s dbSession
+	start := time.Now()
 	err := h.db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
+	ObserveAuthResolve("db", time.Since(start).Seconds())
 	if err != nil {
 		slog.Warn("resolveUserID: session not found in DB")
+		IncrAuthResolveErrors("db", "not_found")
 		return ""
 	}
 	slog.Info("resolveUserID: found user via DB", "userID", s.UserID)
@@ -930,9 +949,12 @@ func (h *ChatHandler) resolveUserID(r *http.Request) string {
 }
 
 func (h *ChatHandler) resolveUserIDViaAuth(r *http.Request) string {
+	start := time.Now()
 	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, h.authURL+"/api/auth/user-id", nil)
 	if err != nil {
 		slog.Warn("resolveUserIDViaAuth: failed to create request", "error", err)
+		ObserveAuthResolve("auth_service", time.Since(start).Seconds())
+		IncrAuthResolveErrors("auth_service", "request_error")
 		return ""
 	}
 	addSessionCookie(authReq, r)
@@ -940,11 +962,15 @@ func (h *ChatHandler) resolveUserIDViaAuth(r *http.Request) string {
 	authResp, err := client.Do(authReq)
 	if err != nil {
 		slog.Warn("resolveUserIDViaAuth: auth service unreachable", "error", err)
+		ObserveAuthResolve("auth_service", time.Since(start).Seconds())
+		IncrAuthResolveErrors("auth_service", "unreachable")
 		return ""
 	}
 	defer authResp.Body.Close()
 	if authResp.StatusCode != http.StatusOK {
 		slog.Warn("resolveUserIDViaAuth: auth service returned non-OK", "status", authResp.StatusCode)
+		ObserveAuthResolve("auth_service", time.Since(start).Seconds())
+		IncrAuthResolveErrors("auth_service", "non_ok_status")
 		return ""
 	}
 	var result struct {
@@ -952,8 +978,11 @@ func (h *ChatHandler) resolveUserIDViaAuth(r *http.Request) string {
 	}
 	if err := json.NewDecoder(authResp.Body).Decode(&result); err != nil {
 		slog.Warn("resolveUserIDViaAuth: failed to decode response", "error", err)
+		ObserveAuthResolve("auth_service", time.Since(start).Seconds())
+		IncrAuthResolveErrors("auth_service", "decode_error")
 		return ""
 	}
+	ObserveAuthResolve("auth_service", time.Since(start).Seconds())
 	slog.Info("resolveUserIDViaAuth: resolved user", "userID", result.UserID)
 	return result.UserID
 }
@@ -1034,5 +1063,6 @@ func (h *ChatHandler) saveConversation(userID, convID, convType string, reqMsg, 
 	}
 
 	slog.Info("saveConversation: created new", "convID", conv.ID, "type", convType)
+	IncrConversation("create")
 	return conv.ID, nil
 }

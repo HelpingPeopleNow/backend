@@ -121,6 +121,7 @@ func toWorkerDTO(wp *core.WorkerProfile) *core.WorkerProfileDTO {
 // Tries the auth service's user-id endpoint first, then falls back to
 // a direct DB query using the raw session token.
 func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
+	start := time.Now()
 	// Tries via auth service first
 	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, os.Getenv("AUTH_SERVICE_URL")+"/api/auth/user-id", nil)
 	if err != nil {
@@ -138,6 +139,7 @@ func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
 					UserID string `json:"userId"`
 				}
 				if err := json.NewDecoder(authResp.Body).Decode(&result); err == nil && result.UserID != "" {
+					ObserveAuthResolve("auth_service", time.Since(start).Seconds())
 					return result.UserID
 				}
 				slog.Debug("extractUserID: auth response missing userId")
@@ -146,6 +148,7 @@ func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
 			}
 		}
 	}
+	ObserveAuthResolve("auth_service", time.Since(start).Seconds())
 
 	// Fallback: parse the cookie directly and query the session table
 	cookie, ok := sessionCookie(r)
@@ -162,9 +165,12 @@ func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
 		UserID string `gorm:"column:userId"`
 	}
 	var s dbSession
+	dbStart := time.Now()
 	err = db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
+	ObserveAuthResolve("db", time.Since(dbStart).Seconds())
 	if err != nil {
 		slog.Debug("extractUserID: session not found in DB", "error", err)
+		IncrAuthResolveErrors("db", "not_found")
 		return ""
 	}
 	return s.UserID

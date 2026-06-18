@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/HelpingPeopleNow/backend/database"
@@ -106,12 +107,17 @@ func loggingMiddleware(next http.Handler) http.Handler {
 			"user_agent", r.UserAgent(),
 		)
 		next.ServeHTTP(rec, r)
+		duration := time.Since(start)
 		slog.Info("request completed",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rec.status,
-			"duration_ms", time.Since(start).Milliseconds(),
+			"duration_ms", duration.Milliseconds(),
 		)
+		// Record Prometheus metrics
+		statusStr := strconv.Itoa(rec.status)
+		handler.IncrHTTPRequests(r.Method, r.URL.Path, statusStr)
+		handler.ObserveHTTPDuration(r.Method, r.URL.Path, duration.Seconds())
 	})
 }
 
@@ -407,6 +413,7 @@ Keep it friendly and concise. If no workers match the search, be empathetic and 
 	mux.Handle("/api/v1/conversations", convHandler)
 	mux.Handle("/api/v1/conversations/", convHandler)
 	mux.Handle("/api/v1/admin/", adminMiddleware(adminHandler))
+	handler.RegisterMetricsRoutes(mux)
 
 	handler := loggingMiddleware(corsMiddleware(mux))
 

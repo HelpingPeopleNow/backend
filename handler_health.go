@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/HelpingPeopleNow/backend/internal/adapters/handler"
 	"gorm.io/gorm"
 )
 
@@ -79,6 +80,10 @@ func newHealthHandler(db *gorm.DB) http.HandlerFunc {
 			resp.Status = "degraded"
 			slog.Warn("health: system degraded", "postgres", resp.Postgres, "grpc_helper", resp.GRPCHelper)
 		}
+
+		// --- Record Prometheus health gauges ---
+		handler.SetHealthStatus("postgres", resp.Postgres == "ok")
+		handler.SetHealthStatus("grpc_helper", resp.GRPCHelper == "ok")
 
 		statusCode := http.StatusOK
 		if resp.Status == "degraded" {
