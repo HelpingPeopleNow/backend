@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -1036,39 +1035,4 @@ func (h *ChatHandler) saveConversation(userID, convID, convType string, reqMsg, 
 
 	slog.Info("saveConversation: created new", "convID", conv.ID, "type", convType)
 	return conv.ID, nil
-}
-
-// Legacy shim handlers for backward compatibility during migration.
-// These are kept temporarily and will be removed.
-
-func (h *ChatHandler) HandleWorkerChat(w http.ResponseWriter, r *http.Request) {
-	h.serveShim(w, r, "worker_intake")
-}
-
-func (h *ChatHandler) HandleClientChat(w http.ResponseWriter, r *http.Request) {
-	h.serveShim(w, r, "client_intake")
-}
-
-func (h *ChatHandler) HandleFindTradersChat(w http.ResponseWriter, r *http.Request) {
-	h.serveShim(w, r, "search")
-}
-
-func (h *ChatHandler) serveShim(w http.ResponseWriter, r *http.Request, mode string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req chatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
-		return
-	}
-	req.Mode = mode
-
-	body, _ := json.Marshal(req)
-	r.Body = io.NopCloser(strings.NewReader(string(body)))
-	r.ContentLength = int64(len(body))
-
-	h.ServeHTTP(w, r)
 }

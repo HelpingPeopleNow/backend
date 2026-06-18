@@ -20,16 +20,14 @@ No tests, no lint/typecheck config, no CI.
 - **Client profile fields**: `FullName`, `Phone`, `City`, `Address`, `Bio`, `PreferredContact`, `PropertyType`, `Notes` — all strings.
 - **System prompt is a singleton row** (`id=1`) with four columns: `worker_profile_prompt`, `client_profile_prompt`, `find_trader_search_prompt`, `find_trader_presentation_prompt`, `llm_provider`. Upserted via raw SQL.
 - **Map-based profile merge** — `handleIntake()` loads the existing profile from DB, then only overwrite fields present in the `[FIELDS]` block from the LLM response.
-- **Chat is split into dedicated per-role endpoints** (`worker/chat`, `client/chat`, `client/find-chat`).
+- **Chat uses a single unified endpoint** (`/api/v1/chat`) with `mode` in the request body.
 - **Conversations** — `ConversationHandler` lists/fetches saved conversations from the `conversations` table with `messages` sub-table. Used by frontend to resume chat on page reload.
 
 ## Handlers
 
 | Handler | Path | Methods | Purpose |
 |---------|------|---------|---------|
-| `WorkerHandler` | `/api/v1/worker/chat` | POST | Worker chat endpoint (worker_intake) |
-| `ClientHandler` | `/api/v1/client/chat` | POST | Client chat endpoint (client_intake) |
-| `ClientHandler` | `/api/v1/client/find-chat` | POST | Find-chat endpoint (search) |
+| `ChatHandler` | `/api/v1/chat` | POST | Unified chat endpoint (mode in body: worker_intake, client_intake, search) |
 | `WorkerHandler` | `/api/v1/worker/profile` | GET, DELETE | Worker profile read/reset |
 | `ClientHandler` | `/api/v1/client/profile` | GET, DELETE | Client profile read/reset |
 | `SystemPromptHandler` | `/api/v1/system-prompts` | GET, PUT | System prompts + provider CRUD |
