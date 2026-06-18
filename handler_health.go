@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -39,9 +40,11 @@ func newHealthHandler(db *gorm.DB) http.HandlerFunc {
 		if err != nil {
 			resp.Postgres = "down"
 			resp.Details["postgres_err"] = err.Error()
+			slog.Error("health: postgres unavailable", "error", err)
 		} else if err := sqlDB.PingContext(ctx); err != nil {
 			resp.Postgres = "down"
 			resp.Details["postgres_err"] = err.Error()
+			slog.Error("health: postgres ping failed", "error", err)
 		}
 
 		// --- Helper gRPC health check (HTTP probe on :8084) ---
@@ -51,17 +54,20 @@ func newHealthHandler(db *gorm.DB) http.HandlerFunc {
 		if err != nil {
 			resp.GRPCHelper = "down"
 			resp.Details["grpc_helper_err"] = err.Error()
+			slog.Error("health: failed to create helper request", "error", err)
 		} else {
 			hc := &http.Client{Timeout: 3 * time.Second}
 			hresp, err := hc.Do(req)
 			if err != nil {
 				resp.GRPCHelper = "down"
 				resp.Details["grpc_helper_err"] = err.Error()
+				slog.Error("health: helper gRPC unreachable", "error", err)
 			} else {
 				hresp.Body.Close()
 				if hresp.StatusCode != http.StatusOK {
 					resp.GRPCHelper = "down"
 					resp.Details["grpc_helper_err"] = http.StatusText(hresp.StatusCode)
+					slog.Warn("health: helper gRPC degraded", "status", hresp.StatusCode)
 				}
 			}
 		}
@@ -71,6 +77,7 @@ func newHealthHandler(db *gorm.DB) http.HandlerFunc {
 			resp.Status = "ok"
 		} else {
 			resp.Status = "degraded"
+			slog.Warn("health: system degraded", "postgres", resp.Postgres, "grpc_helper", resp.GRPCHelper)
 		}
 
 		statusCode := http.StatusOK

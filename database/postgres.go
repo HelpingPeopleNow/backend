@@ -2,6 +2,7 @@ package database
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
@@ -39,14 +40,20 @@ func Connect() (*gorm.DB, error) {
 	}
 
 	// Ensure client_profile_prompt column exists (for existing DBs that pre-date this column)
-	db.Exec(`ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS client_profile_prompt TEXT NOT NULL DEFAULT ''`)
+	if err := db.Exec(`ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS client_profile_prompt TEXT NOT NULL DEFAULT ''`).Error; err != nil {
+		slog.Warn("migration: failed to add client_profile_prompt column", "error", err)
+	}
 	// Ensure find_trader_search_prompt column exists (for existing DBs that pre-date this column)
-	db.Exec(`ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS find_trader_search_prompt TEXT NOT NULL DEFAULT ''`)
+	if err := db.Exec(`ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS find_trader_search_prompt TEXT NOT NULL DEFAULT ''`).Error; err != nil {
+		slog.Warn("migration: failed to add find_trader_search_prompt column", "error", err)
+	}
 	// Ensure find_trader_presentation_prompt column exists (for existing DBs that pre-date this column)
-	db.Exec(`ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS find_trader_presentation_prompt TEXT NOT NULL DEFAULT ''`)
+	if err := db.Exec(`ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS find_trader_presentation_prompt TEXT NOT NULL DEFAULT ''`).Error; err != nil {
+		slog.Warn("migration: failed to add find_trader_presentation_prompt column", "error", err)
+	}
 
 	// Migrate system_prompts id from uuid to integer singleton (id=1)
-	db.Exec(`DO $$ BEGIN
+	if err := db.Exec(`DO $$ BEGIN
 		IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='system_prompts' AND column_name='id' AND data_type='uuid') THEN
 			ALTER TABLE system_prompts ADD COLUMN id_new integer DEFAULT 1;
 			UPDATE system_prompts SET id_new = 1;
@@ -55,7 +62,9 @@ func Connect() (*gorm.DB, error) {
 			ALTER TABLE system_prompts RENAME COLUMN id_new TO id;
 			ALTER TABLE system_prompts ADD PRIMARY KEY (id);
 		END IF;
-	END $$;`)
+	END $$;`).Error; err != nil {
+		slog.Warn("migration: uuid-to-integer migration failed (may be expected on fresh DB)", "error", err)
+	}
 
 	return db, nil
 }

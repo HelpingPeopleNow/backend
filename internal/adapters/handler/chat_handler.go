@@ -922,7 +922,7 @@ func (h *ChatHandler) resolveUserID(r *http.Request) string {
 	var s dbSession
 	err := h.db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
 	if err != nil {
-		slog.Warn("resolveUserID: session not found in DB", "token_prefix", token[:min(len(token), 15)])
+		slog.Warn("resolveUserID: session not found in DB")
 		return ""
 	}
 	slog.Info("resolveUserID: found user via DB", "userID", s.UserID)

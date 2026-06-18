@@ -100,6 +100,7 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AdminHandler) listRows(w http.ResponseWriter, r *http.Request, meta entityMeta) {
+	slog.Info("admin: list", "entity", meta.Table)
 	q := h.db.Table(meta.Table).Select(strings.Join(meta.Columns, ", "))
 
 	if meta.Table == "\"user\"" {
@@ -148,10 +149,12 @@ func (h *AdminHandler) listRows(w http.ResponseWriter, r *http.Request, meta ent
 		result = append(result, row)
 	}
 
+	slog.Info("admin: list completed", "entity", meta.Table, "count", len(result))
 	json.NewEncoder(w).Encode(result)
 }
 
 func (h *AdminHandler) getRow(w http.ResponseWriter, meta entityMeta, id string) {
+	slog.Info("admin: getRow", "entity", meta.Table, "id", id)
 	row := make(map[string]interface{})
 	vals := make([]interface{}, len(meta.Columns))
 	ptrs := make([]interface{}, len(meta.Columns))
@@ -159,6 +162,7 @@ func (h *AdminHandler) getRow(w http.ResponseWriter, meta entityMeta, id string)
 		ptrs[i] = &vals[i]
 	}
 	if err := h.db.Table(meta.Table).Select(strings.Join(meta.Columns, ", ")).Where("id = ?", id).Row().Scan(ptrs...); err != nil {
+		slog.Warn("admin: row not found", "entity", meta.Table, "id", id)
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
@@ -175,14 +179,17 @@ func (h *AdminHandler) getRow(w http.ResponseWriter, meta entityMeta, id string)
 }
 
 func (h *AdminHandler) updateRow(w http.ResponseWriter, r *http.Request, meta entityMeta, id string) {
+	slog.Info("admin: updateRow", "entity", meta.Table, "id", id)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		slog.Warn("admin: failed to read request body", "entity", meta.Table, "id", id, "error", err)
 		http.Error(w, `{"error":"read body failed"}`, http.StatusBadRequest)
 		return
 	}
 
 	var updates map[string]interface{}
 	if err := json.Unmarshal(body, &updates); err != nil {
+		slog.Warn("admin: invalid JSON in update body", "entity", meta.Table, "id", id, "error", err)
 		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
 		return
 	}
@@ -223,14 +230,17 @@ func (h *AdminHandler) updateRow(w http.ResponseWriter, r *http.Request, meta en
 	}
 
 	if result.RowsAffected == 0 {
+		slog.Warn("admin: update found no matching row", "entity", meta.Table, "id", id)
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 
+	slog.Info("admin: update completed", "entity", meta.Table, "id", id, "rows_affected", result.RowsAffected)
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "rows_affected": result.RowsAffected})
 }
 
 func (h *AdminHandler) deleteRow(w http.ResponseWriter, meta entityMeta, id string) {
+	slog.Info("admin: deleteRow", "entity", meta.Table, "id", id)
 	result := h.db.Exec("DELETE FROM ? WHERE id = ?", gorm.Expr(meta.Table), id)
 
 	if result.Error != nil {
@@ -240,9 +250,11 @@ func (h *AdminHandler) deleteRow(w http.ResponseWriter, meta entityMeta, id stri
 	}
 
 	if result.RowsAffected == 0 {
+		slog.Warn("admin: delete found no matching row", "entity", meta.Table, "id", id)
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
 
+	slog.Info("admin: delete completed", "entity", meta.Table, "id", id, "rows_affected", result.RowsAffected)
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "rows_affected": result.RowsAffected})
 }

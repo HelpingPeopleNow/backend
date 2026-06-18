@@ -82,6 +82,7 @@ func (h *ConversationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 func (h *ConversationHandler) list(w http.ResponseWriter, r *http.Request) {
 	userID := resolveUserIDFromSession(r, h.db)
 	if userID == "" {
+		slog.Warn("conv-handler: unauthorized list attempt")
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
@@ -141,6 +142,7 @@ func (h *ConversationHandler) list(w http.ResponseWriter, r *http.Request) {
 func (h *ConversationHandler) getOne(w http.ResponseWriter, r *http.Request, convID string) {
 	userID := resolveUserIDFromSession(r, h.db)
 	if userID == "" {
+		slog.Warn("conv-handler: unauthorized getOne attempt", "convID", convID)
 		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 		return
 	}
@@ -181,10 +183,12 @@ func (h *ConversationHandler) getOne(w http.ResponseWriter, r *http.Request, con
 func resolveUserIDFromSession(r *http.Request, db *gorm.DB) string {
 	cookie, ok := sessionCookie(r)
 	if !ok {
+		slog.Debug("resolveUserIDFromSession: no session cookie")
 		return ""
 	}
 	token := rawSessionToken(cookie)
 	if token == "" {
+		slog.Debug("resolveUserIDFromSession: empty session token")
 		return ""
 	}
 	type dbSession struct {

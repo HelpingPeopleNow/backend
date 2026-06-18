@@ -69,7 +69,10 @@ func adminMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		isAdmin, _ := userObj["is_admin"].(bool)
+		isAdmin, ok := userObj["is_admin"].(bool)
+		if !ok {
+			slog.Warn("admin: is_admin field missing or wrong type", "path", r.URL.Path)
+		}
 		if !isAdmin {
 			slog.Warn("admin: non-admin user rejected", "path", r.URL.Path)
 			http.Error(w, `{"error":"forbidden: admin access required"}`, http.StatusForbidden)
@@ -81,19 +84,32 @@ func adminMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// statusRecorder wraps http.ResponseWriter to capture the status code.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rec *statusRecorder) WriteHeader(code int) {
+	rec.status = code
+	rec.ResponseWriter.WriteHeader(code)
+}
+
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		slog.Info("request started",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"remote", r.RemoteAddr,
 			"user_agent", r.UserAgent(),
 		)
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(rec, r)
 		slog.Info("request completed",
 			"method", r.Method,
 			"path", r.URL.Path,
+			"status", rec.status,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
 	})
@@ -177,7 +193,9 @@ func main() {
 
 	// Load the system prompt from DB into the chat handler's cache
 	var sp core.SystemPrompt
-	db.FirstOrCreate(&sp)
+	if err := db.FirstOrCreate(&sp).Error; err != nil {
+		slog.Error("failed to load system prompt at startup", "error", err)
+	}
 	{
 		if sp.LLMProvider != "" {
 			chatHandler.SetLLMProvider(sp.LLMProvider)

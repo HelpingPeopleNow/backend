@@ -51,6 +51,11 @@ func (h *WorkerHandler) get(w http.ResponseWriter, userID string) {
 	var wp core.WorkerProfile
 	err := h.db.Where("user_id = ?", userID).First(&wp).Error
 	if err != nil {
+		if err != gorm.ErrRecordNotFound {
+			slog.Error("worker: failed to load profile", "user_id", userID, "error", err)
+			http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+			return
+		}
 		// No profile yet — return empty, not 404 (frontend shows the form)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"user_id": userID,
@@ -118,11 +123,15 @@ func toWorkerDTO(wp *core.WorkerProfile) *core.WorkerProfileDTO {
 func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
 	// Tries via auth service first
 	authReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, os.Getenv("AUTH_SERVICE_URL")+"/api/auth/user-id", nil)
-	if err == nil {
+	if err != nil {
+		slog.Debug("extractUserID: failed to create auth request", "error", err)
+	} else {
 		addSessionCookie(authReq, r)
 		client := &http.Client{Timeout: 3 * time.Second}
 		authResp, err := client.Do(authReq)
-		if err == nil {
+		if err != nil {
+			slog.Debug("extractUserID: auth service call failed", "error", err)
+		} else {
 			defer authResp.Body.Close()
 			if authResp.StatusCode == http.StatusOK {
 				var result struct {
@@ -131,6 +140,9 @@ func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
 				if err := json.NewDecoder(authResp.Body).Decode(&result); err == nil && result.UserID != "" {
 					return result.UserID
 				}
+				slog.Debug("extractUserID: auth response missing userId")
+			} else {
+				slog.Debug("extractUserID: auth service returned non-OK", "status", authResp.StatusCode)
 			}
 		}
 	}
@@ -138,10 +150,12 @@ func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
 	// Fallback: parse the cookie directly and query the session table
 	cookie, ok := sessionCookie(r)
 	if !ok {
+		slog.Debug("extractUserID: no session cookie present")
 		return ""
 	}
 	token := rawSessionToken(cookie)
 	if token == "" {
+		slog.Debug("extractUserID: empty session token")
 		return ""
 	}
 	type dbSession struct {
@@ -150,6 +164,7 @@ func extractUserIDFromRequest(r *http.Request, db *gorm.DB) string {
 	var s dbSession
 	err = db.Table("\"session\"").Where("token = ? AND \"expiresAt\" > NOW()", token).First(&s).Error
 	if err != nil {
+		slog.Debug("extractUserID: session not found in DB", "error", err)
 		return ""
 	}
 	return s.UserID

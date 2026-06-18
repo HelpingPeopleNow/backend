@@ -121,7 +121,11 @@ func (h *SystemPromptHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 func (h *SystemPromptHandler) get(w http.ResponseWriter) {
 	var sp core.SystemPrompt
-	h.db.FirstOrCreate(&sp)
+	if err := h.db.FirstOrCreate(&sp).Error; err != nil {
+		slog.Error("system-prompt: FirstOrCreate failed", "error", err)
+		http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+		return
+	}
 	slog.Info("system-prompt: loaded", "worker_profile_prompt_len", len(sp.WorkerProfilePrompt))
 	json.NewEncoder(w).Encode(toSystemDTO(&sp))
 }

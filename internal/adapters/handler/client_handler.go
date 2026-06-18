@@ -48,6 +48,11 @@ func (h *ClientHandler) get(w http.ResponseWriter, userID string) {
 	var cp core.ClientProfile
 	err := h.db.Where("user_id = ?", userID).First(&cp).Error
 	if err != nil {
+		if err != gorm.ErrRecordNotFound {
+			slog.Error("client: failed to load profile", "user_id", userID, "error", err)
+			http.Error(w, `{"error":"database error"}`, http.StatusInternalServerError)
+			return
+		}
 		// No profile yet — return empty
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"user_id": userID,
