@@ -57,11 +57,6 @@ func Connect() (*gorm.DB, error) {
 		END IF;
 	END $$;`)
 
-	// Drop the old messages JSONB column (moved to separate messages table)
-	db.Exec(`ALTER TABLE conversations DROP COLUMN IF EXISTS messages;`)
-	// Drop the old title column (unused)
-	db.Exec(`ALTER TABLE conversations DROP COLUMN IF EXISTS title;`)
-
 	return db, nil
 }
 
