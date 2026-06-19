@@ -32,6 +32,19 @@ No tests, no lint/typecheck config, no CI.
 | `ClientHandler` | `/api/v1/client/profile` | GET, DELETE | Client profile read/reset |
 | `SystemPromptHandler` | `/api/v1/system-prompts` | GET, PUT | System prompts + provider CRUD |
 | `ConversationHandler` | `/api/v1/conversations` | GET | List/get conversations |
+| `DirectMessagingHandler` | `/api/v1/workers/:id/contact`, `/api/v1/direct-messages`, `/api/v1/direct-messages/:id/*` | GET, POST, PATCH | Direct messaging: create contact, inbox, thread, send, read, archive, block, report, SSE /stream, polling /since |
+
+## Direct Messaging
+
+Two-table schema: `direct_conversations` (unique per client+worker pair) + `direct_messages` (per-message rows with soft delete).
+
+- **Repository**: `GormDirectMessageRepository` in `internal/adapters/repository/direct_message_repo.go` — implements `DirectMessageRepository` (12 methods)
+- **Handler**: `DirectMessagingHandler` dispatches by path segment (see `ServeHTTP` switch). Auth via `contextkeys.GetUserID(r.Context())`.
+- **SSE broker**: In-process pub/sub in `internal/adapters/realtime/sse_broker.go`. Subscribe creates buffered channels (32), Publish copies subscriber list under RLock and does non-blocking sends (drops on full). Cleanup goroutines per subscription.
+- **SSE /stream**: Heartbeat every 25s to keep connections alive through Traefik/nginx. Events: `message`, `read`.
+- **Rate limiting**: Per-user token bucket (30 msg/min) in `internal/adapters/middleware/rate_limiter.go`. Applied to `sendMessage` endpoint. Cleanup goroutine removes inactive buckets.
+- **pushSSE**: Launched as async goroutine (`go h.pushSSE(...)`) after DB write — doesn't block HTTP response. Loads worker profile via `context.Background()` to resolve worker_profiles.id → user_id for publishing.
+- **Report endpoint**: `POST /api/v1/direct-messages/:id/report` — logs a warning with conv_id + reported_by + reason. No DB storage yet.
 
 ## Gotchas
 

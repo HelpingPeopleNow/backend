@@ -35,7 +35,7 @@ func Connect() (*gorm.DB, error) {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 
-	if err := db.AutoMigrate(&core.SystemPrompt{}, &core.WorkerProfile{}, &core.ClientProfile{}, &core.Conversation{}, &core.Message{}); err != nil {
+	if err := db.AutoMigrate(&core.SystemPrompt{}, &core.WorkerProfile{}, &core.ClientProfile{}, &core.Conversation{}, &core.Message{}, &core.DirectConversation{}, &core.DirectMessage{}); err != nil {
 		return nil, fmt.Errorf("failed to migrate: %w", err)
 	}
 
@@ -50,6 +50,79 @@ func Connect() (*gorm.DB, error) {
 	// Ensure find_trader_presentation_prompt column exists (for existing DBs that pre-date this column)
 	if err := db.Exec(`ALTER TABLE system_prompts ADD COLUMN IF NOT EXISTS find_trader_presentation_prompt TEXT NOT NULL DEFAULT ''`).Error; err != nil {
 		slog.Warn("migration: failed to add find_trader_presentation_prompt column", "error", err)
+	}
+
+	// Direct messaging migrations (idempotent)
+	if err := db.Exec(`CREATE EXTENSION IF NOT EXISTS pgcrypto`).Error; err != nil {
+		slog.Warn("migration: pgcrypto extension not available", "error", err)
+	}
+
+	if err := db.Exec(`
+		DO $$ BEGIN
+			CREATE TYPE conversation_status AS ENUM ('active', 'archived', 'blocked');
+		EXCEPTION WHEN duplicate_object THEN NULL;
+		END $$;
+	`).Error; err != nil {
+		slog.Warn("migration: failed to create conversation_status enum", "error", err)
+	}
+
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_direct_conv_client
+			ON direct_conversations(client_id, last_message_at DESC)
+			WHERE status = 'active'
+	`).Error; err != nil {
+		slog.Warn("migration: failed to create idx_direct_conv_client", "error", err)
+	}
+
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_direct_conv_worker
+			ON direct_conversations(worker_profile_id, last_message_at DESC)
+			WHERE status = 'active'
+	`).Error; err != nil {
+		slog.Warn("migration: failed to create idx_direct_conv_worker", "error", err)
+	}
+
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_direct_msg_conv_created
+			ON direct_messages(conversation_id, created_at DESC)
+	`).Error; err != nil {
+		slog.Warn("migration: failed to create idx_direct_msg_conv_created", "error", err)
+	}
+
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_direct_msg_unread
+			ON direct_messages(conversation_id, read_at)
+			WHERE read_at IS NULL
+	`).Error; err != nil {
+		slog.Warn("migration: failed to create idx_direct_msg_unread", "error", err)
+	}
+
+	if err := db.Exec(`
+		DO $$ BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint WHERE conname = 'unique_client_worker'
+			) THEN
+				ALTER TABLE direct_conversations
+					ADD CONSTRAINT unique_client_worker
+					UNIQUE (client_id, worker_profile_id);
+			END IF;
+		END $$;
+	`).Error; err != nil {
+		slog.Warn("migration: failed to add unique_client_worker constraint", "error", err)
+	}
+
+	if err := db.Exec(`
+		DO $$ BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint WHERE conname = 'fk_sender_user'
+			) THEN
+				ALTER TABLE direct_messages
+					ADD CONSTRAINT fk_sender_user
+					FOREIGN KEY (sender_id) REFERENCES "user"(id) ON DELETE CASCADE;
+			END IF;
+		END $$;
+	`).Error; err != nil {
+		slog.Warn("migration: failed to add fk_sender_user constraint", "error", err)
 	}
 
 	// Migrate system_prompts id from uuid to integer singleton (id=1)

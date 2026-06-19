@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -35,27 +34,31 @@ type histogram struct {
 var metrics = struct {
 	sync.RWMutex
 
-	httpRequestsTotal     map[string]*counter // key: method|path|status
-	httpRequestDuration   map[string]*histogram
-	chatRequestsTotal     map[string]*counter // key: mode
-	chatLLMDuration       map[string]*histogram
-	chatLLMErrorsTotal    map[string]*counter // key: provider|error_type
-	authResolveDuration   map[string]*histogram
-	authResolveErrorsTotal map[string]*counter // key: method|error_type
-	profileSavesTotal     map[string]*counter // key: role
-	conversationsTotal    map[string]*counter // key: operation
-	healthStatus          map[string]*gauge   // key: component
+	httpRequestsTotal      map[string]*counter   // key: method|path|status
+	httpRequestDuration    map[string]*histogram
+	chatRequestsTotal      map[string]*counter   // key: mode
+	chatLLMDuration        map[string]*histogram
+	chatLLMErrorsTotal     map[string]*counter   // key: provider|error_type
+	authResolveDuration    map[string]*histogram
+	authResolveErrorsTotal map[string]*counter   // key: method|error_type
+	profileSavesTotal      map[string]*counter   // key: role
+	conversationsTotal     map[string]*counter   // key: operation
+	dmSentTotal            map[string]*counter   // key: role (client|worker) or "contact"
+	dmReceivedTotal        map[string]*counter   // key: role
+	healthStatus           map[string]*gauge     // key: component
 }{
-	httpRequestsTotal:     make(map[string]*counter),
-	httpRequestDuration:   make(map[string]*histogram),
-	chatRequestsTotal:     make(map[string]*counter),
-	chatLLMDuration:       make(map[string]*histogram),
-	chatLLMErrorsTotal:    make(map[string]*counter),
-	authResolveDuration:   make(map[string]*histogram),
+	httpRequestsTotal:      make(map[string]*counter),
+	httpRequestDuration:    make(map[string]*histogram),
+	chatRequestsTotal:      make(map[string]*counter),
+	chatLLMDuration:        make(map[string]*histogram),
+	chatLLMErrorsTotal:     make(map[string]*counter),
+	authResolveDuration:    make(map[string]*histogram),
 	authResolveErrorsTotal: make(map[string]*counter),
-	profileSavesTotal:     make(map[string]*counter),
-	conversationsTotal:    make(map[string]*counter),
-	healthStatus:          make(map[string]*gauge),
+	profileSavesTotal:      make(map[string]*counter),
+	conversationsTotal:     make(map[string]*counter),
+	dmSentTotal:            make(map[string]*counter),
+	dmReceivedTotal:        make(map[string]*counter),
+	healthStatus:           make(map[string]*gauge),
 }
 
 // defaultBuckets for latency histograms (seconds).
@@ -181,6 +184,20 @@ func IncrConversation(op string) {
 	getCounter(metrics.conversationsTotal, op).value++
 }
 
+// IncrDMSent increments the dm_sent_total counter.
+func IncrDMSent(role string) {
+	metrics.Lock()
+	defer metrics.Unlock()
+	getCounter(metrics.dmSentTotal, role).value++
+}
+
+// IncrDMReceived increments the dm_received_total counter.
+func IncrDMReceived(role string) {
+	metrics.Lock()
+	defer metrics.Unlock()
+	getCounter(metrics.dmReceivedTotal, role).value++
+}
+
 // SetHealthStatus sets the health_status gauge (1 = healthy, 0 = unhealthy).
 func SetHealthStatus(component string, healthy bool) {
 	metrics.Lock()
@@ -202,28 +219,14 @@ func RegisterMetricsRoutes(mux *http.ServeMux) {
 // Prometheus text format rendering
 // ---------------------------------------------------------------------------
 
-// parseKeyLabel splits a composite key into label pairs.
-// The keys for each metric family are defined by the format:
-//
-//	httpRequestsTotal:     method|path|status  → method, path, status
-//	httpRequestDuration:   method|path         → method, path
-//	chatRequestsTotal:     mode                → mode
-//	chatLLMDuration:       provider|mode       → provider, mode
-//	chatLLMErrorsTotal:    provider|error_type  → provider, error_type
-//	authResolveDuration:   method              → method
-//	authResolveErrorsTotal method|error_type    → method, error_type
-//	profileSavesTotal:     role                → role
-//	conversationsTotal:    operation           → operation
-//	healthStatus:          component           → component
-
 type metricFamily struct {
-	name        string
-	help        string
-	metricType  string // counter, histogram, gauge
-	keys        []string
-	counters    map[string]*counter
-	histograms  map[string]*histogram
-	gauges      map[string]*gauge
+	name       string
+	help       string
+	metricType string // counter, histogram, gauge
+	keys       []string
+	counters   map[string]*counter
+	histograms map[string]*histogram
+	gauges     map[string]*gauge
 }
 
 func renderFamily(sb *strings.Builder, fam metricFamily) {
@@ -319,7 +322,6 @@ func formatFloat(f float64) string {
 	if f == math.Trunc(f) && !math.IsInf(f, 0) && !math.IsNaN(f) {
 		return fmt.Sprintf("%.0f", f)
 	}
-	// Use strconv-free approach — fmt handles it
 	return fmt.Sprintf("%g", f)
 }
 
@@ -330,7 +332,6 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 
 	var sb strings.Builder
-	// Use a small helper to collect and write at once
 	write := func(s string) { sb.WriteString(s) }
 
 	// 1. http_requests_total
@@ -414,7 +415,25 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 		counters:   metrics.conversationsTotal,
 	}))
 
-	// 10. health_status
+	// 10. dm_sent_total
+	write(renderFamilyToString(metricFamily{
+		name:       "dm_sent_total",
+		help:       "Total direct messages sent by role.",
+		metricType: "counter",
+		keys:       []string{"role"},
+		counters:   metrics.dmSentTotal,
+	}))
+
+	// 11. dm_received_total
+	write(renderFamilyToString(metricFamily{
+		name:       "dm_received_total",
+		help:       "Total direct messages received by role.",
+		metricType: "counter",
+		keys:       []string{"role"},
+		counters:   metrics.dmReceivedTotal,
+	}))
+
+	// 12. health_status
 	write(renderFamilyToString(metricFamily{
 		name:       "health_status",
 		help:       "Health status of components (1=healthy, 0=unhealthy).",
@@ -432,7 +451,3 @@ func renderFamilyToString(fam metricFamily) string {
 	renderFamily(&sb, fam)
 	return sb.String()
 }
-
-// min/max helpers for bucket bounds (needed for le insertion sorting).
-// Not exported; used only within this file via renderFamily.
-var _ = time.Now // keep time import used
