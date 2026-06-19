@@ -174,9 +174,11 @@ func (r *GormDirectMessageRepository) SendMessage(
 	}
 
 	// Update conversation: last_message_at, last_message_preview
+	// Truncate by rune (not byte) to avoid splitting multi-byte UTF-8 characters
 	preview := msg.Body
-	if len(preview) > 120 {
-		preview = preview[:120]
+	runes := []rune(preview)
+	if len(runes) > 120 {
+		preview = string(runes[:120])
 	}
 	updates := map[string]interface{}{
 		"last_message_at":      msg.CreatedAt,

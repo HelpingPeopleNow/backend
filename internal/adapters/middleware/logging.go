@@ -44,3 +44,11 @@ func (rec *statusRecorder) WriteHeader(code int) {
 	rec.status = code
 	rec.ResponseWriter.WriteHeader(code)
 }
+
+// Flush delegates to the underlying ResponseWriter if it supports flushing
+// (required for SSE streaming endpoints).
+func (rec *statusRecorder) Flush() {
+	if f, ok := rec.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}

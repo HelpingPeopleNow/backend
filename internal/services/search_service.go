@@ -141,7 +141,7 @@ func searchFiltersFromJSON(raw []byte) core.WorkerSearchFilters {
 	}
 	filters := core.WorkerSearchFilters{}
 	if v, ok := m["profession"].(string); ok {
-		filters.Profession = v
+		filters.Profession = normalizeProfession(v)
 	}
 	if v, ok := m["city"].(string); ok {
 		filters.City = v
@@ -156,6 +156,35 @@ func searchFiltersFromJSON(raw []byte) core.WorkerSearchFilters {
 		filters.InsuredOnly = v
 	}
 	return filters
+}
+
+// normalizeProfession maps Spanish (and other common) profession names to the
+// English canonical values stored in worker_profiles. This is a safety net —
+// the search prompt should already instruct the LLM to use English names, but
+// when users speak Spanish the LLM often returns the Spanish term anyway.
+func normalizeProfession(p string) string {
+	switch strings.ToLower(strings.TrimSpace(p)) {
+	case "electricista", "electrician", "electric":
+		return "electrician"
+	case "fontanero", "plomero", "plumber":
+		return "plumber"
+	case "limpiador", "limpieza", "limpiadora", "cleaner", "cleaning":
+		return "cleaner"
+	case "manitas", "handyman", "handy man":
+		return "handyman"
+	case "carpintero", "carpenter":
+		return "carpintero"
+	case "pintor", "painter", "painting":
+		return "painter"
+	case "jardinero", "landscaper", "gardener":
+		return "landscaper"
+	case "tejador", "techo", "roofer", "roofing":
+		return "roofer"
+	case "clima", "aire acondicionado", "hvac", "hvac technician":
+		return "hvac technician"
+	default:
+		return p
+	}
 }
 
 func buildWorkerSummaries(workers []core.WorkerProfile, originalMessage string) string {
