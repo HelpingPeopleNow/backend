@@ -22,12 +22,13 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
 
 ## What It Does
 
-1. **Worker profile intake chat** — receives `POST /api/v1/worker/chat`, uses a separate `worker_profile_prompt` system prompt designed to gather worker profile fields conversationally, appends a language instruction to the system prompt based on the `lang` parameter, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the worker profile via map-based upsert
-2. **Client profile intake chat** — receives `POST /api/v1/client/chat`, uses a separate `client_profile_prompt` system prompt designed to gather client profile fields conversationally, appends a language instruction to the system prompt based on the `lang` parameter, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the client profile via map-based upsert
-3. **System prompt management** — admin can read/update the helper prompt (`helper_prompt`), the worker profile prompt (`worker_profile_prompt`), the client profile prompt (`client_profile_prompt`), and the LLM provider (`llm_provider`) via REST endpoints
+1. **Worker profile intake chat** — receives `POST /api/v1/chat` with `mode: "worker_intake"`, uses the `worker_profile_prompt` system prompt designed to gather worker profile fields conversationally, appends a language instruction to the system prompt based on the `lang` parameter, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the worker profile via map-based upsert
+2. **Client profile intake chat** — receives `POST /api/v1/chat` with `mode: "client_intake"`, uses the `client_profile_prompt` system prompt designed to gather client profile fields conversationally, appends a language instruction to the system prompt based on the `lang` parameter, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the client profile via map-based upsert
+3. **System prompt management** — admin can read/update the worker profile prompt (`worker_profile_prompt`), the client profile prompt (`client_profile_prompt`), and the LLM provider (`llm_provider`) via REST endpoints
 4. **LLM provider runtime switch** — admin can toggle between `opencode` (external), `ollama` (local), and `mistral` (cloud) without restarting the container; empty = uses the helper's auto fallback chain (Mistral → OpenCode → Ollama)
 5. **Conversation persistence** — all chat messages (worker, client) are saved to the database and can be loaded on page reload via the conversations API
-6. **Profile reset** — worker and client profiles can be cleared via `DELETE /api/v1/worker/profile` and `DELETE /api/v1/client/profile`
+6. **Search/find professionals** — receives `POST /api/v1/chat` with `mode: "search"`, uses two-pass LLM (filter-fill then presentation) to match clients with workers, returns recommended worker cards
+7. **Profile reset** — worker and client profiles can be cleared via `DELETE /api/v1/worker/profile` and `DELETE /api/v1/client/profile`
 
 ---
 
@@ -40,20 +41,21 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
         │           │               │               │
  ┌──────▼──────┐ ┌──▼──────────┐ ┌──▼──────────┐ ┌──▼──────────┐
  │ ChatHandler │ │ WorkerHandler│ │ClientHandler│ │ConvHandler  │
- │ (worker +   │ │ (GET/DELETE  │ │(GET/DELETE  │ │(list/get    │
- │  client     │ │  profile)    │ │ profile)    │ │ conversations)│
- │  chat +     │ └─────────────┘ └─────────────┘ └─────────────┘
- │  find-chat  │
- │  gRPC +     │ ┌──────────────────────┐
- │  lang)      │ │ SystemPromptHandler  │
- └──────┬──────┘ │ (CRUD for            │
-        │        │  helper_prompt +     │
-        │        │  worker_profile +    │
-        │        │  client_profile +    │
-        │        │  llm_provider)       │
-        │        └──────────┬───────────┘
-        │                   │
- ┌──────▼───────────────────▼──────────┐
+ │ (POST       │ │ (GET/DELETE  │ │(GET/DELETE  │ │(list/get    │
+ │  /api/v1/   │ │  profile)    │ │ profile)    │ │ conversations)│
+ │  chat with  │ └─────────────┘ └─────────────┘ └─────────────┘
+ │  mode in    │
+ │  body)      │ ┌──────────────────────┐
+ │             │ │ SystemPromptHandler  │
+ │  ┌──────────┘ │ (CRUD for            │
+ │  │            │  worker_profile +    │
+ │  │ gRPC +     │  client_profile +    │
+ │  │ lang       │  provider +          │
+ │  ▼            │  search +            │
+ │              │  presentation)       │
+ │              └──────────┬───────────┘
+ │                         │
+ ┌─────────────────────────▼──────────┐
  │          In-Memory Cache             │
  │   systemPrompt (string)             │
  │   workerProfilePrompt (string)      │
@@ -73,21 +75,38 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
 
 ### Layer Rules
 
-- **No service layer** — the codebase was simplified after removing the `PromptHelper` CRUD. All business logic lives in handlers (`internal/adapters/handler/`)
-- **No port/repository abstractions** — `SystemPromptHandler` uses `*gorm.DB` directly for DB operations, and `ChatHandler` uses the `*grpc.ClientConn` directly for gRPC calls
-- **Cache pattern** — system prompts + provider are loaded into memory at startup and refreshed on every admin update via callbacks. This avoids hitting the DB on every chat request
+The backend uses **hexagonal (ports & adapters) architecture**. `main.go` is the composition root and wires every component via the interfaces in `internal/ports/`.
+
+| Layer | Path | Owns |
+|---|---|---|
+| Handlers | `internal/adapters/handler/` | HTTP parse, session validation, response shape. Delegate to a service or port. Never hold `*gorm.DB`. |
+| Services | `internal/services/` | Use-case logic. `SearchService.Search` (two-pass LLM), `IntakeService.ProcessIntake` (chat → `[FIELDS]` → map-merge upsert), `SeedService.SeedSystemPrompts`. Depend only on `ports/` interfaces. |
+| Ports | `internal/ports/` | Interface contracts: `LLMService`, `ProfileRepository`, `ChatRepository`, `SystemPromptRepository`, `DirectMessageRepository`, `DirectMessaging`. |
+| Adapters | `internal/adapters/` | Concrete port implementations: `repository/` (GORM via `*gorm.DB`), `llm/` (`grpc_client.go::GRPCLLMService`), `realtime/` (SSE broker), `middleware/`, `ratelimit/`. |
+| Core | `internal/core/` | Domain models (`WorkerProfile`, `ClientProfile`, `Conversation`, `Message`, `DirectConversation`, `DirectMessage`) and pure helpers (`MergeFields`, DTO mappers). |
+| Cache | in-process map + callbacks | System prompt + LLM provider snapshots loaded at startup from `system_prompts` (`id=1`); refreshed via `SystemPromptHandler` `onUpdate` callback chain at `main.go:143-171`. |
+
+#### Direct messaging exception
+
+`DirectMessagingHandler` (`internal/adapters/handler/direct_messaging_handler.go`) injects multiple ports directly (`h.profs`, `h.dm`, `h.broker`) without going through a service — still no `*gorm.DB`. SSE/realtime concerns are tied to the HTTP request lifecycle. Don't refactor this to add a service layer without first extracting a `DirectMessagingService`.
+
+#### Cache pattern
+
+System prompts + LLM provider are loaded into memory at startup from the `system_prompts` singleton row (`id=1`). Admin updates via `PUT /api/v1/system-prompts/...` fire `onUpdate` callbacks so chat latency doesn't DB-hit on every request.
+
+> **Note for contributors:** the layer table above is the source of truth for the current architecture. Earlier revisions of this file (and `backend/AGENTS.md`) described a flatter "no service layer" / "no port/repository abstractions" model — that description predates the hexagonal refactor and is not accurate against the current `internal/services/`, `internal/ports/`, `internal/adapters/`, `internal/core/` tree. New contributors should follow the table in this Layer Rules section.
 
 ---
 
 ## Request Flows
 
-### Worker Profile Intake Chat (`/api/v1/worker/chat`)
+### Worker Profile Intake Chat (`POST /api/v1/chat` with `mode: "worker_intake"`)
 
 ```
 Worker types message in chat panel
        │
        ▼
-POST /api/v1/worker/chat ──► ChatHandler.HandleWorkerChat
+POST /api/v1/chat { mode: "worker_intake" } ──► ChatHandler.ServeHTTP
        │
        ├─ getWorkerProfilePrompt() → cached worker prompt (string)
        ├─ getLLMProvider()         → cached provider
@@ -117,13 +136,13 @@ POST /api/v1/worker/chat ──► ChatHandler.HandleWorkerChat
 
 The worker profile chat does NOT update user roles — the user is already known as a worker. The LLM is prompted to append a `[FIELDS]{"profession":"plumber","city":"Madrid",...}[/FIELDS]` block to every response, including ALL known fields cumulatively. The backend parses this out, merges it with any existing profile in the DB, and sends `detected_fields` to the frontend for display.
 
-### Client Profile Intake Chat (`/api/v1/client/chat`)
+### Client Profile Intake Chat (`POST /api/v1/chat` with `mode: "client_intake"`)
 
 ```
 Client types message in chat panel
        │
        ▼
-POST /api/v1/client/chat ──► ChatHandler.HandleClientChat
+POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
        │
        ├─ getClientProfilePrompt() → cached client prompt (string)
        ├─ getLLMProvider()          → cached provider
@@ -207,9 +226,7 @@ POST /api/v1/client/chat ──► ChatHandler.HandleClientChat
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/health` | No | Health check → `{"status":"ok"}` |
-| POST | `/api/v1/worker/chat` | No* | Worker profile intake chat → `{"answer","detected_fields","conversation_id"}` |
-| POST | `/api/v1/client/chat` | No* | Client profile intake chat → `{"answer","detected_fields","conversation_id"}` |
-| POST | `/api/v1/client/find-chat` | No* | Client find-chat (search) → `{"answer","conversation_id"}` |
+| POST | `/api/v1/chat` | No* | Unified chat: `mode` in body (`"worker_intake"`, `"client_intake"`, `"search"`) → `{"answer","detected_fields","conversation_id"}` |
 | GET | `/api/v1/worker/profile` | Yes* | Get worker profile for authenticated user |
 | DELETE | `/api/v1/worker/profile` | Yes* | Clear worker profile for authenticated user |
 | GET | `/api/v1/client/profile` | Yes* | Get client profile for authenticated user |
@@ -223,7 +240,7 @@ POST /api/v1/client/chat ──► ChatHandler.HandleClientChat
 | GET | `/api/v1/conversations` | Yes* | List conversations (supports `?type=worker&limit=N`) |
 | GET | `/api/v1/conversations/:id` | Yes* | Get conversation with full message history |
 
-*Worker/client chat is session-independent — it creates a new conversation context per request.
+*Chat is session-independent unless the user is authenticated — session-based requests load existing profile for field merging.
 Session validation is done via cookie parsing + direct DB lookup.
 
 ### Health
@@ -240,9 +257,9 @@ Returns `200 OK` with `{"status":"ok"}`. Because there is no request body, sessi
 ### Worker Profile Intake Chat
 
 ```bash
-curl -X POST http://localhost:8081/api/v1/worker/chat \
+curl -X POST http://localhost:8081/api/v1/chat \
   -H "Content-Type: application/json" \
-  -d '{"message":"I am a plumber in Madrid","history":[],"lang":"en"}'
+  -d '{"mode":"worker_intake","message":"I am a plumber in Madrid","history":[],"lang":"en"}'
 ```
 
 Response:
@@ -261,9 +278,9 @@ Response:
 ### Client Profile Intake Chat
 
 ```bash
-curl -X POST http://localhost:8081/api/v1/client/chat \
+curl -X POST http://localhost:8081/api/v1/chat \
   -H "Content-Type: application/json" \
-  -d '{"message":"Hi, I need help fixing my bathroom","history":[],"lang":"en"}'
+  -d '{"mode":"client_intake","message":"Hi, I need help fixing my bathroom","history":[],"lang":"en"}'
 ```
 
 Response:
@@ -297,7 +314,7 @@ curl -X DELETE http://localhost:8081/api/v1/client/profile \
 ```bash
 # Read current
 curl http://localhost:8081/api/v1/system-prompts
-# → {"helper_prompt":"...", "worker_profile_prompt":"...", "client_profile_prompt":"...", "llm_provider":"opencode", "updated_at":"..."}
+# → {"worker_profile_prompt":"...", "client_profile_prompt":"...", "llm_provider":"opencode", "updated_at":"..."}
 
 # Update helper prompt
 curl -X PUT http://localhost:8081/api/v1/system-prompts/helper \
@@ -339,13 +356,14 @@ curl -X PUT http://localhost:8081/api/v1/user/reset-role \
 
 ### `system_prompts` table
 
-Singleton row (`id=1`) with four key columns:
+Singleton row (`id=1`) with five key columns:
 
 | Column | Type | Purpose |
 |--------|------|---------|
-| `helper_prompt` | `TEXT` | System prompt sent to the helper on every chat request |
 | `worker_profile_prompt` | `TEXT` | System prompt sent to the helper on worker profile intake chat |
 | `client_profile_prompt` | `TEXT` | System prompt sent to the helper on client profile intake chat |
+| `find_trader_search_prompt` | `TEXT` | System prompt sent to the helper for the search-params pass |
+| `find_trader_presentation_prompt` | `TEXT` | System prompt sent to the helper for the results-presentation pass |
 | `llm_provider` | `VARCHAR(32)` | `"opencode"`, `"ollama"`, `"mistral"`, or `""` for auto fallback chain |
 
 If `worker_profile_prompt` is empty at startup, a default prompt is seeded automatically that instructs the LLM to gather all 22 profile fields conversationally and output `[FIELDS]JSON[/FIELDS]` blocks.
@@ -455,11 +473,38 @@ backend/
     │   ├── system_prompt.go      # SystemPrompt GORM model (helper, worker_profile, client_profile, llm_provider)
     │   ├── worker.go             # WorkerProfile GORM model + DTO
     │   └── client.go             # ClientProfile GORM model + DTO
+    ├── ports/
+    │   ├── llm.go                # LLMService interface
+    │   ├── profiles.go           # ProfileRepository interface
+    │   ├── chat.go               # ChatRepository interface
+    │   ├── system_prompts.go     # SystemPromptRepository interface
+    │   └── direct_messages.go    # DirectMessageRepository + DirectMessaging interfaces
+    ├── services/
+    │   ├── intake_service.go     # ProcessIntake: chat → [FIELDS] → map-merge upsert
+    │   ├── search_service.go     # Search: two-pass LLM (filter-fill → present)
+    │   └── seed_service.go       # SeedSystemPrompts: defaults at startup
     └── adapters/
-        └── handler/
-            ├── chat_handler.go           # Worker/client profile chat + find-chat + gRPC client + lang
-            ├── system_prompt_handler.go  # System prompt CRUD (helper, worker, client, provider)
-            ├── worker_handler.go         # Worker profile (GET/DELETE)
-            ├── client_handler.go         # Client profile (GET/DELETE)
-            └── conversation_handler.go   # Conversation list/detail (messages table)
+        ├── handler/
+        │   ├── chat_handler.go           # POST /api/v1/chat — mode dispatch + gRPC + lang
+        │   ├── system_prompt_handler.go  # System prompt CRUD (worker, client, search, presentation, provider)
+        │   ├── worker_handler.go         # Worker profile (GET/DELETE)
+        │   ├── client_handler.go         # Client profile (GET/DELETE)
+        │   ├── conversation_handler.go   # Conversation list/detail (messages table)
+        │   ├── direct_messaging_handler.go # DM: contact, inbox, thread, send, read, archive, block, report, SSE
+        │   └── admin_handler.go          # Admin middleware + user management
+        ├── repository/
+        │   ├── worker_repo.go            # GORM WorkerProfile repository
+        │   ├── client_repo.go            # GORM ClientProfile repository
+        │   ├── chat_repo.go              # GORM conversation/message repository
+        │   ├── system_prompt_repo.go     # GORM SystemPrompt repository
+        │   └── direct_message_repo.go    # GORM DM repository
+        ├── llm/
+        │   └── grpc_client.go            # GRPCLLMService — gRPC client to helper
+        ├── realtime/
+        │   └── sse_broker.go             # In-process pub/sub for DM SSE
+        ├── middleware/
+        │   ├── admin.go                  # Admin role verification middleware
+        │   └── contextkeys.go            # Context key helpers
+        └── ratelimit/
+            └── rate_limiter.go           # Per-user token bucket (30 msg/min)
 ```

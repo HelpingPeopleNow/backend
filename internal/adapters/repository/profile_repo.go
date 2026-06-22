@@ -132,3 +132,38 @@ func (r *GormProfileRepository) FindWorkers(ctx context.Context, filters core.Wo
 	}
 	return workers, nil
 }
+
+// ── Worker embeddings (vector search) ────────────────────────────
+//
+// Stub implementations for the four methods added to ports.ProfileRepository by
+// Improvements #1 and #2 in infra/docs/VECTOR_SEARCH_PLAN.md. The real SQL
+// will land alongside Improvement #3 (worker_embeddings table provisioned via
+// GORM AutoMigrate in database/postgres.go). Until then these return safe no-op
+// results so callers (e.g. IntakeService.reembedWorker, the §8.10 staleness
+// sweeper) can compile without short-circuiting.
+//
+// Return-value contract for the no-op stubs:
+//   - UpsertWorkerEmbedding:  returns a sentinel error so callers can log
+//     loudly rather than silently swallowing a missing-table condition.
+//   - GetWorkerEmbeddingHashes: returns (nil, nil) — callers should treat a
+//     nil map as "no existing embeddings; re-embed every field".
+//   - DeleteWorkerEmbedding:  returns nil — silently a no-op.
+//   - FindStaleWorkerIDs:     returns (nil, nil) — disables the sweeper.
+// These choices match what the embedding host (helper/grpc_server.go v2) and
+// the §8.10 sweeper already do when optional tables are missing.
+
+func (r *GormProfileRepository) UpsertWorkerEmbedding(ctx context.Context, userID, fieldName string, embedding []float32, textHash string) error {
+	return errors.New("worker_embeddings table not yet provisioned — see Improvement #3 in VECTOR_SEARCH_PLAN.md")
+}
+
+func (r *GormProfileRepository) GetWorkerEmbeddingHashes(ctx context.Context, userID string) (map[string]ports.EmbeddingMeta, error) {
+	return nil, nil
+}
+
+func (r *GormProfileRepository) DeleteWorkerEmbedding(ctx context.Context, userID, fieldName string) error {
+	return nil
+}
+
+func (r *GormProfileRepository) FindStaleWorkerIDs(ctx context.Context) ([]string, error) {
+	return nil, nil
+}

@@ -13,12 +13,28 @@ import (
 
 type mockLLM struct {
 	answer string
+	// embedFn lets tests override Embed behavior; defaults to a fixed
+	// 768-dim zero vector so search tests can keep passing once the
+	// SearchService starts calling s.llm.Embed (see VECTOR_SEARCH_PLAN §8.6).
+	embedFn func(ctx context.Context, text string) ([]float32, error)
 }
 
 func (m *mockLLM) Ask(ctx context.Context, systemPrompt, userMessage string, history []ports.MessagePair, provider string) (*ports.LLMResponse, error) {
 	return &ports.LLMResponse{Answer: m.answer, Role: "worker"}, nil
 }
 func (m *mockLLM) Health(ctx context.Context) error { return nil }
+
+// Embed is the stub added when ports.LLMService grows an Embed method
+// (VECTOR_SEARCH_PLAN §8.3 + P1). Returns a deterministic 768-dim vector so
+// any test that indirectly triggers an Embed call sees a non-nil result
+// instead of forcing all callers to plumb a fake.
+func (m *mockLLM) Embed(ctx context.Context, text string) ([]float32, error) {
+	if m.embedFn != nil {
+		return m.embedFn(ctx, text)
+	}
+	vec := make([]float32, 768)
+	return vec, nil
+}
 
 type mockChatRepo struct {
 	savedConversationID string
@@ -60,6 +76,25 @@ func (m *mockProfiles) UpsertClientProfile(ctx context.Context, userID string, f
 func (m *mockProfiles) DeleteClientProfile(ctx context.Context, userID string) error { return nil }
 func (m *mockProfiles) FindWorkers(ctx context.Context, filters core.WorkerSearchFilters) ([]core.WorkerProfile, error) {
 	return []core.WorkerProfile{}, nil
+}
+
+// Stub implementations for Improvements #1 and #2 in
+// infra/docs/VECTOR_SEARCH_PLAN.md. The `struct{Hash string; Model string}`
+// return on GetWorkerEmbeddingHashes IS itself the production type
+// (`ports.EmbeddingMeta`), because that type is declared as a Go type
+// ALIAS (`type X = struct{…}`). See backend/internal/ports/profile_repository.go
+// for the reasoning.
+func (m *mockProfiles) UpsertWorkerEmbedding(_ context.Context, _ string, _ string, _ []float32, _ string) error {
+	return nil
+}
+func (m *mockProfiles) GetWorkerEmbeddingHashes(_ context.Context, _ string) (map[string]struct{Hash string; Model string}, error) {
+	return nil, nil
+}
+func (m *mockProfiles) DeleteWorkerEmbedding(_ context.Context, _ string, _ string) error {
+	return nil
+}
+func (m *mockProfiles) FindStaleWorkerIDs(_ context.Context) ([]string, error) {
+	return nil, nil
 }
 
 type mockPrompts struct {
