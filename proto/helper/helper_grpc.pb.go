@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.0
 // - protoc             v6.33.2
-// source: helper.proto
+// source: proto/helper/helper.proto
 
 package helper
 
@@ -19,7 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	HelperService_Ask_FullMethodName = "/helper.HelperService/Ask"
+	HelperService_Ask_FullMethodName        = "/helper.HelperService/Ask"
+	HelperService_Embed_FullMethodName      = "/helper.HelperService/Embed"
+	HelperService_EmbedBatch_FullMethodName = "/helper.HelperService/EmbedBatch"
 )
 
 // HelperServiceClient is the client API for HelperService service.
@@ -27,6 +29,13 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type HelperServiceClient interface {
 	Ask(ctx context.Context, in *AskRequest, opts ...grpc.CallOption) (*AskResponse, error)
+	// Embed returns an embedding vector for a single text. Used by the backend
+	// for both query-time search and incremental re-embedding.
+	Embed(ctx context.Context, in *EmbedRequest, opts ...grpc.CallOption) (*EmbedResponse, error)
+	// EmbedBatch returns embeddings for a list of texts in one round-trip.
+	// Used by the backfill script in helper/scripts/backfill_embeddings.py and
+	// by any bulk path that needs more than one embedding at a time.
+	EmbedBatch(ctx context.Context, in *EmbedBatchRequest, opts ...grpc.CallOption) (*EmbedBatchResponse, error)
 }
 
 type helperServiceClient struct {
@@ -47,11 +56,38 @@ func (c *helperServiceClient) Ask(ctx context.Context, in *AskRequest, opts ...g
 	return out, nil
 }
 
+func (c *helperServiceClient) Embed(ctx context.Context, in *EmbedRequest, opts ...grpc.CallOption) (*EmbedResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EmbedResponse)
+	err := c.cc.Invoke(ctx, HelperService_Embed_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *helperServiceClient) EmbedBatch(ctx context.Context, in *EmbedBatchRequest, opts ...grpc.CallOption) (*EmbedBatchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EmbedBatchResponse)
+	err := c.cc.Invoke(ctx, HelperService_EmbedBatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // HelperServiceServer is the server API for HelperService service.
 // All implementations must embed UnimplementedHelperServiceServer
 // for forward compatibility.
 type HelperServiceServer interface {
 	Ask(context.Context, *AskRequest) (*AskResponse, error)
+	// Embed returns an embedding vector for a single text. Used by the backend
+	// for both query-time search and incremental re-embedding.
+	Embed(context.Context, *EmbedRequest) (*EmbedResponse, error)
+	// EmbedBatch returns embeddings for a list of texts in one round-trip.
+	// Used by the backfill script in helper/scripts/backfill_embeddings.py and
+	// by any bulk path that needs more than one embedding at a time.
+	EmbedBatch(context.Context, *EmbedBatchRequest) (*EmbedBatchResponse, error)
 	mustEmbedUnimplementedHelperServiceServer()
 }
 
@@ -64,6 +100,12 @@ type UnimplementedHelperServiceServer struct{}
 
 func (UnimplementedHelperServiceServer) Ask(context.Context, *AskRequest) (*AskResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Ask not implemented")
+}
+func (UnimplementedHelperServiceServer) Embed(context.Context, *EmbedRequest) (*EmbedResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Embed not implemented")
+}
+func (UnimplementedHelperServiceServer) EmbedBatch(context.Context, *EmbedBatchRequest) (*EmbedBatchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method EmbedBatch not implemented")
 }
 func (UnimplementedHelperServiceServer) mustEmbedUnimplementedHelperServiceServer() {}
 func (UnimplementedHelperServiceServer) testEmbeddedByValue()                       {}
@@ -104,6 +146,42 @@ func _HelperService_Ask_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HelperService_Embed_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EmbedRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HelperServiceServer).Embed(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HelperService_Embed_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HelperServiceServer).Embed(ctx, req.(*EmbedRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HelperService_EmbedBatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EmbedBatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HelperServiceServer).EmbedBatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HelperService_EmbedBatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HelperServiceServer).EmbedBatch(ctx, req.(*EmbedBatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // HelperService_ServiceDesc is the grpc.ServiceDesc for HelperService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -115,7 +193,15 @@ var HelperService_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "Ask",
 			Handler:    _HelperService_Ask_Handler,
 		},
+		{
+			MethodName: "Embed",
+			Handler:    _HelperService_Embed_Handler,
+		},
+		{
+			MethodName: "EmbedBatch",
+			Handler:    _HelperService_EmbedBatch_Handler,
+		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "helper.proto",
+	Metadata: "proto/helper/helper.proto",
 }

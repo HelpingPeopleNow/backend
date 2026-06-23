@@ -6,6 +6,13 @@ option go_package = "github.com/HelpingPeopleNow/backend/proto/helper";
 
 service HelperService {
   rpc Ask(AskRequest) returns (AskResponse);
+  // Embed returns an embedding vector for a single text. Used by the backend
+  // for both query-time search and incremental re-embedding.
+  rpc Embed(EmbedRequest) returns (EmbedResponse);
+  // EmbedBatch returns embeddings for a list of texts in one round-trip.
+  // Used by the backfill script in helper/scripts/backfill_embeddings.py and
+  // by any bulk path that needs more than one embedding at a time.
+  rpc EmbedBatch(EmbedBatchRequest) returns (EmbedBatchResponse);
 }
 
 message Message {
@@ -24,4 +31,26 @@ message AskRequest {
 message AskResponse {
   string answer = 1;
   string detected_role = 2;  // "worker" | "client" | ""
+}
+
+// ── Embedding RPCs (VECTOR_SEARCH_PLAN §7.1) ────────────────────────
+
+message EmbedRequest {
+  string text = 1;
+  string model = 2;
+}
+
+message EmbedResponse {
+  repeated float embedding = 1;
+  string model = 2;
+  int32 dimensions = 3;
+}
+
+message EmbedBatchRequest {
+  repeated string texts = 1;
+  string model = 2;
+}
+
+message EmbedBatchResponse {
+  repeated EmbedResponse embeddings = 1;
 }

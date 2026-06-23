@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.33.2
-// source: helper.proto
+// source: proto/helper/helper.proto
 
 package helper
 
@@ -31,7 +31,7 @@ type Message struct {
 
 func (x *Message) Reset() {
 	*x = Message{}
-	mi := &file_helper_proto_msgTypes[0]
+	mi := &file_proto_helper_helper_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -43,7 +43,7 @@ func (x *Message) String() string {
 func (*Message) ProtoMessage() {}
 
 func (x *Message) ProtoReflect() protoreflect.Message {
-	mi := &file_helper_proto_msgTypes[0]
+	mi := &file_proto_helper_helper_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -56,7 +56,7 @@ func (x *Message) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Message.ProtoReflect.Descriptor instead.
 func (*Message) Descriptor() ([]byte, []int) {
-	return file_helper_proto_rawDescGZIP(), []int{0}
+	return file_proto_helper_helper_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *Message) GetRole() string {
@@ -86,7 +86,7 @@ type AskRequest struct {
 
 func (x *AskRequest) Reset() {
 	*x = AskRequest{}
-	mi := &file_helper_proto_msgTypes[1]
+	mi := &file_proto_helper_helper_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -98,7 +98,7 @@ func (x *AskRequest) String() string {
 func (*AskRequest) ProtoMessage() {}
 
 func (x *AskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_helper_proto_msgTypes[1]
+	mi := &file_proto_helper_helper_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -111,7 +111,7 @@ func (x *AskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AskRequest.ProtoReflect.Descriptor instead.
 func (*AskRequest) Descriptor() ([]byte, []int) {
-	return file_helper_proto_rawDescGZIP(), []int{1}
+	return file_proto_helper_helper_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *AskRequest) GetQuestion() string {
@@ -159,7 +159,7 @@ type AskResponse struct {
 
 func (x *AskResponse) Reset() {
 	*x = AskResponse{}
-	mi := &file_helper_proto_msgTypes[2]
+	mi := &file_proto_helper_helper_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -171,7 +171,7 @@ func (x *AskResponse) String() string {
 func (*AskResponse) ProtoMessage() {}
 
 func (x *AskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_helper_proto_msgTypes[2]
+	mi := &file_proto_helper_helper_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -184,7 +184,7 @@ func (x *AskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AskResponse.ProtoReflect.Descriptor instead.
 func (*AskResponse) Descriptor() ([]byte, []int) {
-	return file_helper_proto_rawDescGZIP(), []int{2}
+	return file_proto_helper_helper_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *AskResponse) GetAnswer() string {
@@ -201,11 +201,219 @@ func (x *AskResponse) GetDetectedRole() string {
 	return ""
 }
 
-var File_helper_proto protoreflect.FileDescriptor
+type EmbedRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Text          string                 `protobuf:"bytes,1,opt,name=text,proto3" json:"text,omitempty"`
+	Model         string                 `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
 
-const file_helper_proto_rawDesc = "" +
+func (x *EmbedRequest) Reset() {
+	*x = EmbedRequest{}
+	mi := &file_proto_helper_helper_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EmbedRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EmbedRequest) ProtoMessage() {}
+
+func (x *EmbedRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_helper_helper_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EmbedRequest.ProtoReflect.Descriptor instead.
+func (*EmbedRequest) Descriptor() ([]byte, []int) {
+	return file_proto_helper_helper_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *EmbedRequest) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *EmbedRequest) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+type EmbedResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Embedding     []float32              `protobuf:"fixed32,1,rep,packed,name=embedding,proto3" json:"embedding,omitempty"`
+	Model         string                 `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
+	Dimensions    int32                  `protobuf:"varint,3,opt,name=dimensions,proto3" json:"dimensions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EmbedResponse) Reset() {
+	*x = EmbedResponse{}
+	mi := &file_proto_helper_helper_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EmbedResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EmbedResponse) ProtoMessage() {}
+
+func (x *EmbedResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_helper_helper_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EmbedResponse.ProtoReflect.Descriptor instead.
+func (*EmbedResponse) Descriptor() ([]byte, []int) {
+	return file_proto_helper_helper_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *EmbedResponse) GetEmbedding() []float32 {
+	if x != nil {
+		return x.Embedding
+	}
+	return nil
+}
+
+func (x *EmbedResponse) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *EmbedResponse) GetDimensions() int32 {
+	if x != nil {
+		return x.Dimensions
+	}
+	return 0
+}
+
+type EmbedBatchRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Texts         []string               `protobuf:"bytes,1,rep,name=texts,proto3" json:"texts,omitempty"`
+	Model         string                 `protobuf:"bytes,2,opt,name=model,proto3" json:"model,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EmbedBatchRequest) Reset() {
+	*x = EmbedBatchRequest{}
+	mi := &file_proto_helper_helper_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EmbedBatchRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EmbedBatchRequest) ProtoMessage() {}
+
+func (x *EmbedBatchRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_helper_helper_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EmbedBatchRequest.ProtoReflect.Descriptor instead.
+func (*EmbedBatchRequest) Descriptor() ([]byte, []int) {
+	return file_proto_helper_helper_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *EmbedBatchRequest) GetTexts() []string {
+	if x != nil {
+		return x.Texts
+	}
+	return nil
+}
+
+func (x *EmbedBatchRequest) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+type EmbedBatchResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Embeddings    []*EmbedResponse       `protobuf:"bytes,1,rep,name=embeddings,proto3" json:"embeddings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EmbedBatchResponse) Reset() {
+	*x = EmbedBatchResponse{}
+	mi := &file_proto_helper_helper_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EmbedBatchResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EmbedBatchResponse) ProtoMessage() {}
+
+func (x *EmbedBatchResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_helper_helper_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EmbedBatchResponse.ProtoReflect.Descriptor instead.
+func (*EmbedBatchResponse) Descriptor() ([]byte, []int) {
+	return file_proto_helper_helper_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *EmbedBatchResponse) GetEmbeddings() []*EmbedResponse {
+	if x != nil {
+		return x.Embeddings
+	}
+	return nil
+}
+
+var File_proto_helper_helper_proto protoreflect.FileDescriptor
+
+const file_proto_helper_helper_proto_rawDesc = "" +
 	"\n" +
-	"\fhelper.proto\x12\x06helper\"7\n" +
+	"\x19proto/helper/helper.proto\x12\x06helper\"7\n" +
 	"\aMessage\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x18\n" +
 	"\acontent\x18\x02 \x01(\tR\acontent\"\xcb\x01\n" +
@@ -218,59 +426,87 @@ const file_helper_proto_rawDesc = "" +
 	"\x13skip_role_detection\x18\x05 \x01(\bR\x11skipRoleDetection\"J\n" +
 	"\vAskResponse\x12\x16\n" +
 	"\x06answer\x18\x01 \x01(\tR\x06answer\x12#\n" +
-	"\rdetected_role\x18\x02 \x01(\tR\fdetectedRole2?\n" +
+	"\rdetected_role\x18\x02 \x01(\tR\fdetectedRole\"8\n" +
+	"\fEmbedRequest\x12\x12\n" +
+	"\x04text\x18\x01 \x01(\tR\x04text\x12\x14\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\"c\n" +
+	"\rEmbedResponse\x12\x1c\n" +
+	"\tembedding\x18\x01 \x03(\x02R\tembedding\x12\x14\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\x12\x1e\n" +
+	"\n" +
+	"dimensions\x18\x03 \x01(\x05R\n" +
+	"dimensions\"?\n" +
+	"\x11EmbedBatchRequest\x12\x14\n" +
+	"\x05texts\x18\x01 \x03(\tR\x05texts\x12\x14\n" +
+	"\x05model\x18\x02 \x01(\tR\x05model\"K\n" +
+	"\x12EmbedBatchResponse\x125\n" +
+	"\n" +
+	"embeddings\x18\x01 \x03(\v2\x15.helper.EmbedResponseR\n" +
+	"embeddings2\xba\x01\n" +
 	"\rHelperService\x12.\n" +
-	"\x03Ask\x12\x12.helper.AskRequest\x1a\x13.helper.AskResponseB2Z0github.com/HelpingPeopleNow/backend/proto/helperb\x06proto3"
+	"\x03Ask\x12\x12.helper.AskRequest\x1a\x13.helper.AskResponse\x124\n" +
+	"\x05Embed\x12\x14.helper.EmbedRequest\x1a\x15.helper.EmbedResponse\x12C\n" +
+	"\n" +
+	"EmbedBatch\x12\x19.helper.EmbedBatchRequest\x1a\x1a.helper.EmbedBatchResponseB2Z0github.com/HelpingPeopleNow/backend/proto/helperb\x06proto3"
 
 var (
-	file_helper_proto_rawDescOnce sync.Once
-	file_helper_proto_rawDescData []byte
+	file_proto_helper_helper_proto_rawDescOnce sync.Once
+	file_proto_helper_helper_proto_rawDescData []byte
 )
 
-func file_helper_proto_rawDescGZIP() []byte {
-	file_helper_proto_rawDescOnce.Do(func() {
-		file_helper_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_helper_proto_rawDesc), len(file_helper_proto_rawDesc)))
+func file_proto_helper_helper_proto_rawDescGZIP() []byte {
+	file_proto_helper_helper_proto_rawDescOnce.Do(func() {
+		file_proto_helper_helper_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_helper_helper_proto_rawDesc), len(file_proto_helper_helper_proto_rawDesc)))
 	})
-	return file_helper_proto_rawDescData
+	return file_proto_helper_helper_proto_rawDescData
 }
 
-var file_helper_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
-var file_helper_proto_goTypes = []any{
-	(*Message)(nil),     // 0: helper.Message
-	(*AskRequest)(nil),  // 1: helper.AskRequest
-	(*AskResponse)(nil), // 2: helper.AskResponse
+var file_proto_helper_helper_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_proto_helper_helper_proto_goTypes = []any{
+	(*Message)(nil),            // 0: helper.Message
+	(*AskRequest)(nil),         // 1: helper.AskRequest
+	(*AskResponse)(nil),        // 2: helper.AskResponse
+	(*EmbedRequest)(nil),       // 3: helper.EmbedRequest
+	(*EmbedResponse)(nil),      // 4: helper.EmbedResponse
+	(*EmbedBatchRequest)(nil),  // 5: helper.EmbedBatchRequest
+	(*EmbedBatchResponse)(nil), // 6: helper.EmbedBatchResponse
 }
-var file_helper_proto_depIdxs = []int32{
+var file_proto_helper_helper_proto_depIdxs = []int32{
 	0, // 0: helper.AskRequest.history:type_name -> helper.Message
-	1, // 1: helper.HelperService.Ask:input_type -> helper.AskRequest
-	2, // 2: helper.HelperService.Ask:output_type -> helper.AskResponse
-	2, // [2:3] is the sub-list for method output_type
-	1, // [1:2] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	4, // 1: helper.EmbedBatchResponse.embeddings:type_name -> helper.EmbedResponse
+	1, // 2: helper.HelperService.Ask:input_type -> helper.AskRequest
+	3, // 3: helper.HelperService.Embed:input_type -> helper.EmbedRequest
+	5, // 4: helper.HelperService.EmbedBatch:input_type -> helper.EmbedBatchRequest
+	2, // 5: helper.HelperService.Ask:output_type -> helper.AskResponse
+	4, // 6: helper.HelperService.Embed:output_type -> helper.EmbedResponse
+	6, // 7: helper.HelperService.EmbedBatch:output_type -> helper.EmbedBatchResponse
+	5, // [5:8] is the sub-list for method output_type
+	2, // [2:5] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
-func init() { file_helper_proto_init() }
-func file_helper_proto_init() {
-	if File_helper_proto != nil {
+func init() { file_proto_helper_helper_proto_init() }
+func file_proto_helper_helper_proto_init() {
+	if File_proto_helper_helper_proto != nil {
 		return
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_helper_proto_rawDesc), len(file_helper_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_helper_helper_proto_rawDesc), len(file_proto_helper_helper_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_helper_proto_goTypes,
-		DependencyIndexes: file_helper_proto_depIdxs,
-		MessageInfos:      file_helper_proto_msgTypes,
+		GoTypes:           file_proto_helper_helper_proto_goTypes,
+		DependencyIndexes: file_proto_helper_helper_proto_depIdxs,
+		MessageInfos:      file_proto_helper_helper_proto_msgTypes,
 	}.Build()
-	File_helper_proto = out.File
-	file_helper_proto_goTypes = nil
-	file_helper_proto_depIdxs = nil
+	File_proto_helper_helper_proto = out.File
+	file_proto_helper_helper_proto_goTypes = nil
+	file_proto_helper_helper_proto_depIdxs = nil
 }

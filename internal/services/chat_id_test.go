@@ -7,6 +7,7 @@ import (
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
 	"github.com/HelpingPeopleNow/backend/internal/ports"
+	"gorm.io/gorm"
 )
 
 // ── Mock implementations ──────────────────────────────────────────
@@ -74,8 +75,8 @@ func (m *mockProfiles) UpsertClientProfile(ctx context.Context, userID string, f
 	return nil
 }
 func (m *mockProfiles) DeleteClientProfile(ctx context.Context, userID string) error { return nil }
-func (m *mockProfiles) FindWorkers(ctx context.Context, filters core.WorkerSearchFilters) ([]core.WorkerProfile, error) {
-	return []core.WorkerProfile{}, nil
+func (m *mockProfiles) FindWorkers(ctx context.Context, filters core.WorkerSearchFilters) (ports.FindResult, error) {
+	return ports.FindResult{}, nil
 }
 
 // Stub implementations for Improvements #1 and #2 in
@@ -95,6 +96,16 @@ func (m *mockProfiles) DeleteWorkerEmbedding(_ context.Context, _ string, _ stri
 }
 func (m *mockProfiles) FindStaleWorkerIDs(_ context.Context) ([]string, error) {
 	return nil, nil
+}
+
+// RawQuery stub — the new RawQuerierPort (third-pass P2) is embedded in
+// ports.ProfileRepository; mockProfiles must satisfy it so go test compiles.
+// Returning nil *gorm.DB is safe: SearchService.currentWorkerFloor fails
+// the floor look-up gracefully and falls back to "no cache hits" rather
+// than crashing. Use nil error intentionally — the caller treats nil DB
+// as "floor lookup failed, treat as invalidating all entries".
+func (m *mockProfiles) RawQuery(_ context.Context, _ string, _ ...interface{}) *gorm.DB {
+	return nil
 }
 
 type mockPrompts struct {

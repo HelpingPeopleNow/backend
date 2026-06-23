@@ -110,6 +110,15 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			handleLLMError(w, err)
 			return
 		}
+		// VECTOR_SEARCH_PLAN §12.3 / Idea C — wire the orphaned vector
+		// metrics here in the handler layer (services → adapters/handler
+		// would be a cycle; handlers → services is the allowed direction).
+		// Branch is post-fact (repo-reported), so the counter reflects
+		// what actually happened — not the intent.
+		IncrVectorSearch(result.Branch)
+		if result.Branch == "vector" && result.TopScore > 0 {
+			ObserveVectorScore(result.TopScore)
+		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"answer":          result.Answer,
 			"workers":         core.FindTraderCards(result.Workers),

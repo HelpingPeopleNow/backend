@@ -1,0 +1,187 @@
+# Vector Embedding Byte-Parity Gate (VECTOR_SEARCH_PLAN §9.2 / §8.6)
+#
+# Two jobs:
+#   * `parity`            — verifies current Python ↔ Go hash parity holds.
+#   * `test-parity-gate`  — meta-verifies the gate FAILURE branch (when
+#     drift IS injected, the gate must catch it). Catches regressions in
+#     `filter → sort → diff` pipeline that the parity job alone could
+#     miss (a vacuous pass through a broken gate).
+#
+# Drift surfaces this workflow catches:
+#   * helper/scripts/backfill_embeddings.py — fetched raw via curl each
+#     run; drift surfaces as fetch-URL drift on the next parity run.
+#   * helper/scripts/test_byte_parity_gate.sh — pulled via shallow git
+#     clone; drift surfaces on the same PR cycle as the failing-case
+#     harness invocation.
+#   * backend/internal/core/worker_embeddings.go + cmd/hash_fixture/main.go
+#     — local checkout, drift surfaces immediately.
+#
+# If parity between the two sides drifts, production reembedWorker (Go)
+# will see hash-mismatch on freshly-embedded rows and re-embed every
+# profile on first intake — wasted Ollama compute. This gate blocks that
+# before merge.
+#
+# Design:
+#   * Go fixture is local — Go is the canonical implementation, so we run
+#     it against the backend checkout.
+#   * Python script is fetched RAW from helper@main — no need to clone the
+#     whole sibling repo (public raw content permits cross-repo fetch
+#     without a PAT).
+#   * Diff is performed on the EXACT lines `cmd/hash_fixture` and
+#     `helper/scripts/backfill_embeddings.py --self-test` emit after a
+#     canonical-line filter (`^  [a-z_]+\|`).
+
+name: vector-parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same PR — saves CI minutes.
+concurrency:
+  group: vector-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  parity:
+    name: python ⇄ go byte-parity
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out backend
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+          # cache-dependency-path is RELATIVE to $GITHUB_WORKSPACE
+          # (the repo root of the current checkout), NOT an absolute
+          # path under /home/runner/...
+          cache-dependency-path: go.sum
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build Go hash_fixture (compile once, run twice)
+        # A precompiled binary is ~50ms to invoke vs ~5s for `go run`
+        # which re-compiles on every call.
+        run: go build -o /tmp/hash_fixture ./cmd/hash_fixture
+
+      - name: Fetch helper Python script (raw, no auth needed for public repo)
+        run: |
+          mkdir -p /tmp/parity
+          curl -fsSL \
+            "https://raw.githubusercontent.com/HelpingPeopleNow/helper/main/scripts/backfill_embeddings.py" \
+            -o /tmp/parity/backfill_embeddings.py
+          test -s /tmp/parity/backfill_embeddings.py
+          echo "fetched $(wc -l < /tmp/parity/backfill_embeddings.py) lines"
+
+      - name: Run Python --self-test
+        run: python3 /tmp/parity/backfill_embeddings.py --self-test
+
+      - name: Run Go hash_fixture (canonical, binary form)
+        # Emits `=== fixture N ===` then `  name|text|hash` lines.
+        run: /tmp/hash_fixture
+
+      - name: Capture canonical outputs to /tmp files
+        # Capture both sides to disk — downstream step reads from file
+        # without re-invoking either binary. Idempotent — deterministic
+        # run gives identical output across N invocations.
+        run: |
+          set -euo pipefail
+          python3 /tmp/parity/backfill_embeddings.py --self-test 2>/dev/null \
+            | grep -E '^  [a-z][a-z_-]+\|' > /tmp/py_raw.txt
+          /tmp/hash_fixture 2>&1 \
+            | grep -E '^  [a-z][a-z_-]+\|' > /tmp/go_raw.txt
+
+      - name: Diff canonical name|text|hash lines
+        # sort -u dedupes hash collisions (would otherwise silently merge
+        # to one line and miss drift). Permissive regex [a-z][a-z_-]+
+        # covers both snake_case and hyphenated future field names.
+        run: |
+          set -euo pipefail
+          grep -E '^  [a-z][a-z_-]+\|' /tmp/py_raw.txt | sort -u > /tmp/py_canonical.txt
+          grep -E '^  [a-z][a-z_-]+\|' /tmp/go_raw.txt | sort -u > /tmp/go_canonical.txt
+          echo "--- python canonical ($(wc -l < /tmp/py_canonical.txt) unique lines) ---"
+          cat /tmp/py_canonical.txt
+          echo "--- go canonical ($(wc -l < /tmp/go_canonical.txt) unique lines) ---"
+          cat /tmp/go_canonical.txt
+          echo "--- diff -u (empty == parity OK) ---"
+          diff -u /tmp/py_canonical.txt /tmp/go_canonical.txt
+          echo "BYTE-PARITY CONFIRMED"
+
+  # Meta-test: verify the gate correctly catches drift when drift is
+  # actually present. Runs the same harness that exists at
+  # helper/scripts/test_byte_parity_gate.sh — Scenario A (no drift)
+  # must succeed AND Scenario B (ascii/ignore-injected drift) must
+  # turn the gate red. If this job fails, the gate's failure-detection
+  # branch is broken — the parity job alone would be a vacuous pass.
+  #
+  # Note on isolation: GitHub Actions parallel jobs run on separate VMs,
+  # so /tmp is fresh per job. The parity job writes /tmp/hash_fixture;
+  # this job writes /tmp/test_parity_hash_fixture — no collision, by
+  # virtue of job-level isolation. Don't "DRY" these into one path.
+  test-parity-gate:
+    name: gate fails on drift (failing-case harness)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out backend
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Shallow-clone helper for test harness
+        # Public repo, no PAT needed. The harness reads the Python
+        # script + byte-parity fixtures from this clone.
+        # `::error::` annotation surfaces the failure in the GH Actions
+        # UI as a red dot rather than a terse generic exit-128.
+        run: |
+          git clone --depth 1 https://github.com/HelpingPeopleNow/helper.git /tmp/helper-worktree || {
+            echo "::error::helper clone failed (network or repo down)"
+            exit 1
+          }
+          test -f /tmp/helper-worktree/scripts/backfill_embeddings.py
+          test -f /tmp/helper-worktree/scripts/test_byte_parity_gate.sh
+          echo "cloned helper ($(git -C /tmp/helper-worktree rev-parse --short HEAD))"
+
+      - name: Run failing-case byte-parity harness
+        # BACKEND_DIR is **load-bearing**: the harness's first act is
+        # `BACKEND_DIR="${BACKEND_DIR:-}"` fallback; if unset, it does a
+        # fresh `git clone` of helperp-peoplenow/backend instead of using
+        # the existing checkout — adding ~30s per run. Don't drop this
+        # env var without also dropping the harness's auto-clone path.
+        #
+        # HELPER_ROOT is intentionally NOT passed as env here — the
+        # harness's positional-arg form (`bash SCRIPT.sh HELPER_ROOT`)
+        # resolves HELPER_ROOT via `cd "$(dirname "$0")/.."` correctly.
+        # Mixing env + arg forms is a maintainer landmine.
+        #
+        # Job exits 0 iff Scenarios A AND B both behave as expected:
+        #   A — parity holds (empty diff)
+        #   B — gate goes red on injected drift (non-empty diff +
+        #       bio line present)
+        env:
+          BACKEND_DIR: ${{ github.workspace }}
+        run: bash /tmp/helper-worktree/scripts/test_byte_parity_gate.sh /tmp/helper-worktree

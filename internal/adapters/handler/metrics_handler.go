@@ -46,6 +46,12 @@ var metrics = struct {
 	dmSentTotal            map[string]*counter   // key: role (client|worker) or "contact"
 	dmReceivedTotal        map[string]*counter   // key: role
 	healthStatus           map[string]*gauge     // key: component
+
+	// VECTOR_SEARCH_PLAN §12.3 — vector search metrics. NO Prometheus
+	// client_golang import (Improvement #7): use the existing custom
+	// registry pattern.
+	vectorSearchTotal  map[string]*counter   // key: status ("vector"|"ilike"|"ilike_disabled_via_env"|"ilike_low_top_score")
+	vectorScore        map[string]*histogram // histogram of top_score from the vector branch
 }{
 	httpRequestsTotal:      make(map[string]*counter),
 	httpRequestDuration:    make(map[string]*histogram),
@@ -59,6 +65,9 @@ var metrics = struct {
 	dmSentTotal:            make(map[string]*counter),
 	dmReceivedTotal:        make(map[string]*counter),
 	healthStatus:           make(map[string]*gauge),
+
+	vectorSearchTotal:      make(map[string]*counter),
+	vectorScore:            make(map[string]*histogram),
 }
 
 // defaultBuckets for latency histograms (seconds).
@@ -208,6 +217,29 @@ func SetHealthStatus(component string, healthy bool) {
 	} else {
 		g.value = 0
 	}
+}
+
+// IncrVectorSearch increments the vector_search_total counter per branch
+// (VECTOR_SEARCH_PLAN §12.3 / Idea C). status values:
+//   - "vector"                        — vector branch produced the result
+//   - "ilike"                         — ILIKE branch (no vector available)
+//   - "ilike_disabled_via_env"        — VECTOR_SEARCH_ENABLED=false
+//   - "ilike_low_top_score"           — vector ran but top_score < threshold
+func IncrVectorSearch(status string) {
+	metrics.Lock()
+	defer metrics.Unlock()
+	getCounter(metrics.vectorSearchTotal, status).value++
+}
+
+// ObserveVectorScore records the top_score from a vector search run.
+// Used to inspect whether the configured VECTOR_SEARCH_MIN_TOP_SCORE
+// threshold is sane (Phase 5.5 of §15 — raise the threshold if median
+// drops below 0.55 across 100+ searches).
+func ObserveVectorScore(score float64) {
+	metrics.Lock()
+	defer metrics.Unlock()
+	h := getHistogram(metrics.vectorScore, "all")
+	observeValue(h, score)
 }
 
 // RegisterMetricsRoutes registers GET /metrics on the provided mux.
@@ -440,6 +472,23 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 		metricType: "gauge",
 		keys:       []string{"component"},
 		gauges:     metrics.healthStatus,
+	}))
+
+	// 13. vector_search_total (VECTOR_SEARCH_PLAN §12.3 / Idea C / N1)
+	write(renderFamilyToString(metricFamily{
+		name:       "vector_search_total",
+		help:       "Total search requests by branch (vector|ilike|ilike_disabled_via_env|ilike_low_top_score).",
+		metricType: "counter",
+		keys:       []string{"branch"},
+		counters:   metrics.vectorSearchTotal,
+	}))
+
+	// 14. vector_score (VECTOR_SEARCH_PLAN §12.3 / Phase 5.5)
+	write(renderFamilyToString(metricFamily{
+		name:       "vector_score",
+		help:       "Top cosine score of the vector branch per search (0–1; close to 1 is semantically close).",
+		metricType: "histogram",
+		histograms: metrics.vectorScore,
 	}))
 
 	w.Write([]byte(sb.String()))

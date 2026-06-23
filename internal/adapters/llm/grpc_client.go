@@ -17,13 +17,15 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+const expectedEmbeddingDim = 768
+
 type GRPCLLMService struct {
-	addr         string
-	healthURL    string
-	timeoutSecs  int
-	mu           sync.Mutex
-	conn         *grpc.ClientConn
-	client       pb.HelperServiceClient
+	addr        string
+	healthURL   string
+	timeoutSecs int
+	mu          sync.Mutex
+	conn        *grpc.ClientConn
+	client      pb.HelperServiceClient
 }
 
 func NewGRPCLLMService(addr, healthURL string) ports.LLMService {
@@ -103,6 +105,30 @@ func (s *GRPCLLMService) Ask(
 		Answer: resp.GetAnswer(),
 		Role:   resp.GetDetectedRole(),
 	}, nil
+}
+
+// Embed forwards to the helper's Embed gRPC (VECTOR_SEARCH_PLAN §8.4).
+// Length-mismatch validation happens here so mismatched-dim vectors never
+// reach the database.
+func (s *GRPCLLMService) Embed(ctx context.Context, text string) ([]float32, error) {
+	if err := s.ensureClient(); err != nil {
+		return nil, err
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, time.Duration(s.timeoutSecs)*time.Second)
+	defer cancel()
+
+	resp, err := s.client.Embed(callCtx, &pb.EmbedRequest{Text: text})
+	if err != nil {
+		return nil, fmt.Errorf("gRPC embed: %w", err)
+	}
+	if resp == nil {
+		return nil, fmt.Errorf("gRPC embed: nil response")
+	}
+	if got, want := len(resp.Embedding), expectedEmbeddingDim; got != want {
+		return nil, fmt.Errorf("embed dim mismatch: got %d, want %d (model=%s)", got, want, resp.GetModel())
+	}
+	return resp.Embedding, nil
 }
 
 func (s *GRPCLLMService) Health(ctx context.Context) error {
