@@ -5,6 +5,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/HelpingPeopleNow/backend/database"
@@ -65,7 +68,6 @@ func buildMux(d appDeps) *http.ServeMux {
 	mux.Handle("/api/v1/conversations", middleware.CORS(d.Auth.Wrap(handler.NewConversationHandler(d.ChatRepo))))
 	mux.Handle("/api/v1/conversations/", middleware.CORS(d.Auth.Wrap(handler.NewConversationHandler(d.ChatRepo))))
 
-	// Direct messaging routes
 	broker := realtime.NewSSEBroker()
 	dmRateLimiter := ratelimit.NewRateLimiter(30, time.Minute)
 	dmHandler := handler.NewDirectMessagingHandler(d.DMRepo, d.ProfileRepo, broker, dmRateLimiter)
@@ -80,6 +82,66 @@ func buildMux(d appDeps) *http.ServeMux {
 
 	handler.RegisterMetricsRoutes(mux)
 	return mux
+}
+
+// runStalenessSweeper (VECTOR_SEARCH_PLAN §8.10 / Improvement #11).
+//
+// Uses a persistent wg that survives across ticks so the sweeper can
+// drain in-flight ReembedWorker goroutines on SIGTERM/shutdown instead of
+// leaving them orphaned.
+//
+// Loop semantics:
+//   - Listen on tick.C and ctx.Done() via select.
+//   - On each tick: fan out ReembedWorker for stale IDs, incrementing wg.
+//     Do NOT block the loop on wg.Wait() — that would pile up ticks.
+//   - On ctx.Done: wg.Wait() to drain, then return.
+//
+// The IntakeService.reembedSem still bounds in-flight concurrency to 3
+// (NUM_PARALLEL=1 Ollama slot is preserved).
+func runStalenessSweeper(
+	ctx context.Context,
+	intake *services.IntakeService,
+	profileRepo ports.ProfileRepository,
+	interval time.Duration,
+) {
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+
+	var pendingWG sync.WaitGroup
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("sweeper: shutdown requested; draining in-flight re-embeds")
+			pendingWG.Wait()
+			slog.Info("sweeper: all in-flight re-embeds drained, exiting")
+			return
+
+		case <-tick.C:
+			sweepCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+			ids, err := profileRepo.FindStaleWorkerIDs(sweepCtx)
+			if err != nil {
+				slog.Warn("sweeper: FindStaleWorkerIDs failed", "error", err)
+				cancel()
+				continue
+			}
+			if len(ids) == 0 {
+				slog.Info("sweeper: no stale workers")
+				cancel()
+				continue
+			}
+			slog.Info("sweeper: re-embedding stale workers", "count", len(ids))
+			for _, uid := range ids {
+				pendingWG.Add(1)
+				go func(userID string) {
+					defer pendingWG.Done()
+					// Per-worker 60s deadline lives inside IntakeService.ReembedWorker.
+					intake.ReembedWorker(userID)
+				}(uid)
+			}
+			cancel()
+		}
+	}
 }
 
 func main() {
@@ -118,10 +180,66 @@ func main() {
 
 	mux := buildMux(deps)
 
+	// VECTOR_SEARCH_PLAN §8.10 / Improvement #11: kick off the staleness
+	// sweeper with a cancellable context, registered on rootWG so the
+	// process waits for it on SIGTERM (Plan showstopper #3 — the
+	// previous code allowed main to exit immediately after server.Shutdown
+	// unblocked ListenAndServe, killing any mid-write ReembedWorker).
+	rootCtx, cancelRoot := context.WithCancel(context.Background())
+	defer cancelRoot()
+
+	var rootWG sync.WaitGroup
+	rootWG.Add(1)
+	go func() {
+		defer rootWG.Done()
+		runStalenessSweeper(rootCtx, deps.Intake, deps.ProfileRepo, 10*time.Minute)
+	}()
+
+	server := &http.Server{
+		Addr:    ":" + port,
+		Handler: middleware.Logging(mux),
+	}
+
+	// Signal handler — SIGTERM/SIGINT triggers a coordinated shutdown.
+	// cancelRoot() runs FIRST so the sweeper's inner pendingWG.Wait()
+	// (which can hold for up to 60s waiting on an in-flight ReembedWorker)
+	// starts draining in parallel with HTTP Shutdown. listen goroutine
+	// unblocks as soon as Shutdown starts.
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		sig := <-sigChan
+		slog.Info("shutdown signal received", "signal", sig.String())
+		cancelRoot() // signal sweeper FIRST so its drain can race with HTTP Shutdown
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancelShutdown()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			slog.Error("server shutdown error", "error", err)
+		}
+	}()
+
 	slog.Info("listening", "addr", ":"+port)
-	if err := http.ListenAndServe(":"+port, middleware.Logging(mux)); err != nil {
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
+	}
+
+	// Bounded drain of the sweeper goroutine (Plan showstopper #3 fix).
+	// 65s cap — slightly above ReembedWorker's 60s per-worker deadline so
+	// a normal in-flight write completes cleanly. If something is truly
+	// stuck, we log a warning and exit anyway rather than hang the process
+	// forever (k8s SIGKILL after terminationGracePeriodSeconds is worse).
+	slog.Info("server stopped cleanly; waiting for sweeper to drain")
+	drainDone := make(chan struct{})
+	go func() {
+		rootWG.Wait()
+		close(drainDone)
+	}()
+	select {
+	case <-drainDone:
+		slog.Info("sweeper drained cleanly; exiting")
+	case <-time.After(65 * time.Second):
+		slog.Warn("sweeper drain timed out after 65s; exiting anyway (in-flight ReembedWorker may have been killed)")
 	}
 }
 
