@@ -199,12 +199,7 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | Languages | `languages` | string[] |
 | Emergency | `emergency_service` | boolean |
 | Website | `website` | string |
-| Instagram | `instagram` | string |
-| Facebook | `facebook` | string |
-| Twitter | `twitter` | string |
-| LinkedIn | `linkedin` | string |
-| TikTok | `tiktok` | string |
-| YouTube | `youtube` | string |
+| Social Links | `social_links` | `{platform,url}[]` (object array; no per-platform top-level keys) |
 
 **Client profile fields mapped from detected_fields:**
 
@@ -237,11 +232,13 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | PUT | `/api/v1/system-prompts/client_profile` | Yes | Update the client profile prompt text |
 | PUT | `/api/v1/system-prompts/provider` | Yes | Set LLM provider ("opencode", "ollama", "mistral", or "" for auto fallback chain) |
 | PUT | `/api/v1/user/reset-role` | Yes* | Clear user role (reset to "") |
-| GET | `/api/v1/conversations` | Yes* | List conversations (supports `?type=worker&limit=N`) |
-| GET | `/api/v1/conversations/:id` | Yes* | Get conversation with full message history |
+| GET | `/api/v1/conversations` | Yes | List conversations (supports `?type=worker&limit=N`) |
+| GET | `/api/v1/conversations/:id` | Yes | Get conversation with full message history |
+| GET | `/api/v1/workers/:id/contact` | Yes | Create-or-resume a direct-message conversation with another worker (returns `conversation_id`) |
+| GET, POST, PATCH | `/api/v1/direct-messages`, `/api/v1/direct-messages/:id/*` | Yes | Direct messaging: inbox, thread, send, read, archive, block, report, SSE stream (`/stream`), polling (`/since`) |
+| GET | `/admin/*` | Yes (admin) | Admin entity CRUD (users, worker-profiles, client-profiles, conversations, messages) |
 
-*Chat is session-independent unless the user is authenticated — session-based requests load existing profile for field merging.
-Session validation is done via cookie parsing + direct DB lookup.
+*Chat handler is wrapped by `AuthMiddleware` but does not require a session — anonymous users get chat, and only authenticated requests merge fields into the user's profile.
 
 ### Health
 
@@ -415,9 +412,11 @@ All handlers use Go's `log/slog` with structured key-value pairs:
 | `main.go` | Startup, shutdown, request method/path/duration |
 | `ChatHandler` (worker) | Message sizes, prompt length, provider, lang, detected_fields JSON, field counts |
 | `ChatHandler` (client) | Message sizes, prompt length, provider, lang, detected_fields JSON, field counts |
+| `SearchService` | Branch (vector/ilike), top score, cache_hit, duration_ms |
 | `SystemPromptHandler` | GET/PUT operations, column name, cache refresh |
-| `AuthMiddleware` | Session validation, missing/invalid cookies |
+| `AuthMiddleware` | Session validation via auth service + DB fallback, missing/invalid cookies |
 | `ConversationHandler` | Conversation list/get operations, user ID, conversation count |
+| `DirectMessagingHandler` | DM send/read/archive, SSE subscribers, rate-limit decisions |
 
 ---
 
@@ -426,7 +425,9 @@ All handlers use Go's `log/slog` with structured key-value pairs:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8081` | HTTP listen port |
+| `AUTH_SERVICE_URL` | — (required) | Base URL of the auth service for session resolution (e.g. `http://helpingpeoplenow-auth:8083`) |
 | `HELPER_GRPC_ADDR` | `helpingpeoplenow-helper:50051` | Helper gRPC address |
+| `HELPER_HEALTH_URL` | `http://helpingpeoplenow-helper:8084/health` | Helper HTTP health endpoint (used by `/health` composite check) |
 | `HELPER_TIMEOUT_SECONDS` | `60` | gRPC request timeout |
 | `DATABASE_URL` | — | Direct DSN (overrides individual vars below) |
 | `DB_HOST` | `postgres` | PostgreSQL host |

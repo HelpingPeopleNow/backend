@@ -1,6 +1,6 @@
 # backend
 
-Go REST API (stdlib `net/http`, `log/slog`) with hexagonal architecture. Chat is split into dedicated per-role endpoints (worker/chat, client/chat, client/find-chat). Manages system prompts/LLM provider, handles worker/client profiles, persists conversations.
+Go REST API (stdlib `net/http`, `log/slog`) with hexagonal architecture. All chat traffic flows through a single unified endpoint (`/api/v1/chat`) with `mode` in the request body (`worker_intake`, `client_intake`, `search`). Manages system prompts/LLM provider, handles worker/client profiles, persists conversations, and powers worker↔client direct messaging.
 
 ## Commands
 
@@ -49,9 +49,9 @@ Two-table schema: `direct_conversations` (unique per client+worker pair) + `dire
 
 ## Gotchas
 
-- **Architecture source of truth.** The Architecture section above is the source of truth for the current hexagonal layout. Deeper architectural notes (including the vector-search plan) live in `infra/docs/VECTOR_SEARCH_PLAN.md`. Older revisions of this file (and `README.md`) described a flatter "no service layer" / "no port/repository abstractions" model — that description predates the hexagonal refactor and is not accurate against the current `main.go` wiring or the `chat_id_test.go` mock.
-- `authMiddleware` was removed — each handler does its own session validation via `sessionCookie()` + `rawSessionToken()`.
-- `extractUserIDFromRequest` (`worker_handler.go:177`) does direct DB lookup for session.
+- **Architecture source of truth.** The Architecture section above is the source of truth for the current hexagonal layout. Deeper architectural notes (including the vector-search plan) live in `infra/docs/VECTOR_SEARCH_PLAN.md`. Older revisions of this file (and `README.md`) described a flatter "no service layer" / "no port/repository abstractions" model — that description predates the hexagonal refactor and is not accurate against the current `main.go` wiring.
+- `AuthMiddleware` IS wired (contrary to older doc revisions): `main.go` constructs `*middleware.AuthMiddleware` via `middleware.NewAuthMiddleware(AUTH_SERVICE_URL, db)` and wraps every protected handler with `d.Auth.Wrap(...)`. Session is resolved via the auth service first, falling back to DB on failure. Do not bypass it from individual handlers.
+- `sessionCookie()` / `rawSessionToken()` (`internal/adapters/middleware/auth.go`) check `__Secure-better-auth.session_token` first, then `better-auth.session_token`. The legacy `better-auth-session` cookie name has been removed.
 - gRPC client uses `insecure.NewCredentials()` with `grpc.WithBlock()` at startup; failure is non-fatal and `ensureClient()` re-dials on each request if nil.
 - Startup cache priming quirk: `NewChatHandler` is called first, then system prompt loaded into it, then a **second** `NewSystemPromptHandler` with `onUpdate` callbacks replaces the first one (`main.go:143-171`).
 - Rate limit detection: gRPC error containing `"429"` or `"rate limit"` returns friendly JSON instead of HTTP error.
@@ -59,6 +59,7 @@ Two-table schema: `direct_conversations` (unique per client+worker pair) + `dire
 - PUT endpoints for worker/client profiles were **removed** — profiles are now saved automatically by the chat handlers. Only DELETE (reset) endpoints remain.
 - `user.role` column exists in DB but is no longer written by the backend.
 - `chatRequest` struct includes `Lang` string — backend appends language instruction to system prompt based on value (`es` → Spanish, `en` → English).
+- Vector search: search service emits an `Embed` gRPC call to the helper on each cache miss; repository picks an ILIKE or vector branch and reports it post-fact in `result.Branch`. Vector metrics (counts, top-score) are wired in `chat_handler.go → IncrVectorSearch/ObserveVectorScore`.
 
 ## Env vars
 
