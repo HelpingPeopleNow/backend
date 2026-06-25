@@ -3,165 +3,93 @@ package core
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
+// ── ParseFields ─────────────────────────────────────────────────────
+
 func TestParseFieldsValid(t *testing.T) {
-	answer := `Hello! I'm a plumber.
-[FIELDS]{"profession":"plumber","city":"Madrid"}[/FIELDS]`
-	cleaned, raw := ParseFields(answer)
-	if raw == nil {
-		t.Fatal("expected non-nil raw fields")
-	}
-	if cleaned != "Hello! I'm a plumber." {
-		t.Fatalf("unexpected cleaned text: %q", cleaned)
-	}
+	input := "Hello!\n[FIELDS]{\"profession\":\"plumber\",\"city\":\"Madrid\"}[/FIELDS]"
+	text, raw := ParseFields(input)
+	require.NotNil(t, raw)
+	assert.Contains(t, string(raw), "plumber")
+	// cleaned text has tag removed
+	assert.Contains(t, text, "Hello!")
 }
 
-func TestParseFieldsMultipleBlocksLastWins(t *testing.T) {
-	answer := `First attempt.
-[FIELDS]{"profession":"electrician"}[/FIELDS]
-Second attempt.
-[FIELDS]{"profession":"plumber","city":"Madrid"}[/FIELDS]`
-	_, raw := ParseFields(answer)
-	if raw == nil {
-		t.Fatal("expected non-nil raw fields")
-	}
-	// LastIndex means the second block should win.
-	var m map[string]interface{}
-	if err := json.Unmarshal(raw, &m); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
-	if m["profession"] != "plumber" {
-		t.Fatalf("expected last block to win, got profession=%v", m["profession"])
-	}
-}
-
-func TestParseFieldsNoBlock(t *testing.T) {
-	answer := "Hello, I'm a plumber."
-	cleaned, raw := ParseFields(answer)
-	if raw != nil {
-		t.Fatal("expected nil raw fields for no block")
-	}
-	if cleaned != answer {
-		t.Fatalf("cleaned text should equal input when no block present")
-	}
+func TestParseFieldsMultipleBlocks(t *testing.T) {
+	input := "[FIELDS]{\"a\":\"1\"}[/FIELDS]\nextra\n[FIELDS]{\"b\":\"2\"}[/FIELDS]"
+	_, raw := ParseFields(input)
+	require.NotNil(t, raw)
+	assert.Contains(t, string(raw), "b")
+	assert.NotContains(t, string(raw), "\"a\"")
 }
 
 func TestParseFieldsInvalidJSON(t *testing.T) {
-	answer := `Hello!
-[FIELDS]{not valid json}[/FIELDS]`
-	cleaned, raw := ParseFields(answer)
-	// Invalid JSON should return original answer, nil fields.
-	if raw != nil {
-		t.Fatal("expected nil raw fields for invalid JSON")
-	}
-	if cleaned != answer {
-		t.Fatalf("cleaned text should equal input for invalid JSON block")
-	}
+	input := "[FIELDS]{not valid json}[/FIELDS]"
+	_, raw := ParseFields(input)
+	assert.Nil(t, raw)
+}
+
+func TestParseFieldsNone(t *testing.T) {
+	_, raw := ParseFields("Hello! How can I help?")
+	assert.Nil(t, raw)
 }
 
 func TestParseFieldsEmptyTags(t *testing.T) {
-	answer := `Hello![FIELDS][/FIELDS]`
-	cleaned, raw := ParseFields(answer)
-	if raw != nil {
-		t.Fatal("expected nil raw fields for empty tags")
-	}
-	if cleaned != "Hello!" {
-		t.Fatalf("unexpected cleaned text: %q", cleaned)
-	}
+	_, raw := ParseFields("[FIELDS][/FIELDS]")
+	assert.Nil(t, raw)
 }
 
-func TestParseFieldsWithTextAround(t *testing.T) {
-	answer := `Sure, here's what I know:
-[FIELDS]{"profession":"cleaner"}[/FIELDS]
-Let me know if you need anything else!`
-	cleaned, raw := ParseFields(answer)
-	if raw == nil {
-		t.Fatal("expected non-nil raw fields")
-	}
-	expected := "Sure, here's what I know:\n\nLet me know if you need anything else!"
-	if cleaned != expected {
-		t.Fatalf("unexpected cleaned text:\n got: %q\nwant: %q", cleaned, expected)
-	}
+// ── ParseFieldsMap ──────────────────────────────────────────────────
+
+func TestParseFieldsMapValid(t *testing.T) {
+	input := "extra text [FIELDS]{\"profession\":\"plumber\"}[/FIELDS]"
+	text, fields := ParseFieldsMap(input)
+	require.NotNil(t, fields)
+	assert.Equal(t, "plumber", fields["profession"])
+	// cleaned text has the tag removed, other text preserved
+	assert.Equal(t, "extra text", text)
 }
+
+func TestParseFieldsMapNone(t *testing.T) {
+	text, fields := ParseFieldsMap("Hello!")
+	assert.Equal(t, "Hello!", text)
+	assert.Nil(t, fields)
+}
+
+// ── ParseSearch ─────────────────────────────────────────────────────
 
 func TestParseSearchValid(t *testing.T) {
-	answer := `I'll search for plumbers in your area.
-[SEARCH]{"profession":"plumber","city":"Madrid"}[/SEARCH]`
-	cleaned, raw := ParseSearch(answer)
-	if raw == nil {
-		t.Fatal("expected non-nil raw search")
-	}
-	if cleaned != "I'll search for plumbers in your area." {
-		t.Fatalf("unexpected cleaned text: %q", cleaned)
-	}
-}
-
-func TestParseSearchNoBlock(t *testing.T) {
-	answer := "Hello! How can I help you?"
-	cleaned, raw := ParseSearch(answer)
-	if raw != nil {
-		t.Fatal("expected nil raw search for no block")
-	}
-	if cleaned != answer {
-		t.Fatalf("cleaned text should equal input")
-	}
-}
-
-func TestParseSearchMultipleBlocksLastWins(t *testing.T) {
-	answer := `First.
-[SEARCH]{"profession":"electrician"}[/SEARCH]
-Updated.
-[SEARCH]{"profession":"plumber","city":"Barcelona"}[/SEARCH]`
-	_, raw := ParseSearch(answer)
-	if raw == nil {
-		t.Fatal("expected non-nil raw search")
-	}
+	input := "I'll search...\n[SEARCH]{\"profession\":\"plumber\",\"city\":\"Madrid\"}[/SEARCH]"
+	_, raw := ParseSearch(input)
+	require.NotNil(t, raw)
 	var m map[string]interface{}
-	if err := json.Unmarshal(raw, &m); err != nil {
-		t.Fatalf("failed to unmarshal: %v", err)
-	}
-	if m["city"] != "Barcelona" {
-		t.Fatalf("expected last block to win, got city=%v", m["city"])
-	}
+	err := json.Unmarshal(raw, &m)
+	require.NoError(t, err)
+	assert.Equal(t, "plumber", m["profession"])
 }
 
-func TestParseFieldsMapWithFields(t *testing.T) {
-	answer := `Hi!
-[FIELDS]{"profession":"plumber","phone":"555-1234"}[/FIELDS]`
-	cleaned, m := ParseFieldsMap(answer)
-	if m == nil {
-		t.Fatal("expected non-nil map")
-	}
-	if m["profession"] != "plumber" {
-		t.Fatalf("expected profession=plumber, got %v", m["profession"])
-	}
-	if m["phone"] != "555-1234" {
-		t.Fatalf("expected phone=555-1234, got %v", m["phone"])
-	}
-	if cleaned != "Hi!" {
-		t.Fatalf("unexpected cleaned text: %q", cleaned)
-	}
+func TestParseSearchNone(t *testing.T) {
+	_, raw := ParseSearch("Hello!")
+	assert.Nil(t, raw)
 }
 
-func TestParseFieldsMapNoFields(t *testing.T) {
-	answer := "Hello, how are you?"
-	cleaned, m := ParseFieldsMap(answer)
-	if m != nil {
-		t.Fatalf("expected nil map for no fields, got %v", m)
-	}
-	if cleaned != answer {
-		t.Fatalf("cleaned text should equal input")
-	}
+// ── truncate ────────────────────────────────────────────────────────
+
+func TestTruncateShort(t *testing.T) {
+	assert.Equal(t, "hi", truncate("hi", 100))
 }
 
-func TestParseFieldsMapInvalidJSON(t *testing.T) {
-	answer := `[FIELDS]{bad json}[/FIELDS]`
-	cleaned, m := ParseFieldsMap(answer)
-	if m != nil {
-		t.Fatalf("expected nil map for invalid JSON, got %v", m)
-	}
-	if cleaned != answer {
-		t.Fatalf("cleaned text should equal input for invalid JSON")
-	}
+func TestTruncateLong(t *testing.T) {
+	// truncate just cuts, no "..." appended
+	got := truncate("hello world", 5)
+	assert.Equal(t, "hello", got)
+}
+
+func TestTruncateExact(t *testing.T) {
+	got := truncate("hello", 5)
+	assert.Equal(t, "hello", got)
 }

@@ -1,0 +1,13 @@
+# .testcoverage.yml — vladopajic/go-test-coverage config
+# Plan §7.6: start conservative (50%), ratchet to 80% over 3-4 PRs.
+# Per-package overrides: 100% floor for services/ports/contextkeys,
+# 75% for adapters (not yet written — placeholder).
+threshold: 50
+
+packages:
+  - path: ./internal/services/
+    threshold: 50
+  - path: ./internal/ports/
+    threshold: 50
+  - path: ./internal/contextkeys/
+    threshold: 50

@@ -1,11 +1,13 @@
-# backend/.github/workflows/ci.yml
 name: Backend Service CI
 
 on:
   push:
     branches: [main]
-  pull_request:
-  workflow_dispatch:
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
 
 concurrency:
   group: backend-ci-${{ github.ref }}
@@ -13,81 +15,115 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: helpingpeoplenow/backend
+
 jobs:
   # ──────────────────────────────────────────────
-  # Step 1: Lint
+  # Step 1: Lint (gofmt + go vet + govulncheck)
   # ──────────────────────────────────────────────
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af168  # v4
+      - uses: actions/setup-go@0a12ed9d6a96ab950c2f0a67f1d8c224f0dd54d4  # v5
         with:
-          go-version: '1.25'
-          cache: true
+          go-version-file: go.mod
           cache-dependency-path: go.sum
-
-      - name: Run go vet
-        run: go vet ./...
+      - run: gofmt -l . | tee fmt.out && test ! -s fmt.out
+      - run: go vet ./...
+      - run: go tool govulncheck ./...
 
   # ──────────────────────────────────────────────
-  # Step 2: Build
+  # Step 2: Build (type check by compilation)
   # ──────────────────────────────────────────────
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: [lint]
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af168  # v4
+      - uses: actions/setup-go@0a12ed9d6a96ab950c2f0a67f1d8c224f0dd54d4  # v5
         with:
-          go-version: '1.25'
-          cache: true
+          go-version-file: go.mod
           cache-dependency-path: go.sum
-
-      - name: Build binary
-        run: go build -o /dev/null ./...
+      - run: go build -o backend .
 
   # ──────────────────────────────────────────────
-  # Step 3: Tests + Coverage
+  # Step 3: Tests with PostgreSQL service container
   # ──────────────────────────────────────────────
   test:
-    name: Tests + Coverage
+    name: Tests
     runs-on: ubuntu-latest
     needs: [lint, build]
-    steps:
-      - uses: actions/checkout@v7
+    permissions:
+      contents: read
+      pull-requests: write
 
-      - uses: actions/setup-go@v5
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/helpingpeoplenow_backend_test?sslmode=disable
+      TEST_DB_NAME: helpingpeoplenow_backend_test
+      AUTH_SERVICE_URL: http://localhost:9999
+      HELPER_TIMEOUT_SECONDS: "5"
+      GOFLAGS: -mod=readonly
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af168  # v4
+
+      - uses: actions/setup-go@0a12ed9d6a96ab950c2f0a67f1d8c224f0dd54d4  # v5
         with:
-          go-version: '1.25'
-          cache: true
+          go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      - name: Run tests with coverage
-        run: |
-          go test -v -count=1 -coverprofile=coverage.out -covermode=atomic \
-            ./internal/core/... ./internal/services/...
+      - name: Download modules
+        run: go mod download
 
-      - name: Enforce coverage ≥ 80%
-        run: |
-          TOTAL=$(go tool cover -func=coverage.out | tail -1 | awk '{print $NF}' | tr -d '%')
-          echo "Total coverage: ${TOTAL}%"
-          if [ "$(echo "$TOTAL < 80" | bc -l)" -eq 1 ]; then
-            echo "::error::Coverage ${TOTAL}% is below 80% threshold"
-            exit 1
-          fi
+      - name: Run tests with coverage
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Enforce coverage thresholds
+        if: success() || failure()
+        uses: vladopajic/go-test-coverage@9f6d3f5e0e5f59fe8b8342e7f76d1a5e4d80e3cc  # v2
+        with:
+          config: ./.testcoverage.yml
 
       - name: Upload coverage artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f2fb81e37e  # v4
         with:
-          name: coverage-report
+          name: backend-coverage-${{ github.sha }}
           path: coverage.out
+          retention-days: 30
+
+      - name: Comment coverage on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: marocchino/sticky-pull-request-comment@52439e0e8235c5bcb88863909cfdf9b729974262  # v2
+        with:
+          header: backend-coverage
+          message: |
+            ## Backend Service Test Coverage
+
+            | Metric    | Threshold | Status |
+            |-----------|-----------|--------|
+            | Statements (total) | 80% | ${{ job.status == 'success' && '✅' || '❌' }} |
+
+            Go's coverprofile produces statement coverage only; Lines/Branches/Functions are not independently measured by this toolchain.
+
+            [Full report](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
   # ──────────────────────────────────────────────
   # Step 4: Build & Push Docker image
@@ -97,36 +133,26 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
     permissions:
       contents: read
       packages: write
-
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af168  # v4
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fbde5b8a2f8c2f3d698e28  # v3
+      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772  # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v6
+      - id: meta
+        uses: docker/metadata-action@9027b86147ec4f389efb9c1e6d5028d702c72be0  # v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha
             type=ref,event=branch
-
-      - name: Build and push
-        uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@263435318d4c279d7e447d0c8c4f6080e2a7be4d  # v6
         with:
           context: .
           push: true

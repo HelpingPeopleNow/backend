@@ -34,24 +34,24 @@ type histogram struct {
 var metrics = struct {
 	sync.RWMutex
 
-	httpRequestsTotal      map[string]*counter   // key: method|path|status
+	httpRequestsTotal      map[string]*counter // key: method|path|status
 	httpRequestDuration    map[string]*histogram
-	chatRequestsTotal      map[string]*counter   // key: mode
+	chatRequestsTotal      map[string]*counter // key: mode
 	chatLLMDuration        map[string]*histogram
-	chatLLMErrorsTotal     map[string]*counter   // key: provider|error_type
+	chatLLMErrorsTotal     map[string]*counter // key: provider|error_type
 	authResolveDuration    map[string]*histogram
-	authResolveErrorsTotal map[string]*counter   // key: method|error_type
-	profileSavesTotal      map[string]*counter   // key: role
-	conversationsTotal     map[string]*counter   // key: operation
-	dmSentTotal            map[string]*counter   // key: role (client|worker) or "contact"
-	dmReceivedTotal        map[string]*counter   // key: role
-	healthStatus           map[string]*gauge     // key: component
+	authResolveErrorsTotal map[string]*counter // key: method|error_type
+	profileSavesTotal      map[string]*counter // key: role
+	conversationsTotal     map[string]*counter // key: operation
+	dmSentTotal            map[string]*counter // key: role (client|worker) or "contact"
+	dmReceivedTotal        map[string]*counter // key: role
+	healthStatus           map[string]*gauge   // key: component
 
 	// VECTOR_SEARCH_PLAN §12.3 — vector search metrics. NO Prometheus
 	// client_golang import (Improvement #7): use the existing custom
 	// registry pattern.
-	vectorSearchTotal  map[string]*counter   // key: status ("vector"|"ilike"|"ilike_disabled_via_env"|"ilike_low_top_score")
-	vectorScore        map[string]*histogram // histogram of top_score from the vector branch
+	vectorSearchTotal map[string]*counter   // key: status ("vector"|"ilike"|"ilike_disabled_via_env"|"ilike_low_top_score")
+	vectorScore       map[string]*histogram // histogram of top_score from the vector branch
 }{
 	httpRequestsTotal:      make(map[string]*counter),
 	httpRequestDuration:    make(map[string]*histogram),
@@ -66,8 +66,8 @@ var metrics = struct {
 	dmReceivedTotal:        make(map[string]*counter),
 	healthStatus:           make(map[string]*gauge),
 
-	vectorSearchTotal:      make(map[string]*counter),
-	vectorScore:            make(map[string]*histogram),
+	vectorSearchTotal: make(map[string]*counter),
+	vectorScore:       make(map[string]*histogram),
 }
 
 // defaultBuckets for latency histograms (seconds).

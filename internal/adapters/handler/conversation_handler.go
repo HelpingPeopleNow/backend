@@ -31,7 +31,7 @@ type conversationDetail struct {
 	ID        string          `json:"id"`
 	Type      string          `json:"type"`
 	Metadata  json.RawMessage `json:"metadata,omitempty"`
-	Messages  []msgItem     `json:"messages"`
+	Messages  []msgItem       `json:"messages"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt time.Time       `json:"updated_at"`
 }

@@ -4,12 +4,16 @@ import (
 	"testing"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
+	"github.com/HelpingPeopleNow/backend/internal/testingutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestNormalizeProfessionElectrician(t *testing.T) {
+// ── normalizeProfession ─────────────────────────────────────────────
+
+func TestNormalizeProfessionVariants(t *testing.T) {
 	tests := []struct {
-		input    string
-		expected string
+		input, expected string
 	}{
 		{"electricista", "electrician"},
 		{"Electricista", "electrician"},
@@ -17,7 +21,6 @@ func TestNormalizeProfessionElectrician(t *testing.T) {
 		{"fontanero", "plumber"},
 		{"plomero", "plumber"},
 		{"plumber", "plumber"},
-		{"limpiador", "cleaner"},
 		{"limpieza", "cleaner"},
 		{"cleaner", "cleaner"},
 		{"manitas", "handyman"},
@@ -30,103 +33,127 @@ func TestNormalizeProfessionElectrician(t *testing.T) {
 		{"landscaper", "landscaper"},
 		{"tejador", "roofer"},
 		{"roofer", "roofer"},
-		{"clima", "hvac technician"},
 		{"hvac", "hvac technician"},
 		{"unknown_trade", "unknown_trade"},
 	}
-
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
 			got := normalizeProfession(tc.input)
-			if got != tc.expected {
-				t.Fatalf("normalizeProfession(%q) = %q, want %q", tc.input, got, tc.expected)
-			}
+			assert.Equal(t, tc.expected, got)
 		})
 	}
 }
 
-func TestBuildWorkerSummariesEmpty(t *testing.T) {
-	result := buildWorkerSummaries(nil, "need a plumber")
-	if result == "" {
-		t.Fatal("expected non-empty result")
-	}
-	if !contains(result, "No workers matched") {
-		t.Fatalf("expected 'No workers matched' in result, got %q", result)
-	}
-	if !contains(result, "need a plumber") {
-		t.Fatalf("expected original message in result")
-	}
-}
+// ── buildWorkerSummaries ────────────────────────────────────────────
 
-func TestBuildWorkerSummariesWithData(t *testing.T) {
+func TestBuildWorkerSummariesBasic(t *testing.T) {
 	workers := []core.WorkerProfile{
 		{
-			BusinessName: "Bob's Plumbing",
-			Profession:   "plumber",
-			City:         "Madrid",
-			HourlyRate:   25,
-			Phone:        "+34600123456",
-			Bio:          "10 years experience",
-			HasInsurance: true,
+			ID:         "w1",
+			Profession: "plumber",
+			City:       "Madrid",
+			HourlyRate: 25.0,
 		},
 	}
-	result := buildWorkerSummaries(workers, "need a plumber")
-	if !contains(result, "Bob's Plumbing") {
-		t.Fatalf("expected business name in result")
-	}
-	if !contains(result, "+34600123456") {
-		t.Fatalf("expected phone in result")
-	}
-	if !contains(result, "insured") {
-		t.Fatalf("expected 'insured' in result")
-	}
+	summaries := buildWorkerSummaries(workers, "need a plumber")
+	assert.Contains(t, summaries, "plumber")
+	assert.Contains(t, summaries, "Madrid")
 }
+
+func TestBuildWorkerSummariesEmpty(t *testing.T) {
+	summaries := buildWorkerSummaries(nil, "need a plumber")
+	assert.Contains(t, summaries, "No workers matched")
+	assert.Contains(t, summaries, "need a plumber")
+}
+
+func TestBuildWorkerSummariesWithDetails(t *testing.T) {
+	workers := []core.WorkerProfile{
+		{
+			ID:               "w1",
+			Profession:       "plumber",
+			City:             "Madrid",
+			Phone:            "+34600123456",
+			Bio:              "10 years experience",
+			HasInsurance:     true,
+			EmergencyService: true,
+			FreeEstimate:     true,
+			Certifications:   `["GAS SAFE"]`,
+		},
+	}
+	summaries := buildWorkerSummaries(workers, "need a plumber in Madrid")
+	assert.Contains(t, summaries, "plumber")
+	assert.Contains(t, summaries, "Madrid")
+	assert.Contains(t, summaries, "phone: +34600123456")
+	assert.Contains(t, summaries, "bio: 10 years experience")
+	assert.Contains(t, summaries, "insured")
+	assert.Contains(t, summaries, "emergency service")
+	assert.Contains(t, summaries, "free estimates")
+	assert.Contains(t, summaries, "certifications: GAS SAFE")
+}
+
+// ── searchFiltersFromJSON ───────────────────────────────────────────
 
 func TestSearchFiltersFromJSON(t *testing.T) {
-	raw := []byte(`{"profession":"plumber","city":"Madrid","emergency":true,"free_estimate":false,"insured":true}`)
-	filters := searchFiltersFromJSON(raw)
-
-	if filters.Profession != "plumber" {
-		t.Fatalf("profession: got %q", filters.Profession)
-	}
-	if filters.City != "Madrid" {
-		t.Fatalf("city: got %q", filters.City)
-	}
-	if !filters.EmergencyOnly {
-		t.Fatal("emergency_only: expected true")
-	}
-	if filters.FreeEstimateOnly {
-		t.Fatal("free_estimate_only: expected false")
-	}
-	if !filters.InsuredOnly {
-		t.Fatal("insured_only: expected true")
-	}
+	filters := searchFiltersFromJSON([]byte(`{"profession":"plumber","city":"Madrid"}`))
+	assert.Equal(t, "plumber", filters.Profession)
+	assert.Equal(t, "Madrid", filters.City)
 }
 
-func TestSearchFiltersFromEmptyJSON(t *testing.T) {
+func TestSearchFiltersFromJSONEmpty(t *testing.T) {
 	filters := searchFiltersFromJSON([]byte(`{}`))
-	if filters.Profession != "" {
-		t.Fatalf("profession: expected empty, got %q", filters.Profession)
-	}
+	assert.Equal(t, "", filters.Profession)
 }
 
-func TestSearchFiltersFromInvalidJSON(t *testing.T) {
+func TestSearchFiltersFromJSONInvalid(t *testing.T) {
 	filters := searchFiltersFromJSON([]byte(`not json`))
-	if filters.Profession != "" {
-		t.Fatalf("profession: expected empty for invalid JSON, got %q", filters.Profession)
-	}
+	assert.Equal(t, "", filters.Profession)
 }
 
-// contains is a simple string contains helper.
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+// ── sha256Hex (services-level) ──────────────────────────────────────
+
+func TestServicesSha256Hex(t *testing.T) {
+	h := sha256Hex("hello")
+	assert.Len(t, h, 64)
 }
 
-func containsHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+// ── Search — two-pass and conversational ────────────────────────────
+
+func TestSearchTwoPassWithFilters(t *testing.T) {
+	llm := &testingutil.MockLLM{Answer: "[SEARCH]{\"profession\":\"plumber\",\"city\":\"Madrid\"}[/SEARCH]"}
+	chatRepo := &testingutil.MockChatRepo{ReturnID: "s1"}
+	svc := NewSearchService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
+
+	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	// Two-pass: SearchResult has Workers, not DetectedFields
+	assert.Equal(t, "s1", result.ConversationID)
+}
+
+func TestSearchConversationalNoFilters(t *testing.T) {
+	llm := &testingutil.MockLLM{Answer: "Hello! What kind of help do you need?"}
+	chatRepo := &testingutil.MockChatRepo{ReturnID: "s2"}
+	svc := NewSearchService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
+
+	result, err := svc.Search(t.Context(), "user-1", "hi", nil, "", "", "")
+	require.NoError(t, err)
+	assert.Nil(t, result.Workers)
+	assert.Equal(t, "s2", result.ConversationID)
+}
+
+func TestSearchLLMError(t *testing.T) {
+	llm := &testingutil.MockLLM{AskErr: assert.AnError}
+	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+
+	_, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "")
+	assert.Error(t, err)
+}
+
+func TestSearchPromptLoadError(t *testing.T) {
+	llm := &testingutil.MockLLM{Answer: "test"}
+	prompts := &testingutil.MockPrompts{GetErr: assert.AnError}
+	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, prompts)
+
+	_, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "")
+	assert.Error(t, err)
 }

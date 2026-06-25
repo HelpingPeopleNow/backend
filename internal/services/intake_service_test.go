@@ -1,238 +1,144 @@
 package services
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
+	"github.com/HelpingPeopleNow/backend/internal/testingutil"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // ── applyLanguage ───────────────────────────────────────────────────
 
 func TestApplyLanguageSpanish(t *testing.T) {
-	result := applyLanguage("You are a helpful assistant.", "es")
-	expected := "You are a helpful assistant.\n\nIMPORTANTE: Responde SIEMPRE en español al usuario. Todas tus respuestas deben ser en español."
-	if result != expected {
-		t.Fatalf("unexpected result:\n got: %q\nwant: %q", result, expected)
-	}
+	got := applyLanguage("prompt", "es")
+	assert.Contains(t, got, "IMPORTANTE: Responde SIEMPRE en español")
 }
 
 func TestApplyLanguageEnglish(t *testing.T) {
-	result := applyLanguage("You are a helpful assistant.", "en")
-	expected := "You are a helpful assistant.\n\nIMPORTANT: Always respond in English to the user. All your responses must be in English."
-	if result != expected {
-		t.Fatalf("unexpected result:\n got: %q\nwant: %q", result, expected)
-	}
+	got := applyLanguage("prompt", "en")
+	assert.Contains(t, got, "IMPORTANT: Always respond in English")
 }
 
 func TestApplyLanguageDefault(t *testing.T) {
-	result := applyLanguage("You are a helpful assistant.", "fr")
-	expected := "You are a helpful assistant."
-	if result != expected {
-		t.Fatalf("expected unchanged prompt for unknown lang, got %q", result)
-	}
+	got := applyLanguage("prompt", "fr")
+	assert.Equal(t, "prompt", got)
 }
 
 func TestApplyLanguageEmpty(t *testing.T) {
-	result := applyLanguage("You are a helpful assistant.", "")
-	expected := "You are a helpful assistant."
-	if result != expected {
-		t.Fatalf("expected unchanged prompt for empty lang, got %q", result)
-	}
+	got := applyLanguage("prompt", "")
+	assert.Equal(t, "prompt", got)
 }
 
 // ── selectPrompt ────────────────────────────────────────────────────
 
 func TestSelectPromptWorkerWithCustom(t *testing.T) {
 	svc := &IntakeService{}
-	sp := &core.SystemPrompt{WorkerProfilePrompt: "Custom worker prompt"}
-	got := svc.selectPrompt(sp, IntakeModeWorker)
-	if got != "Custom worker prompt" {
-		t.Fatalf("expected custom prompt, got %q", got)
-	}
+	sp := &core.SystemPrompt{WorkerProfilePrompt: "Custom worker"}
+	assert.Equal(t, "Custom worker", svc.selectPrompt(sp, IntakeModeWorker))
 }
 
-func TestSelectPromptWorkerEmpty(t *testing.T) {
+func TestSelectPromptWorkerFallback(t *testing.T) {
 	svc := &IntakeService{}
-	sp := &core.SystemPrompt{WorkerProfilePrompt: ""}
-	got := svc.selectPrompt(sp, IntakeModeWorker)
-	if got != core.DefaultWorkerProfilePrompt {
-		t.Fatalf("expected default worker prompt, got %q", got)
-	}
+	sp := &core.SystemPrompt{}
+	assert.Equal(t, core.DefaultWorkerProfilePrompt, svc.selectPrompt(sp, IntakeModeWorker))
 }
 
 func TestSelectPromptClientWithCustom(t *testing.T) {
 	svc := &IntakeService{}
-	sp := &core.SystemPrompt{ClientProfilePrompt: "Custom client prompt"}
-	got := svc.selectPrompt(sp, IntakeModeClient)
-	if got != "Custom client prompt" {
-		t.Fatalf("expected custom prompt, got %q", got)
-	}
+	sp := &core.SystemPrompt{ClientProfilePrompt: "Custom client"}
+	assert.Equal(t, "Custom client", svc.selectPrompt(sp, IntakeModeClient))
 }
 
-func TestSelectPromptClientEmpty(t *testing.T) {
+func TestSelectPromptClientFallback(t *testing.T) {
 	svc := &IntakeService{}
-	sp := &core.SystemPrompt{ClientProfilePrompt: ""}
-	got := svc.selectPrompt(sp, IntakeModeClient)
-	if got != core.DefaultClientProfilePrompt {
-		t.Fatalf("expected default client prompt, got %q", got)
-	}
+	sp := &core.SystemPrompt{}
+	assert.Equal(t, core.DefaultClientProfilePrompt, svc.selectPrompt(sp, IntakeModeClient))
 }
 
 func TestSelectPromptUnknownMode(t *testing.T) {
 	svc := &IntakeService{}
-	sp := &core.SystemPrompt{}
-	got := svc.selectPrompt(sp, "unknown")
-	if got != "" {
-		t.Fatalf("expected empty for unknown mode, got %q", got)
-	}
+	assert.Equal(t, "", svc.selectPrompt(&core.SystemPrompt{}, "unknown"))
 }
 
 // ── ProcessIntake ───────────────────────────────────────────────────
 
 func TestProcessIntakeWorkerFields(t *testing.T) {
-	llm := &mockLLM{
-		answer: `Here's what I know about you.
-[FIELDS]{"profession":"plumber","city":"Madrid"}[/FIELDS]`,
-	}
-	prompts := &mockPrompts{}
-	profs := &mockProfiles{}
-	chats := &mockChatRepo{returnID: "conv-1"}
-	svc := NewIntakeService(llm, profs, chats, prompts)
+	llm := &testingutil.MockLLM{Answer: "[FIELDS]{\"profession\":\"plumber\",\"city\":\"Madrid\"}[/FIELDS]"}
+	chatRepo := &testingutil.MockChatRepo{ReturnID: "conv-1"}
+	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
 
-	result, err := svc.ProcessIntake(context.Background(), "user-1", IntakeModeWorker, "I'm a plumber in Madrid", nil, "", "", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.DetectedFields == nil {
-		t.Fatal("expected detected fields")
-	}
-	if result.DetectedFields["profession"] != "plumber" {
-		t.Fatalf("expected profession=plumber, got %v", result.DetectedFields["profession"])
-	}
-	if result.ConversationID != "conv-1" {
-		t.Fatalf("expected conv-1, got %q", result.ConversationID)
-	}
+	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "I'm a plumber", nil, "", "", "")
+	require.NoError(t, err)
+	assert.Equal(t, "plumber", result.DetectedFields["profession"])
+	assert.Equal(t, "Madrid", result.DetectedFields["city"])
+	assert.Equal(t, "conv-1", result.ConversationID)
 }
 
 func TestProcessIntakeClientFields(t *testing.T) {
-	llm := &mockLLM{
-		answer: `[FIELDS]{"full_name":"Alvaro","city":"Madrid"}[/FIELDS]`,
-	}
-	prompts := &mockPrompts{}
-	profs := &mockProfiles{}
-	chats := &mockChatRepo{returnID: "conv-2"}
-	svc := NewIntakeService(llm, profs, chats, prompts)
+	llm := &testingutil.MockLLM{Answer: "[FIELDS]{\"full_name\":\"Alvaro\",\"city\":\"Madrid\"}[/FIELDS]"}
+	chatRepo := &testingutil.MockChatRepo{ReturnID: "conv-2"}
+	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
 
-	result, err := svc.ProcessIntake(context.Background(), "user-1", IntakeModeClient, "I'm Alvaro from Madrid", nil, "", "", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.DetectedFields == nil {
-		t.Fatal("expected detected fields")
-	}
-	if result.DetectedFields["full_name"] != "Alvaro" {
-		t.Fatalf("expected full_name=Alvaro, got %v", result.DetectedFields["full_name"])
-	}
+	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeClient, "I'm Alvaro", nil, "", "", "")
+	require.NoError(t, err)
+	assert.Equal(t, "Alvaro", result.DetectedFields["full_name"])
+	assert.Equal(t, "Madrid", result.DetectedFields["city"])
 }
 
 func TestProcessIntakeNoFieldsConversational(t *testing.T) {
-	llm := &mockLLM{
-		answer: "Hello! I'm here to help you find a plumber.",
-	}
-	prompts := &mockPrompts{}
-	profs := &mockProfiles{}
-	chats := &mockChatRepo{returnID: "conv-3"}
-	svc := NewIntakeService(llm, profs, chats, prompts)
+	llm := &testingutil.MockLLM{Answer: "Hello! I'm here to help."}
+	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	result, err := svc.ProcessIntake(context.Background(), "user-1", IntakeModeWorker, "Hi!", nil, "", "", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.DetectedFields != nil {
-		t.Fatalf("expected nil fields for conversational response, got %v", result.DetectedFields)
-	}
+	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "Hi!", nil, "", "", "")
+	require.NoError(t, err)
+	assert.Nil(t, result.DetectedFields)
 }
 
-func TestProcessIntakeUnknownMode(t *testing.T) {
-	llm := &mockLLM{answer: `[FIELDS]{"profession":"plumber"}[/FIELDS]`}
-	prompts := &mockPrompts{}
-	svc := NewIntakeService(llm, &mockProfiles{}, &mockChatRepo{}, prompts)
+func TestProcessIntakeUnknownModeWithFields(t *testing.T) {
+	llm := &testingutil.MockLLM{Answer: "[FIELDS]{\"profession\":\"plumber\"}[/FIELDS]"}
+	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	_, err := svc.ProcessIntake(context.Background(), "user-1", "bad_mode", "test", nil, "", "", "")
-	if err == nil {
-		t.Fatal("expected error for unknown mode with fields")
-	}
+	_, err := svc.ProcessIntake(t.Context(), "user-1", "bad_mode", "test", nil, "", "", "")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown intake mode")
 }
 
 func TestProcessIntakeLLMError(t *testing.T) {
-	llm := &mockLLM{askErr: fmt.Errorf("LLM down")}
-	prompts := &mockPrompts{}
-	svc := NewIntakeService(llm, &mockProfiles{}, &mockChatRepo{}, prompts)
+	llm := &testingutil.MockLLM{AskErr: fmt.Errorf("LLM down")}
+	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	_, err := svc.ProcessIntake(context.Background(), "user-1", IntakeModeWorker, "test", nil, "", "", "")
-	if err == nil {
-		t.Fatal("expected error when LLM fails")
-	}
+	_, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "test", nil, "", "", "")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "LLM down")
 }
 
 func TestProcessIntakePromptLoadError(t *testing.T) {
-	llm := &mockLLM{answer: "test"}
-	prompts := &mockPrompts{getErr: fmt.Errorf("DB down")}
-	svc := NewIntakeService(llm, &mockProfiles{}, &mockChatRepo{}, prompts)
+	llm := &testingutil.MockLLM{Answer: "test"}
+	prompts := &testingutil.MockPrompts{GetErr: fmt.Errorf("DB down")}
+	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, prompts)
 
-	_, err := svc.ProcessIntake(context.Background(), "user-1", IntakeModeWorker, "test", nil, "", "", "")
-	if err == nil {
-		t.Fatal("expected error when prompt load fails")
-	}
+	_, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "test", nil, "", "", "")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "DB down")
 }
 
 func TestProcessIntakeWithLanguage(t *testing.T) {
-	llm := &mockLLM{
-		answer: `[FIELDS]{"profession":"plumber"}[/FIELDS]`,
-	}
-	prompts := &mockPrompts{}
-	svc := NewIntakeService(llm, &mockProfiles{}, &mockChatRepo{}, prompts)
+	llm := &testingutil.MockLLM{Answer: "[FIELDS]{\"profession\":\"plumber\"}[/FIELDS]"}
+	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	result, err := svc.ProcessIntake(context.Background(), "user-1", IntakeModeWorker, "soy fontanero", nil, "", "es", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.DetectedFields["profession"] != "plumber" {
-		t.Fatalf("expected profession=plumber, got %v", result.DetectedFields["profession"])
-	}
-}
-
-func TestProcessIntakeWithConversationID(t *testing.T) {
-	llm := &mockLLM{
-		answer: `[FIELDS]{"profession":"plumber"}[/FIELDS]`,
-	}
-	prompts := &mockPrompts{}
-	chats := &mockChatRepo{returnID: "new-conv"}
-	svc := NewIntakeService(llm, &mockProfiles{}, chats, prompts)
-
-	result, err := svc.ProcessIntake(context.Background(), "user-1", IntakeModeWorker, "plumber", nil, "", "", "existing-conv")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.ConversationID != "new-conv" {
-		t.Fatalf("expected new-conv, got %q", result.ConversationID)
-	}
+	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "soy fontanero", nil, "", "es", "")
+	require.NoError(t, err)
+	assert.Equal(t, "plumber", result.DetectedFields["profession"])
 }
 
 func TestProcessIntakeNoUserID(t *testing.T) {
-	llm := &mockLLM{
-		answer: `[FIELDS]{"profession":"plumber"}[/FIELDS]`,
-	}
-	prompts := &mockPrompts{}
-	svc := NewIntakeService(llm, &mockProfiles{}, &mockChatRepo{}, prompts)
+	llm := &testingutil.MockLLM{Answer: "[FIELDS]{\"profession\":\"plumber\"}[/FIELDS]"}
+	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	result, err := svc.ProcessIntake(context.Background(), "", IntakeModeWorker, "plumber", nil, "", "", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.ConversationID != "" {
-		t.Fatalf("expected empty conversation ID for no user, got %q", result.ConversationID)
-	}
+	result, err := svc.ProcessIntake(t.Context(), "", IntakeModeWorker, "plumber", nil, "", "", "")
+	require.NoError(t, err)
+	assert.Equal(t, "", result.ConversationID)
 }

@@ -19,12 +19,12 @@ func NewSystemPromptHandler(prompts ports.SystemPromptRepository) *SystemPromptH
 }
 
 type systemPromptsDTO struct {
-	WorkerProfilePrompt           string `json:"worker_profile_prompt"`
-	ClientProfilePrompt           string `json:"client_profile_prompt"`
-	FindTraderSearchPrompt        string `json:"find_trader_search_prompt"`
-	FindTraderPresentationPrompt  string `json:"find_trader_presentation_prompt"`
-	LLMProvider                   string `json:"llm_provider"`
-	UpdatedAt                     string `json:"updated_at"`
+	WorkerProfilePrompt          string `json:"worker_profile_prompt"`
+	ClientProfilePrompt          string `json:"client_profile_prompt"`
+	FindTraderSearchPrompt       string `json:"find_trader_search_prompt"`
+	FindTraderPresentationPrompt string `json:"find_trader_presentation_prompt"`
+	LLMProvider                  string `json:"llm_provider"`
+	UpdatedAt                    string `json:"updated_at"`
 }
 
 func toSystemDTO(sp *core.SystemPrompt) systemPromptsDTO {
@@ -39,11 +39,11 @@ func toSystemDTO(sp *core.SystemPrompt) systemPromptsDTO {
 }
 
 var validColumns = map[string]string{
-	"worker_profile":            "worker_profile_prompt",
-	"client_profile":            "client_profile_prompt",
-	"find_trader_search":        "find_trader_search_prompt",
-	"find_trader_presentation":  "find_trader_presentation_prompt",
-	"provider":                  "llm_provider",
+	"worker_profile":           "worker_profile_prompt",
+	"client_profile":           "client_profile_prompt",
+	"find_trader_search":       "find_trader_search_prompt",
+	"find_trader_presentation": "find_trader_presentation_prompt",
+	"provider":                 "llm_provider",
 }
 
 type updateSystemReq struct {

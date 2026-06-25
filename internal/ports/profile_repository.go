@@ -39,7 +39,7 @@ type RawQuerier interface {
 // log line would silently lie. FindResult.Branch is the truth post-fact.
 type FindResult struct {
 	Workers  []core.WorkerProfile
-	Branch   string // "vector" | "ilike" | "ilike_disabled_via_env" | "ilike_fallback"
+	Branch   string  // "vector" | "ilike" | "ilike_disabled_via_env" | "ilike_fallback"
 	TopScore float64 // Best max_cosine across the result set; 0 if branch != "vector".
 }
 

@@ -27,9 +27,9 @@ type SearchService struct {
 	//   - by worker-list mutation (workerFloor < MAX(worker_profiles.updated_at))
 	// The floor mechanism avoids the marketplace failure mode where
 	// new workers are invisible for the entire TTL window.
-	searchCache     map[string]searchCacheEntry
-	searchCacheTTL  time.Duration
-	searchCacheMu   sync.RWMutex
+	searchCache    map[string]searchCacheEntry
+	searchCacheTTL time.Duration
+	searchCacheMu  sync.RWMutex
 
 	// floorMu / floorCached / floorCachedAt — 1-second-granular memoization
 	// around SELECT MAX(updated_at) FROM worker_profiles so rapid refinement
@@ -52,11 +52,11 @@ func NewSearchService(
 	prompts ports.SystemPromptRepository,
 ) *SearchService {
 	return &SearchService{
-		llm:           llm,
-		profiles:      profiles,
-		chats:         chats,
-		prompts:       prompts,
-		searchCache:   make(map[string]searchCacheEntry),
+		llm:            llm,
+		profiles:       profiles,
+		chats:          chats,
+		prompts:        prompts,
+		searchCache:    make(map[string]searchCacheEntry),
 		searchCacheTTL: 60 * time.Second,
 	}
 }
@@ -186,7 +186,7 @@ func (s *SearchService) Search(
 		return nil, fmt.Errorf("find workers: %w", err)
 	}
 	workers := findResult.Workers
-	branch := findResult.Branch  // fourth-pass review: post-fact, not intent.
+	branch := findResult.Branch // fourth-pass review: post-fact, not intent.
 	topScore := findResult.TopScore
 
 	// Pre-bound presentation prompt (cached lookup already done above).

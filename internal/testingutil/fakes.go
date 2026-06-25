@@ -9,29 +9,34 @@ import (
 	"gorm.io/gorm"
 )
 
+// ── LLMService fake (Strategy A) ───────────────────────────────────
 // MockLLM is a configurable fake for ports.LLMService.
+// Fields: Answer (canned), AskErr (injected), HealthErr (injected),
+// EmbedFn (function-pointer override, Strategy C hybrid).
 type MockLLM struct {
-	Answer  string
-	AskErr  error
-	EmbedFn func(ctx context.Context, text string) ([]float32, error)
+	Answer    string
+	AskErr    error
+	HealthErr error
+	EmbedFn   func(ctx context.Context, text string) ([]float32, error)
 }
 
-func (m *MockLLM) Ask(ctx context.Context, systemPrompt, userMessage string, history []ports.MessagePair, provider string) (*ports.LLMResponse, error) {
-	if m.Answer != "" || m.AskErr != nil {
-		return &ports.LLMResponse{Answer: m.Answer, Role: "assistant"}, m.AskErr
+func (m *MockLLM) Ask(_ context.Context, _, _ string, _ []ports.MessagePair, _ string) (*ports.LLMResponse, error) {
+	if m.AskErr != nil {
+		return nil, m.AskErr
 	}
-	return &ports.LLMResponse{Answer: "", Role: "assistant"}, nil
+	return &ports.LLMResponse{Answer: m.Answer, Role: "assistant"}, nil
 }
 
-func (m *MockLLM) Health(ctx context.Context) error { return nil }
+func (m *MockLLM) Health(_ context.Context) error { return m.HealthErr }
 
-func (m *MockLLM) Embed(ctx context.Context, text string) ([]float32, error) {
+func (m *MockLLM) Embed(_ context.Context, text string) ([]float32, error) {
 	if m.EmbedFn != nil {
-		return m.EmbedFn(ctx, text)
+		return m.EmbedFn(nil, text)
 	}
 	return make([]float32, 768), nil
 }
 
+// ── ChatRepository fake (Strategy A) ───────────────────────────────
 // MockChatRepo tracks SaveMessages calls.
 type MockChatRepo struct {
 	SavedUserID         string
@@ -43,7 +48,7 @@ type MockChatRepo struct {
 	ReturnID            string
 }
 
-func (m *MockChatRepo) SaveMessages(ctx context.Context, userID, convType, userMessage, assistantResponse, conversationID string, fields json.RawMessage, metadata map[string]interface{}) (string, error) {
+func (m *MockChatRepo) SaveMessages(_ context.Context, userID, convType, userMessage, assistantResponse, conversationID string, fields json.RawMessage, _ map[string]interface{}) (string, error) {
 	m.SavedUserID = userID
 	m.SavedConvType = convType
 	m.SavedUserMessage = userMessage
@@ -53,88 +58,93 @@ func (m *MockChatRepo) SaveMessages(ctx context.Context, userID, convType, userM
 	return m.ReturnID, nil
 }
 
-func (m *MockChatRepo) LoadConversation(ctx context.Context, userID, convType string) (*core.Conversation, error) {
+func (m *MockChatRepo) LoadConversation(_ context.Context, _, _ string) (*core.Conversation, error) {
 	return nil, nil
 }
 
-func (m *MockChatRepo) ListConversations(ctx context.Context, userID, convType string, limit, offset int) ([]core.Conversation, int64, error) {
+func (m *MockChatRepo) ListConversations(_ context.Context, _, _ string, _, _ int) ([]core.Conversation, int64, error) {
 	return nil, 0, nil
 }
 
-func (m *MockChatRepo) GetConversation(ctx context.Context, userID, conversationID string) (*core.Conversation, error) {
+func (m *MockChatRepo) GetConversation(_ context.Context, _, _ string) (*core.Conversation, error) {
 	return nil, nil
 }
 
-func (m *MockChatRepo) GetMessages(ctx context.Context, conversationID string) ([]core.Message, error) {
+func (m *MockChatRepo) GetMessages(_ context.Context, _ string) ([]core.Message, error) {
 	return nil, nil
 }
 
-// MockProfiles tracks profile upsert calls.
+// ── ProfileRepository fake (Strategy A) ────────────────────────────
+// MockProfiles tracks profile upsert calls and returns canned profiles.
 type MockProfiles struct {
-	UpsertedWorkerID   string
-	UpsertedWorkerMap  map[string]interface{}
-	UpsertedClientID   string
-	UpsertedClientMap  map[string]interface{}
-	WorkerProfile      *core.WorkerProfile
-	ClientProfile      *core.ClientProfile
-	Workers            []core.WorkerProfile
-	WorkersErr         error
+	UpsertedWorkerID  string
+	UpsertedWorkerMap map[string]interface{}
+	UpsertedClientID  string
+	UpsertedClientMap map[string]interface{}
+	WorkerProfile     *core.WorkerProfile
+	ClientProfile     *core.ClientProfile
+	Workers           []core.WorkerProfile
+	WorkersErr        error
 }
 
-func (m *MockProfiles) GetWorkerProfile(ctx context.Context, userID string) (*core.WorkerProfile, error) {
+func (m *MockProfiles) GetWorkerProfile(_ context.Context, _ string) (*core.WorkerProfile, error) {
 	return m.WorkerProfile, nil
 }
 
-func (m *MockProfiles) UpsertWorkerProfile(ctx context.Context, userID string, fields map[string]interface{}) error {
+func (m *MockProfiles) UpsertWorkerProfile(_ context.Context, userID string, fields map[string]interface{}) error {
 	m.UpsertedWorkerID = userID
 	m.UpsertedWorkerMap = fields
 	return nil
 }
 
-func (m *MockProfiles) DeleteWorkerProfile(ctx context.Context, userID string) error { return nil }
+func (m *MockProfiles) DeleteWorkerProfile(_ context.Context, _ string) error { return nil }
 
-func (m *MockProfiles) GetClientProfile(ctx context.Context, userID string) (*core.ClientProfile, error) {
+func (m *MockProfiles) GetClientProfile(_ context.Context, _ string) (*core.ClientProfile, error) {
 	return m.ClientProfile, nil
 }
 
-func (m *MockProfiles) UpsertClientProfile(ctx context.Context, userID string, fields map[string]interface{}) error {
+func (m *MockProfiles) UpsertClientProfile(_ context.Context, userID string, fields map[string]interface{}) error {
 	m.UpsertedClientID = userID
 	m.UpsertedClientMap = fields
 	return nil
 }
 
-func (m *MockProfiles) DeleteClientProfile(ctx context.Context, userID string) error { return nil }
+func (m *MockProfiles) DeleteClientProfile(_ context.Context, _ string) error { return nil }
 
-func (m *MockProfiles) FindWorkers(ctx context.Context, filters core.WorkerSearchFilters) (ports.FindResult, error) {
+func (m *MockProfiles) FindWorkers(_ context.Context, filters core.WorkerSearchFilters) (ports.FindResult, error) {
 	return ports.FindResult{Workers: m.Workers, Branch: "ilike"}, m.WorkersErr
 }
 
-func (m *MockProfiles) UpsertWorkerEmbedding(ctx context.Context, userID, fieldName string, embedding []float32, textHash string) error {
+func (m *MockProfiles) UpsertWorkerEmbedding(_ context.Context, _, _ string, _ []float32, _ string) error {
 	return nil
 }
 
-func (m *MockProfiles) GetWorkerEmbeddingHashes(ctx context.Context, userID string) (map[string]ports.EmbeddingMeta, error) {
+func (m *MockProfiles) GetWorkerEmbeddingHashes(_ context.Context, _ string) (map[string]ports.EmbeddingMeta, error) {
 	return nil, nil
 }
 
-func (m *MockProfiles) DeleteWorkerEmbedding(ctx context.Context, userID, fieldName string) error {
-	return nil
-}
+func (m *MockProfiles) DeleteWorkerEmbedding(_ context.Context, _, _ string) error { return nil }
 
-func (m *MockProfiles) FindStaleWorkerIDs(ctx context.Context) ([]string, error) {
+func (m *MockProfiles) FindStaleWorkerIDs(_ context.Context) ([]string, error) {
 	return nil, nil
 }
 
-func (m *MockProfiles) RawQuery(ctx context.Context, sql string, values ...interface{}) *gorm.DB {
+func (m *MockProfiles) RawQuery(_ context.Context, _ string, _ ...interface{}) *gorm.DB {
 	return nil
 }
 
-// MockPrompts returns a configurable SystemPrompt.
+// ── SystemPromptRepository fake (Strategy A+C) ─────────────────────
+// MockPrompts returns a configurable SystemPrompt. GetErr lets tests
+// simulate DB failures. SP overrides the default prompt set.
 type MockPrompts struct {
-	SP *core.SystemPrompt
+	SP     *core.SystemPrompt
+	GetErr error
 }
 
-func (m *MockPrompts) Get(ctx context.Context) (*core.SystemPrompt, error) {
+func (m *MockPrompts) Get(_ context.Context) (*core.SystemPrompt, error) {
+	if m.GetErr != nil {
+		return nil, m.GetErr
+	}
 	if m.SP != nil {
 		return m.SP, nil
 	}
@@ -146,9 +156,6 @@ func (m *MockPrompts) Get(ctx context.Context) (*core.SystemPrompt, error) {
 	}, nil
 }
 
-func (m *MockPrompts) Update(ctx context.Context, column, value string) (*core.SystemPrompt, error) {
-	if m.SP == nil {
-		m.SP = &core.SystemPrompt{}
-	}
+func (m *MockPrompts) Update(_ context.Context, _, _ string) (*core.SystemPrompt, error) {
 	return m.SP, nil
 }

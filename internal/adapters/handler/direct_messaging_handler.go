@@ -17,9 +17,9 @@ import (
 
 // DirectMessagingHandler handles all direct-messaging REST + SSE endpoints.
 type DirectMessagingHandler struct {
-	dm     ports.DirectMessageRepository
-	profs  ports.ProfileRepository
-	broker ports.Broker
+	dm      ports.DirectMessageRepository
+	profs   ports.ProfileRepository
+	broker  ports.Broker
 	limiter *ratelimit.RateLimiter
 }
 
@@ -244,8 +244,8 @@ func (h *DirectMessagingHandler) getMessages(
 	}
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"messages":  result,
-		"has_more":  len(result) >= limit,
+		"messages": result,
+		"has_more": len(result) >= limit,
 	})
 }
 

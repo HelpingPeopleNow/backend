@@ -120,13 +120,13 @@ func BuildFieldTexts(wp *WorkerProfile) map[string]string {
 // for V1 (N4 / D of fourth-pass review keeps this in code rather than
 // surfacing admin-tunable weights until search volume grows).
 var FieldWeights = map[string]float64{
-	"profession":      1.0,
-	"profession_raw":  0.3,
-	"bio":             0.8,
-	"certifications":  0.7,
-	"city":            0.4,
-	"languages":       0.3,
-	"business_name":   0.3,
+	"profession":     1.0,
+	"profession_raw": 0.3,
+	"bio":            0.8,
+	"certifications": 0.7,
+	"city":           0.4,
+	"languages":      0.3,
+	"business_name":  0.3,
 }
 
 // normalizeProfessionForEmbedding mirrors search_service.go's
