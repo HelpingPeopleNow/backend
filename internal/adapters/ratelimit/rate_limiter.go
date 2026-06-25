@@ -12,6 +12,7 @@ type RateLimiter struct {
 	bucket map[string]*userBucket
 	rate   int           // tokens per period
 	period time.Duration // refill interval
+	now    func() time.Time
 }
 
 type userBucket struct {
@@ -21,10 +22,16 @@ type userBucket struct {
 
 // NewRateLimiter creates a rate limiter that allows `rate` requests per `period`.
 func NewRateLimiter(rate int, period time.Duration) *RateLimiter {
+	return NewRateLimiterWithClock(rate, period, time.Now)
+}
+
+// NewRateLimiterWithClock creates a rate limiter with an injectable clock for testing.
+func NewRateLimiterWithClock(rate int, period time.Duration, now func() time.Time) *RateLimiter {
 	rl := &RateLimiter{
 		bucket: make(map[string]*userBucket),
 		rate:   rate,
 		period: period,
+		now:    now,
 	}
 	go rl.cleanup(period * 3)
 	return rl
@@ -38,16 +45,16 @@ func (rl *RateLimiter) Allow(key string) bool {
 
 	b, ok := rl.bucket[key]
 	if !ok {
-		b = &userBucket{tokens: float64(rl.rate - 1), lastSeen: time.Now()}
+		b = &userBucket{tokens: float64(rl.rate - 1), lastSeen: rl.now()}
 		rl.bucket[key] = b
 		return true
 	}
 
 	// Refill tokens based on elapsed time
-	elapsed := time.Since(b.lastSeen)
+	elapsed := rl.now().Sub(b.lastSeen)
 	refill := float64(rl.rate) * elapsed.Seconds() / rl.period.Seconds()
 	b.tokens = min(float64(rl.rate), b.tokens+refill)
-	b.lastSeen = time.Now()
+	b.lastSeen = rl.now()
 
 	if b.tokens < 1 {
 		return false
@@ -62,7 +69,7 @@ func (rl *RateLimiter) cleanup(maxAge time.Duration) {
 	defer ticker.Stop()
 	for range ticker.C {
 		rl.mu.Lock()
-		now := time.Now()
+		now := rl.now()
 		for k, b := range rl.bucket {
 			if now.Sub(b.lastSeen) > maxAge {
 				delete(rl.bucket, k)

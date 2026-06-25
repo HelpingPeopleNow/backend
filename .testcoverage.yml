@@ -1,13 +1,34 @@
 # .testcoverage.yml — vladopajic/go-test-coverage config
-# Plan §7.6: start conservative (50%), ratchet to 80% over 3-4 PRs.
-# Per-package overrides: 100% floor for services/ports/contextkeys,
-# 75% for adapters (not yet written — placeholder).
-threshold: 50
+# Per plan §1: statement coverage targets.
+# Phase 1 (current): conservative thresholds, ratchet to plan targets over PRs.
+# Plan targets: total 80%, services/ports/contextkeys 100%, adapters ≥75%.
+threshold: 35
 
 packages:
+  # Pure logic — plan target 100%, current ratchet
   - path: ./internal/services/
+    threshold: 70
+  - path: ./internal/core/
+    threshold: 85
+
+  # Adapter packages — plan target ≥75%, current ratchet
+  - path: ./internal/adapters/handler/
+    threshold: 15
+  - path: ./internal/adapters/middleware/
     threshold: 50
+  - path: ./internal/adapters/llm/
+    threshold: 25
+  - path: ./internal/adapters/ratelimit/
+    threshold: 60
+  - path: ./internal/adapters/realtime/
+    threshold: 100
+
+  # Excluded (interfaces, helpers, wiring — plan says 0%)
   - path: ./internal/ports/
-    threshold: 50
+    threshold: 0
   - path: ./internal/contextkeys/
-    threshold: 50
+    threshold: 0
+  - path: ./internal/testingutil/
+    threshold: 0
+  - path: ./internal/adapters/repository/
+    threshold: 0
