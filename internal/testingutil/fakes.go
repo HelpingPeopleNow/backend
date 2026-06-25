@@ -159,3 +159,33 @@ func (m *MockPrompts) Get(_ context.Context) (*core.SystemPrompt, error) {
 func (m *MockPrompts) Update(_ context.Context, _, _ string) (*core.SystemPrompt, error) {
 	return m.SP, nil
 }
+
+// ── Broker fake (Strategy A) ────────────────────────────────────────
+// MockBroker records Publish calls and delivers to subscribers.
+type MockBroker struct {
+	PublishedUserID string
+	PublishedEvent  ports.Event
+	Subscribers     map[string][]chan ports.Event
+}
+
+func NewMockBroker() *MockBroker {
+	return &MockBroker{Subscribers: make(map[string][]chan ports.Event)}
+}
+
+func (m *MockBroker) Subscribe(_ context.Context, userID string) (<-chan ports.Event, error) {
+	ch := make(chan ports.Event, 32)
+	m.Subscribers[userID] = append(m.Subscribers[userID], ch)
+	return ch, nil
+}
+
+func (m *MockBroker) Publish(userID string, event ports.Event) error {
+	m.PublishedUserID = userID
+	m.PublishedEvent = event
+	for _, ch := range m.Subscribers[userID] {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+	return nil
+}
