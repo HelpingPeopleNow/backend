@@ -14,6 +14,8 @@ import (
 
 type mockLLM struct {
 	answer string
+	askErr error // injected error for Ask; nil → success
+	format string // "text" (default) or "json"; returned in ResponseFormat
 	// embedFn lets tests override Embed behavior; defaults to a fixed
 	// 768-dim zero vector so search tests can keep passing once the
 	// SearchService starts calling s.llm.Embed (see VECTOR_SEARCH_PLAN §8.6).
@@ -21,6 +23,9 @@ type mockLLM struct {
 }
 
 func (m *mockLLM) Ask(ctx context.Context, systemPrompt, userMessage string, history []ports.MessagePair, provider string) (*ports.LLMResponse, error) {
+	if m.askErr != nil {
+		return nil, m.askErr
+	}
 	return &ports.LLMResponse{Answer: m.answer, Role: "worker"}, nil
 }
 func (m *mockLLM) Health(ctx context.Context) error { return nil }
@@ -109,10 +114,14 @@ func (m *mockProfiles) RawQuery(_ context.Context, _ string, _ ...interface{}) *
 }
 
 type mockPrompts struct {
-	sp *core.SystemPrompt
+	sp     *core.SystemPrompt
+	getErr error // injected error for Get; nil → success
 }
 
 func (m *mockPrompts) Get(ctx context.Context) (*core.SystemPrompt, error) {
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
 	if m.sp != nil {
 		return m.sp, nil
 	}
