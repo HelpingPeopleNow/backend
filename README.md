@@ -231,7 +231,7 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | PUT | `/api/v1/system-prompts/client_profile` | Yes (admin) | Update the client profile prompt text |
 | PUT | `/api/v1/system-prompts/find_trader_search` | Yes (admin) | Update the find-trader search-params prompt |
 | PUT | `/api/v1/system-prompts/find_trader_presentation` | Yes (admin) | Update the find-trader results-presentation prompt |
-| PUT | `/api/v1/system-prompts/provider` | Yes | Set LLM provider ("opencode", "ollama", "mistral", or "" for auto fallback chain) |
+| PUT | `/api/v1/system-prompts/provider` | Yes (admin) | Set LLM provider ("opencode1", "opencode2", "ollama", "mistral", or "" for auto fallback chain) |
 | PUT | `/api/v1/user/reset-role` | Yes* | Clear user role (reset to "") |
 | GET | `/api/v1/conversations` | Yes | List conversations (supports `?type=worker&limit=N`) |
 | GET | `/api/v1/conversations/:id` | Yes | Get conversation with full message history |
