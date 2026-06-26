@@ -2,33 +2,30 @@
 # Per plan §1: statement coverage targets.
 # Ratcheted to current achievable levels. Integration tests (§4.2) will
 # push numbers higher when PG is available in CI.
-threshold: 60
+profile: coverage.out
 
-packages:
-  # Pure logic — near 100%, ratchet to current
-  - path: ./internal/services/
-    threshold: 90
-  - path: ./internal/core/
-    threshold: 90
+threshold:
+  total: 60
 
-  # Adapter packages — plan target ≥75%, ratcheted to current
-  - path: ./internal/adapters/handler/
+override:
+  - path: ^internal/services/
+    threshold: 90
+  - path: ^internal/core/
+    threshold: 90
+  - path: ^internal/adapters/handler/
     threshold: 65
-  - path: ./internal/adapters/middleware/
+  - path: ^internal/adapters/middleware/
     threshold: 70
-  - path: ./internal/adapters/llm/
+  - path: ^internal/adapters/llm/
     threshold: 50
-  - path: ./internal/adapters/ratelimit/
+  - path: ^internal/adapters/ratelimit/
     threshold: 75
-  - path: ./internal/adapters/realtime/
+  - path: ^internal/adapters/realtime/
     threshold: 100
 
-  # Excluded (interfaces, helpers, wiring — plan says 0%)
-  - path: ./internal/ports/
-    threshold: 0
-  - path: ./internal/contextkeys/
-    threshold: 0
-  - path: ./internal/testingutil/
-    threshold: 0
-  - path: ./internal/adapters/repository/
-    threshold: 0
+exclude:
+  paths:
+    - ^internal/ports/
+    - ^internal/contextkeys/
+    - ^internal/testingutil/
+    - ^internal/adapters/repository/
