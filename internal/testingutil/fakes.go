@@ -51,6 +51,9 @@ type MockChatRepo struct {
 	Convs               []core.Conversation
 	Msgs                []core.Message
 	GetErr              error
+	MsgErr              error
+	ListErr             error
+	SaveErr             error
 }
 
 func (m *MockChatRepo) SaveMessages(_ context.Context, userID, convType, userMessage, assistantResponse, conversationID string, fields json.RawMessage, _ map[string]interface{}) (string, error) {
@@ -60,6 +63,9 @@ func (m *MockChatRepo) SaveMessages(_ context.Context, userID, convType, userMes
 	m.SavedAssistantReply = assistantResponse
 	m.SavedConversationID = conversationID
 	m.SavedFields = fields
+	if m.SaveErr != nil {
+		return "", m.SaveErr
+	}
 	return m.ReturnID, nil
 }
 
@@ -68,7 +74,7 @@ func (m *MockChatRepo) LoadConversation(_ context.Context, _, _ string) (*core.C
 }
 
 func (m *MockChatRepo) ListConversations(_ context.Context, _, _ string, _, _ int) ([]core.Conversation, int64, error) {
-	return m.Convs, int64(len(m.Convs)), nil
+	return m.Convs, int64(len(m.Convs)), m.ListErr
 }
 
 func (m *MockChatRepo) GetConversation(_ context.Context, _, _ string) (*core.Conversation, error) {
@@ -76,7 +82,7 @@ func (m *MockChatRepo) GetConversation(_ context.Context, _, _ string) (*core.Co
 }
 
 func (m *MockChatRepo) GetMessages(_ context.Context, _ string) ([]core.Message, error) {
-	return m.Msgs, nil
+	return m.Msgs, m.MsgErr
 }
 
 // ── ProfileRepository fake (Strategy A) ────────────────────────────
