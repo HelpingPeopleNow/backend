@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -57,6 +58,7 @@ func (rl *RateLimiter) Allow(key string) bool {
 	b.lastSeen = rl.now()
 
 	if b.tokens < 1 {
+		slog.Debug("rate limit hit", "key", key)
 		return false
 	}
 	b.tokens--

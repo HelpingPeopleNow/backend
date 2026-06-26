@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
@@ -40,6 +41,7 @@ func (r *GormChatRepository) SaveMessages(
 			}
 			for _, msg := range messages {
 				if err := r.db.WithContext(ctx).Create(&msg).Error; err != nil {
+					slog.Error("failed to save message", "conversation_id", conversationID, "role", msg.Role, "error", err)
 					return "", err
 				}
 			}
@@ -63,6 +65,7 @@ func (r *GormChatRepository) SaveMessages(
 			}
 
 			if err := r.db.WithContext(ctx).Model(&core.Conversation{}).Where("id = ?", conversationID).Updates(updates).Error; err != nil {
+				slog.Error("failed to update conversation metadata", "conversation_id", conversationID, "error", err)
 				return "", err
 			}
 			return conversationID, nil
@@ -88,6 +91,7 @@ func (r *GormChatRepository) SaveMessages(
 		Metadata: metaJSON,
 	}
 	if err := r.db.WithContext(ctx).Create(&conv).Error; err != nil {
+		slog.Error("failed to create conversation", "user_id", userID, "type", convType, "error", err)
 		return "", err
 	}
 
@@ -97,6 +101,7 @@ func (r *GormChatRepository) SaveMessages(
 	}
 	for _, msg := range messages {
 		if err := r.db.WithContext(ctx).Create(&msg).Error; err != nil {
+			slog.Error("failed to save initial message", "conversation_id", conv.ID, "role", msg.Role, "error", err)
 			return "", err
 		}
 	}
@@ -111,6 +116,7 @@ func (r *GormChatRepository) LoadConversation(ctx context.Context, userID string
 		if err == gorm.ErrRecordNotFound {
 			return nil, nil
 		}
+		slog.Error("failed to load conversation", "user_id", userID, "type", convType, "error", err)
 		return nil, err
 	}
 	return &conv, nil
@@ -134,11 +140,13 @@ func (r *GormChatRepository) ListConversations(ctx context.Context, userID strin
 
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
+		slog.Error("failed to count conversations", "user_id", userID, "convType", convType, "error", err)
 		return nil, 0, fmt.Errorf("count conversations: %w", err)
 	}
 
 	var convs []core.Conversation
 	if err := query.Order("updated_at DESC").Offset(offset).Limit(limit).Find(&convs).Error; err != nil {
+		slog.Error("failed to list conversations", "user_id", userID, "convType", convType, "error", err)
 		return nil, 0, fmt.Errorf("list conversations: %w", err)
 	}
 	return convs, total, nil
@@ -151,6 +159,7 @@ func (r *GormChatRepository) GetConversation(ctx context.Context, userID, conver
 		if err == gorm.ErrRecordNotFound {
 			return nil, nil
 		}
+		slog.Error("failed to get conversation", "conversation_id", conversationID, "user_id", userID, "error", err)
 		return nil, err
 	}
 	return &conv, nil
@@ -160,6 +169,7 @@ func (r *GormChatRepository) GetMessages(ctx context.Context, conversationID str
 	var msgs []core.Message
 	err := r.db.WithContext(ctx).Where("conversation_id = ?", conversationID).Order("created_at ASC").Find(&msgs).Error
 	if err != nil {
+		slog.Error("failed to get messages", "conversation_id", conversationID, "error", err)
 		return nil, err
 	}
 	return msgs, nil

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -53,6 +54,7 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	entitySlug := parts[0]
 	meta, ok := entities[entitySlug]
 	if !ok {
+		slog.Warn("admin: unknown entity", "slug", entitySlug)
 		writeError(w, http.StatusNotFound, fmt.Sprintf("unknown entity: %s", entitySlug))
 		return
 	}
@@ -67,6 +69,7 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case http.MethodDelete:
 			h.deleteRow(w, meta, id)
 		default:
+			slog.Warn("admin: method not allowed on entity", "slug", entitySlug, "method", r.Method, "id", id)
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 		return
@@ -76,6 +79,7 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		h.listRows(w, r, meta)
 	default:
+		slog.Warn("admin: method not allowed on listing", "slug", entitySlug, "method", r.Method)
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }

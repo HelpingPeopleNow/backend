@@ -1,6 +1,6 @@
 module github.com/HelpingPeopleNow/backend
 
-go 1.25.0
+go 1.25
 
 require (
 	github.com/pgvector/pgvector-go v0.2.0
