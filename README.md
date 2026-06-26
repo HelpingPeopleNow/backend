@@ -199,7 +199,7 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | Languages | `languages` | string[] |
 | Emergency | `emergency_service` | boolean |
 | Website | `website` | string |
-| Social Links | `social_links` (preferred) OR per-platform `instagram`/`facebook`/`twitter`/`linkedin`/`tiktok`/`youtube` (each `string` URL) | `{platform,url}[]` — both forms are normalized into a single deduplicated `{platform,url}` array via `core.MergeSocialLinks` |
+| Social Links | `social_links` (preferred) OR per-platform `instagram`/`facebook`/`twitter`/`linkedin`/`tiktok`/`youtube` (each `string` URL) | `{platform,url}[]` — both forms are normalized into a single deduplicated `{platform,url}` array by the package-internal `core.mergeSocialLinks` helper (`backend/internal/core/fields.go`), invoked from `WorkerProfile.MergeFields` (`backend/internal/core/worker.go:113`). Not callable directly outside the `core` package. |
 
 **Client profile fields mapped from detected_fields:**
 
