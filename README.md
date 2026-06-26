@@ -226,10 +226,11 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | DELETE | `/api/v1/worker/profile` | Yes* | Clear worker profile for authenticated user |
 | GET | `/api/v1/client/profile` | Yes* | Get client profile for authenticated user |
 | DELETE | `/api/v1/client/profile` | Yes* | Clear client profile for authenticated user |
-| GET | `/api/v1/system-prompts` | Yes | Get helper + worker + client prompts + LLM provider |
-| PUT | `/api/v1/system-prompts/helper` | Yes | Update the helper prompt text |
-| PUT | `/api/v1/system-prompts/worker_profile` | Yes | Update the worker profile prompt text |
-| PUT | `/api/v1/system-prompts/client_profile` | Yes | Update the client profile prompt text |
+| GET | `/api/v1/system-prompts` | Yes | Get all four prompt columns + `llm_provider` (auth-only, NOT admin-only) |
+| PUT | `/api/v1/system-prompts/worker_profile` | Yes (admin) | Update the worker profile prompt text |
+| PUT | `/api/v1/system-prompts/client_profile` | Yes (admin) | Update the client profile prompt text |
+| PUT | `/api/v1/system-prompts/find_trader_search` | Yes (admin) | Update the find-trader search-params prompt |
+| PUT | `/api/v1/system-prompts/find_trader_presentation` | Yes (admin) | Update the find-trader results-presentation prompt |
 | PUT | `/api/v1/system-prompts/provider` | Yes | Set LLM provider ("opencode", "ollama", "mistral", or "" for auto fallback chain) |
 | PUT | `/api/v1/user/reset-role` | Yes* | Clear user role (reset to "") |
 | GET | `/api/v1/conversations` | Yes | List conversations (supports `?type=worker&limit=N`) |
@@ -313,11 +314,6 @@ curl -X DELETE http://localhost:8081/api/v1/client/profile \
 curl http://localhost:8081/api/v1/system-prompts
 # → {"worker_profile_prompt":"...", "client_profile_prompt":"...", "llm_provider":"opencode", "updated_at":"..."}
 
-# Update helper prompt
-curl -X PUT http://localhost:8081/api/v1/system-prompts/helper \
-  -H "Content-Type: application/json" \
-  -d '{"content":"You are a helpful home services assistant..."}'
-
 # Update worker profile prompt
 curl -X PUT http://localhost:8081/api/v1/system-prompts/worker_profile \
   -H "Content-Type: application/json" \
@@ -327,6 +323,16 @@ curl -X PUT http://localhost:8081/api/v1/system-prompts/worker_profile \
 curl -X PUT http://localhost:8081/api/v1/system-prompts/client_profile \
   -H "Content-Type: application/json" \
   -d '{"content":"You are a friendly profile-building assistant for clients..."}'
+
+# Update find-trader search prompt
+curl -X PUT http://localhost:8081/api/v1/system-prompts/find_trader_search \
+  -H "Content-Type: application/json" \
+  -d '{"content":"Extract search params from the user request..."}'
+
+# Update find-trader results-presentation prompt
+curl -X PUT http://localhost:8081/api/v1/system-prompts/find_trader_presentation \
+  -H "Content-Type: application/json" \
+  -d '{"content":"Present matched workers conversationally..."}'
 
 # Switch LLM provider
 curl -X PUT http://localhost:8081/api/v1/system-prompts/provider \
@@ -361,7 +367,9 @@ Singleton row (`id=1`) with five key columns:
 | `client_profile_prompt` | `TEXT` | System prompt sent to the helper on client profile intake chat |
 | `find_trader_search_prompt` | `TEXT` | System prompt sent to the helper for the search-params pass |
 | `find_trader_presentation_prompt` | `TEXT` | System prompt sent to the helper for the results-presentation pass |
-| `llm_provider` | `VARCHAR(32)` | `"opencode"`, `"ollama"`, `"mistral"`, or `""` for auto fallback chain |
+| `llm_provider` | `VARCHAR(32)` | `"opencode1"`, `"opencode2"`, `"ollama"`, `"mistral"`, or `""` for auto fallback chain |
+
+NOTE: there is no `helper_prompt` column. (The unread `helper_prompt` column referenced in older docs is not part of the `system_prompts` GORM model — admin PUT/GET talk to the four columns above.)
 
 If `worker_profile_prompt` is empty at startup, a default prompt is seeded automatically that instructs the LLM to gather all 22 profile fields conversationally and output `[FIELDS]JSON[/FIELDS]` blocks.
 
