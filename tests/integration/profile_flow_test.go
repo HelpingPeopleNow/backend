@@ -82,8 +82,8 @@ func TestWorkerProfileUpdateViaChat(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, wp)
 	assert.Equal(t, "Plumber", wp.Profession) // preserved
-	assert.Equal(t, "Valencia", wp.City)       // updated
-	assert.Equal(t, 60.0, wp.HourlyRate)       // new
+	assert.Equal(t, "Valencia", wp.City)      // updated
+	assert.Equal(t, 60.0, wp.HourlyRate)      // new
 }
 
 func TestWorkerProfileDeleteViaHTTP(t *testing.T) {

@@ -19,8 +19,8 @@ import (
 func newDMHandler() *DirectMessagingHandler {
 	return NewDirectMessagingHandler(
 		&testingutil.MockDMRepo{
-			Conv: &core.DirectConversation{ID: "conv-1"},
-			Msgs: []core.DirectMessage{{ID: "msg-1"}},
+			Conv:              &core.DirectConversation{ID: "conv-1"},
+			Msgs:              []core.DirectMessage{{ID: "msg-1"}},
 			IsParticipantBool: true,
 		},
 		&testingutil.MockProfiles{WorkerProfile: &core.WorkerProfile{UserID: "w-1"}},
@@ -85,8 +85,8 @@ func TestDirectMessagingHandlerMethodNotAllowed(t *testing.T) {
 
 func TestDirectMessagingHandlerMarkRead(t *testing.T) {
 	repo := &testingutil.MockDMRepo{
-		Conv: &core.DirectConversation{ID: "conv-1", ClientID: "user-1"},
-		Marked: 3,
+		Conv:              &core.DirectConversation{ID: "conv-1", ClientID: "user-1"},
+		Marked:            3,
 		IsParticipantBool: true,
 	}
 	h := newDMHandlerWithRepo(repo)
@@ -109,7 +109,7 @@ func TestDirectMessagingHandlerMarkReadNotParticipant(t *testing.T) {
 
 func TestDirectMessagingHandlerArchive(t *testing.T) {
 	repo := &testingutil.MockDMRepo{
-		Conv: &core.DirectConversation{ID: "conv-1"},
+		Conv:              &core.DirectConversation{ID: "conv-1"},
 		IsParticipantBool: true,
 	}
 	h := newDMHandlerWithRepo(repo)
@@ -167,7 +167,7 @@ func TestDirectMessagingHandlerReportNotParticipant(t *testing.T) {
 
 func TestDirectMessagingHandlerSendMessage(t *testing.T) {
 	repo := &testingutil.MockDMRepo{
-		Conv: &core.DirectConversation{ID: "conv-1", ClientID: "user-1", WorkerProfileID: "wp-1"},
+		Conv:              &core.DirectConversation{ID: "conv-1", ClientID: "user-1", WorkerProfileID: "wp-1"},
 		IsParticipantBool: true,
 	}
 	h := newDMHandlerWithRepo(repo)
@@ -350,13 +350,13 @@ func TestConversationItemClientRole(t *testing.T) {
 
 	now := time.Now()
 	conv := core.DirectConversation{
-		ID:                  "conv-1",
-		ClientID:            "user-1",
-		WorkerProfileID:     "wp-1",
-		ClientUnreadCount:   3,
-		Status:              "active",
-		LastMessageAt:       &now,
-		LastMessagePreview:  "Hello!",
+		ID:                 "conv-1",
+		ClientID:           "user-1",
+		WorkerProfileID:    "wp-1",
+		ClientUnreadCount:  3,
+		Status:             "active",
+		LastMessageAt:      &now,
+		LastMessagePreview: "Hello!",
 	}
 
 	item := h.conversationItem(nil, conv, "user-1", core.SenderRoleClient)
@@ -378,13 +378,13 @@ func TestConversationItemWorkerRole(t *testing.T) {
 
 	now := time.Now()
 	conv := core.DirectConversation{
-		ID:                  "conv-1",
-		ClientID:            "c-1",
-		WorkerProfileID:     "wp-1",
-		WorkerUnreadCount:   2,
-		Status:              "active",
-		LastMessageAt:       &now,
-		LastMessagePreview:  "Thanks!",
+		ID:                 "conv-1",
+		ClientID:           "c-1",
+		WorkerProfileID:    "wp-1",
+		WorkerUnreadCount:  2,
+		Status:             "active",
+		LastMessageAt:      &now,
+		LastMessagePreview: "Thanks!",
 	}
 
 	item := h.conversationItem(nil, conv, "w-1", core.SenderRoleWorker)

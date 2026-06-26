@@ -55,8 +55,8 @@ func TestSchemaWorkerProfileColumns(t *testing.T) {
 	// Verify key columns exist by inserting and reading
 	profileRepo := repository.NewGormProfileRepository(db)
 	err := profileRepo.UpsertWorkerProfile(t.Context(), "schema-test-w1", map[string]interface{}{
-		"profession": "Plumber",
-		"city":       "Madrid",
+		"profession":  "Plumber",
+		"city":        "Madrid",
 		"hourly_rate": 50.0,
 	})
 	require.NoError(t, err)

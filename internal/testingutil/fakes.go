@@ -88,18 +88,18 @@ func (m *MockChatRepo) GetMessages(_ context.Context, _ string) ([]core.Message,
 // ── ProfileRepository fake (Strategy A) ────────────────────────────
 // MockProfiles tracks profile upsert calls and returns canned profiles.
 type MockProfiles struct {
-	UpsertedWorkerID   string
-	UpsertedWorkerMap  map[string]interface{}
-	UpsertedClientID   string
-	UpsertedClientMap  map[string]interface{}
-	WorkerProfile      *core.WorkerProfile
-	ClientProfile      *core.ClientProfile
-	Workers            []core.WorkerProfile
-	WorkersErr         error
-	WorkerEmbedding    []float32
-	EmbeddingMeta      map[string]ports.EmbeddingMeta
-	StaleWorkerIDs     []string
-	WorkerByProfileID  *core.WorkerProfile
+	UpsertedWorkerID  string
+	UpsertedWorkerMap map[string]interface{}
+	UpsertedClientID  string
+	UpsertedClientMap map[string]interface{}
+	WorkerProfile     *core.WorkerProfile
+	ClientProfile     *core.ClientProfile
+	Workers           []core.WorkerProfile
+	WorkersErr        error
+	WorkerEmbedding   []float32
+	EmbeddingMeta     map[string]ports.EmbeddingMeta
+	StaleWorkerIDs    []string
+	WorkerByProfileID *core.WorkerProfile
 }
 
 func (m *MockProfiles) GetWorkerProfile(_ context.Context, _ string) (*core.WorkerProfile, error) {

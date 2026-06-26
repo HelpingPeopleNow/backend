@@ -138,7 +138,7 @@ func (c *countingUpdatePrompts) Update(_ context.Context, _, _ string) (*core.Sy
 // failingUpdatePrompts fails on the Nth Update call.
 type failingUpdatePrompts struct {
 	*testingutil.MockPrompts
-	count *atomic.Int32
+	count  *atomic.Int32
 	failOn int32
 }
 
