@@ -25,7 +25,7 @@ override:
 
 exclude:
   paths:
-    - ^database$
+    - ^database/
     - ^cmd/
     - ^internal/ports/
     - ^internal/contextkeys/
