@@ -1,15 +1,44 @@
-# .testcoverage.yml — vladopajic/go-test-coverage config
+# .testcoverage.yml — vladopajic/go-test-coverage v2 config
 profile: coverage.out
 
 threshold:
   total: 60
   package: 60
 
+# Per-package overrides (first match wins).
+override:
+  - path: ^internal/services$
+    threshold: 90
+
+  - path: ^internal/core$
+    threshold: 90
+
+  - path: ^internal/adapters/handler$
+    threshold: 65
+
+  - path: ^internal/adapters/middleware$
+    threshold: 70
+
+  - path: ^internal/adapters/llm$
+    threshold: 50
+
+  - path: ^internal/adapters/ratelimit$
+    threshold: 75
+
+  - path: ^internal/adapters/realtime$
+    threshold: 100
+
+  - path: ^internal/contextkeys$
+    threshold: 100
+
 exclude:
   paths:
+    - ^database$
+    - ^cmd/
     - ^internal/ports/
     - ^internal/contextkeys/
     - ^internal/testingutil/
     - ^internal/adapters/repository/
-    - ^main\.go$
     - ^proto/
+    - ^tests/
+    - ^main\.go$
