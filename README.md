@@ -248,11 +248,11 @@ Composite health check — no auth required. Pings PostgreSQL and the helper gRP
 
 ```bash
 curl http://localhost:8081/health
-# → {"status":"ok","postgres":"ok","grpc_helper":"ok","details":[]}
-# → 503 when degraded, e.g. {"status":"degraded","postgres":"ok","grpc_helper":"down","details":["grpc_helper_err: <msg>"]}
+# → 200 {"status":"ok","postgres":"ok","grpc_helper":"ok","details":{}}
+# → 503 {"status":"degraded","postgres":"ok","grpc_helper":"down","details":{"grpc_helper_err":"<msg>"}}
 ```
 
-Returns `200 OK` when both PostgreSQL and the helper gRPC endpoint are reachable. Returns `503 Service Unavailable` when either is `down`; the `details` array contains the per-component error messages. `Content-Type: application/json`. Note: a storage or gRPC outage is reflected here even though `:8081` itself can still respond.
+Returns `200 OK` when both PostgreSQL and the helper gRPC endpoint are reachable. Returns `503 Service Unavailable` when either is `down`; the `details` object (`map[string]string`, omitted from JSON when empty) carries `postgres_err` / `grpc_helper_err` keys with the per-component error message. `Content-Type: application/json`. Note: a storage or gRPC outage is reflected here even though `:8081` itself can still respond.
 
 ### Worker Profile Intake Chat
 
@@ -386,17 +386,22 @@ The backend is a **gRPC client** to the helper:
 ```protobuf
 service HelperService {
   rpc Ask(AskRequest) returns (AskResponse);
+  rpc Embed(EmbedRequest) returns (EmbedResponse);          // vector search
+  rpc EmbedBatch(EmbedBatchRequest) returns (EmbedBatchResponse);  // backfill
 }
 
 message AskRequest {
   string question = 1;
   repeated Message history = 2;
-  string system_prompt = 3;   // loaded by backend from DB (helper or worker_profile or client_profile)
-  string llm_provider = 4;    // "opencode" | "ollama" | "mistral" | "" (= auto fallback chain)
+  string system_prompt = 3;   // loaded by backend from DB (worker_profile, client_profile, find_trader_*)
+  string llm_provider = 4;    // "opencode1" | "opencode2" | "mistral" | "ollama" | "" (= auto fallback chain)
+  bool skip_role_detection = 5;  // backend always sends true; JSON role-tag detection is reserved for future search flows
 }
 ```
 
-Proto definition: `proto/helper/helper.proto`
+> Note: the proto field comment uses `"ollama" | "opencode" | ""` as a shorthand, but the helper loads adapters under the keys `opencode1`, `opencode2`, `mistral`, `ollama` — see `helper/main.py` and `infra/docker-compose.yml`. The backend always sends `skip_role_detection=true`; the helper never appends the role-tag JSON instruction.
+
+Proto definition: `proto/helper/helper.proto` (canonical source). Generated Go bindings in `helper.pb.go` / `helper_grpc.pb.go` are checked in.
 
 The `ChatHandler` dials the helper at startup and reconnects if the connection drops.
 
@@ -458,9 +463,21 @@ go run .
 # Build binary
 go build -o backend .
 
+# Tests (race-detector + coverage; CI runs the same command)
+go test -race -coverprofile=coverage.out ./...
+
+# Format + vet + govulncheck (CI lint job)
+gofmt -l . | tee fmt.out && test ! -s fmt.out
+go vet ./...
+go tool govulncheck ./...
+
 # Docker build
 docker build -t ghcr.io/helpingpeoplenow/backend:latest .
 ```
+
+Coverage thresholds are enforced via `.testcoverage.yml` (60% overall; `internal/services/` and `internal/core/` at 90%; `internal/adapters/handler/` at 65%; `internal/adapters/realtime/` at 100%; `internal/ports/`, `internal/contextkeys/`, `internal/testingutil/`, `internal/adapters/repository/` at 0%).
+
+The CI pipeline (`.github/workflows/ci.yml`) runs: `gofmt -l` + `go vet` + `govulncheck` (lint) → `go build` → `go test -race -coverprofile=coverage.out -covermode=atomic ./...` with a PostgreSQL 16 service container → Docker build/push to `ghcr.io/helpingpeoplenow/backend`. A second workflow `vector-parity.yml` runs `helper/scripts/test_byte_parity_gate.sh` to gate byte-level parity between Go and Python field-text hashing.
 
 ---
 
@@ -468,54 +485,82 @@ docker build -t ghcr.io/helpingpeoplenow/backend:latest .
 
 ```
 backend/
-├── main.go                       # Composition root: init DB, wire handlers, start server
-├── handler_health.go             # GET /health handler
-├── Dockerfile                    # Multi-stage: golang:1.25 → alpine:3.20
-├── go.mod / go.sum               # Go module dependencies
+├── main.go                            # Composition root: init DB, wire handlers, start server, sweeper goroutine
+├── Dockerfile                         # Multi-stage: golang:1.25 → alpine:3.20 (static binary)
+├── go.mod / go.sum                    # Go module dependencies
+├── .testcoverage.yml                  # vladopajic/go-test-coverage thresholds (60% overall; per-package overrides)
+├── VERSION                            # 0.4
 ├── proto/
 │   └── helper/
-│       ├── helper.proto          # gRPC contract (shared with helper repo)
-│       ├── helper.pb.go          # Generated protobuf Go types
-│       └── helper_grpc.pb.go     # Generated gRPC Go client/server
+│       ├── helper.proto               # gRPC contract (Ask + Embed + EmbedBatch)
+│       ├── helper.pb.go               # Generated protobuf Go types
+│       └── helper_grpc.pb.go          # Generated gRPC Go client/server
 ├── database/
-│   └── postgres.go               # GORM connection + AutoMigrate
+│   └── postgres.go                    # GORM connection + pgvector extension + HNSW index + idempotent migrations
+├── cmd/
+│   └── hash_fixture/
+│       └── main.go                    # CLI: prints Go's canonical field-name → text → SHA-256 fixtures
+│                                       # (parity partner for helper/scripts/test_byte_parity_gate.sh)
 └── internal/
     ├── core/
-    │   ├── system_prompt.go      # SystemPrompt GORM model (helper, worker_profile, client_profile, llm_provider)
-    │   ├── worker.go             # WorkerProfile GORM model + DTO
-    │   └── client.go             # ClientProfile GORM model + DTO
-    ├── ports/
-    │   ├── llm.go                # LLMService interface
-    │   ├── profiles.go           # ProfileRepository interface
-    │   ├── chat.go               # ChatRepository interface
-    │   ├── system_prompts.go     # SystemPromptRepository interface
-    │   └── direct_messages.go    # DirectMessageRepository + DirectMessaging interfaces
-    ├── services/
-    │   ├── intake_service.go     # ProcessIntake: chat → [FIELDS] → map-merge upsert
-    │   ├── search_service.go     # Search: two-pass LLM (filter-fill → present)
-    │   └── seed_service.go       # SeedSystemPrompts: defaults at startup
-    └── adapters/
-        ├── handler/
-        │   ├── chat_handler.go           # POST /api/v1/chat — mode dispatch + gRPC + lang
-        │   ├── system_prompt_handler.go  # System prompt CRUD (worker, client, search, presentation, provider)
-        │   ├── worker_handler.go         # Worker profile (GET/DELETE)
-        │   ├── client_handler.go         # Client profile (GET/DELETE)
-        │   ├── conversation_handler.go   # Conversation list/detail (messages table)
-        │   ├── direct_messaging_handler.go # DM: contact, inbox, thread, send, read, archive, block, report, SSE
-        │   └── admin_handler.go          # Admin middleware + user management
-        ├── repository/
-        │   ├── worker_repo.go            # GORM WorkerProfile repository
-        │   ├── client_repo.go            # GORM ClientProfile repository
-        │   ├── chat_repo.go              # GORM conversation/message repository
-        │   ├── system_prompt_repo.go     # GORM SystemPrompt repository
-        │   └── direct_message_repo.go    # GORM DM repository
-        ├── llm/
-        │   └── grpc_client.go            # GRPCLLMService — gRPC client to helper
-        ├── realtime/
-        │   └── sse_broker.go             # In-process pub/sub for DM SSE
-        ├── middleware/
-        │   ├── admin.go                  # Admin role verification middleware
-        │   └── contextkeys.go            # Context key helpers
-        └── ratelimit/
-            └── rate_limiter.go           # Per-user token bucket (30 msg/min)
+    │   ├── system_prompt.go           # SystemPrompt GORM model (4 prompt columns + llm_provider)
+    │   ├── worker.go                  # WorkerProfile GORM model + DTO + ToFindTraderCard
+    │   ├── worker_embeddings.go       # WorkerEmbedding (vector(768), text_hash, updated_at trigger)
+    │   ├── client.go                  # ClientProfile GORM model + DTO
+    │   ├── conversation.go            # Conversation + Message
+    │   ├── direct_conversation.go     # DirectConversation
+    │   ├── direct_message.go          # DirectMessage
+    │   ├── fields.go                  # Field-merge helpers (rawString, rawFloat, rawInt, rawBool, mergeJSONArray, mergeSocialLinks)
+    │   ├── parser.go                  # [FIELDS] / [SEARCH] block extractors
+    │   ├── search.go                  # WorkerSearchFilters struct
+    │   ├── prompts.go                 # Default system prompts (4)
+    │   ├── env.go                     # GetEnvFloat / GetEnvBool helpers (vector tunables)
+    │   ├── money.go / money_format.go # Hourly rate formatting
+    │   └── phone.go
+    ├── ports/                         # Interfaces only — services depend on these
+    │   ├── llm_service.go             # LLMService (Ask, Health, Embed)
+    │   ├── profile_repository.go      # ProfileRepository + RawQuerier + FindResult (Branch|Workers|TopScore)
+    │   ├── chat_repository.go         # ChatRepository
+    │   ├── system_prompt_repository.go
+    │   ├── direct_message_repository.go
+    │   └── direct_messaging.go        # Broker + Event (SSE pub/sub)
+    ├── services/                      # Use-case orchestration
+    │   ├── intake_service.go          # ProcessIntake: chat → [FIELDS] → map-merge upsert + debounced re-embed
+    │   ├── search_service.go          # Search: two-pass LLM (filter-fill → present) + hybrid ILIKE/vector + 60s cache
+    │   └── seed_service.go            # SeedSystemPrompts: defaults at startup
+    ├── adapters/
+    │   ├── handler/                   # HTTP handlers
+    │   │   ├── chat_handler.go        # POST /api/v1/chat — mode dispatch + gRPC + lang
+    │   │   ├── system_prompt_handler.go # System prompt CRUD (worker, client, search, presentation, provider)
+    │   │   ├── worker_handler.go      # Worker profile (GET/DELETE)
+    │   │   ├── client_handler.go      # Client profile (GET/DELETE)
+    │   │   ├── conversation_handler.go # Conversation list/detail
+    │   │   ├── direct_messaging_handler.go # DM: contact, inbox, thread, send, read, archive, block, report, SSE
+    │   │   ├── admin_handler.go       # Generic CRUD over 5 admin entities
+    │   │   ├── admin_table.go         # Entity metadata (table → columns)
+    │   │   ├── health_handler.go      # Composite PG + helper-gRPC health
+    │   │   ├── metrics_handler.go     # Homegrown Prometheus text (no client_golang)
+    │   │   └── response.go            # writeJSON / writeError helpers
+    │   ├── repository/                # GORM implementations
+    │   │   ├── profile_repo.go        # Worker/Client CRUD + FindWorkers (vector|ilike) + embedding CRUD
+    │   │   ├── chat_repo.go           # Conversations + Messages
+    │   │   ├── system_prompt_repo.go  # SystemPrompt + in-memory cache
+    │   │   └── direct_message_repo.go # DM CRUD (12 methods)
+    │   ├── llm/
+    │   │   └── grpc_client.go         # GRPCLLMService — gRPC client to helper (Ask, Health, Embed)
+    │   ├── realtime/
+    │   │   └── sse_broker.go          # In-process pub/sub for DM SSE
+    │   ├── middleware/
+    │   │   ├── auth.go                # AuthMiddleware (auth-service → DB fallback)
+    │   │   ├── admin.go               # AdminMiddleware (calls AUTH_SERVICE_URL)
+    │   │   ├── cors.go                # Origin-reflective CORS
+    │   │   └── logging.go             # Structured slog HTTP logging
+    │   └── ratelimit/
+    │       └── rate_limiter.go        # Per-user token bucket (30 msg/min for DM send)
+    ├── contextkeys/
+    │   └── keys.go                    # SetUserID / GetUserID context helpers
+    └── testingutil/
+        └── fakes.go                   # Shared mocks for handler/service tests
+└── tests/
+    └── integration/                   # End-to-end PG-backed tests (chat_flow, profile_flow, conversations, etc.)
 ```
