@@ -221,3 +221,11 @@ func TestMergeSocialLinksNoSocialKeys(t *testing.T) {
 	got := mergeSocialLinks(fields, `[{"platform":"instagram","url":"ig.com/user"}]`)
 	assert.Equal(t, `[{"platform":"instagram","url":"ig.com/user"}]`, got) // existing returned unchanged
 }
+
+// ── fmtSummary ───────────────────────────────────────────────────────
+
+func TestFmtSummary(t *testing.T) {
+	got := fmtSummary(1, "Carlos", "plumber", "Madrid", "€25/h", 5)
+	expected := "1. Carlos - plumber in Madrid, €25/h, 5 years experience"
+	assert.Equal(t, expected, got)
+}

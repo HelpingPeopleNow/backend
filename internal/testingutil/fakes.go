@@ -3,6 +3,7 @@ package testingutil
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
 	"github.com/HelpingPeopleNow/backend/internal/ports"
@@ -46,6 +47,10 @@ type MockChatRepo struct {
 	SavedConversationID string
 	SavedFields         json.RawMessage
 	ReturnID            string
+	Conv                *core.Conversation
+	Convs               []core.Conversation
+	Msgs                []core.Message
+	GetErr              error
 }
 
 func (m *MockChatRepo) SaveMessages(_ context.Context, userID, convType, userMessage, assistantResponse, conversationID string, fields json.RawMessage, _ map[string]interface{}) (string, error) {
@@ -59,32 +64,36 @@ func (m *MockChatRepo) SaveMessages(_ context.Context, userID, convType, userMes
 }
 
 func (m *MockChatRepo) LoadConversation(_ context.Context, _, _ string) (*core.Conversation, error) {
-	return nil, nil
+	return m.Conv, m.GetErr
 }
 
 func (m *MockChatRepo) ListConversations(_ context.Context, _, _ string, _, _ int) ([]core.Conversation, int64, error) {
-	return nil, 0, nil
+	return m.Convs, int64(len(m.Convs)), nil
 }
 
 func (m *MockChatRepo) GetConversation(_ context.Context, _, _ string) (*core.Conversation, error) {
-	return nil, nil
+	return m.Conv, m.GetErr
 }
 
 func (m *MockChatRepo) GetMessages(_ context.Context, _ string) ([]core.Message, error) {
-	return nil, nil
+	return m.Msgs, nil
 }
 
 // ── ProfileRepository fake (Strategy A) ────────────────────────────
 // MockProfiles tracks profile upsert calls and returns canned profiles.
 type MockProfiles struct {
-	UpsertedWorkerID  string
-	UpsertedWorkerMap map[string]interface{}
-	UpsertedClientID  string
-	UpsertedClientMap map[string]interface{}
-	WorkerProfile     *core.WorkerProfile
-	ClientProfile     *core.ClientProfile
-	Workers           []core.WorkerProfile
-	WorkersErr        error
+	UpsertedWorkerID   string
+	UpsertedWorkerMap  map[string]interface{}
+	UpsertedClientID   string
+	UpsertedClientMap  map[string]interface{}
+	WorkerProfile      *core.WorkerProfile
+	ClientProfile      *core.ClientProfile
+	Workers            []core.WorkerProfile
+	WorkersErr         error
+	WorkerEmbedding    []float32
+	EmbeddingMeta      map[string]ports.EmbeddingMeta
+	StaleWorkerIDs     []string
+	WorkerByProfileID  *core.WorkerProfile
 }
 
 func (m *MockProfiles) GetWorkerProfile(_ context.Context, _ string) (*core.WorkerProfile, error) {
@@ -115,22 +124,27 @@ func (m *MockProfiles) FindWorkers(_ context.Context, filters core.WorkerSearchF
 	return ports.FindResult{Workers: m.Workers, Branch: "ilike"}, m.WorkersErr
 }
 
-func (m *MockProfiles) UpsertWorkerEmbedding(_ context.Context, _, _ string, _ []float32, _ string) error {
+func (m *MockProfiles) UpsertWorkerEmbedding(_ context.Context, _, _ string, vec []float32, _ string) error {
+	m.WorkerEmbedding = vec
 	return nil
 }
 
 func (m *MockProfiles) GetWorkerEmbeddingHashes(_ context.Context, _ string) (map[string]ports.EmbeddingMeta, error) {
-	return nil, nil
+	return m.EmbeddingMeta, nil
 }
 
 func (m *MockProfiles) DeleteWorkerEmbedding(_ context.Context, _, _ string) error { return nil }
 
 func (m *MockProfiles) FindStaleWorkerIDs(_ context.Context) ([]string, error) {
-	return nil, nil
+	return m.StaleWorkerIDs, nil
 }
 
 func (m *MockProfiles) RawQuery(_ context.Context, _ string, _ ...interface{}) *gorm.DB {
 	return nil
+}
+
+func (m *MockProfiles) GetWorkerByProfileID(_ context.Context, _ string) (*core.WorkerProfile, error) {
+	return m.WorkerByProfileID, nil
 }
 
 // ── SystemPromptRepository fake (Strategy A+C) ─────────────────────
@@ -188,4 +202,64 @@ func (m *MockBroker) Publish(userID string, event ports.Event) error {
 		}
 	}
 	return nil
+}
+
+// ── DirectMessageRepository fake (Strategy A) ───────────────────────
+// MockDMRepo tracks DM calls and returns canned data.
+type MockDMRepo struct {
+	Conv              *core.DirectConversation
+	Convs             []core.DirectConversation
+	Msgs              []core.DirectMessage
+	Err               error
+	Created           bool
+	Marked            int
+	IsParticipantBool bool
+	WorkerByProfileID *core.WorkerProfile
+}
+
+func (m *MockDMRepo) GetOrCreateConversation(_ context.Context, _, _ string) (*core.DirectConversation, bool, error) {
+	return m.Conv, m.Created, m.Err
+}
+
+func (m *MockDMRepo) GetConversation(_ context.Context, _ string) (*core.DirectConversation, error) {
+	return m.Conv, m.Err
+}
+
+func (m *MockDMRepo) ListConversations(_ context.Context, _, _, _ string, _ int, _ *time.Time) ([]core.DirectConversation, error) {
+	return m.Convs, m.Err
+}
+
+func (m *MockDMRepo) ArchiveConversation(_ context.Context, _, _, _ string) error {
+	return m.Err
+}
+
+func (m *MockDMRepo) BlockConversation(_ context.Context, _ string) error {
+	return m.Err
+}
+
+func (m *MockDMRepo) GetMessages(_ context.Context, _ string, _ int, _ string) ([]core.DirectMessage, error) {
+	return m.Msgs, m.Err
+}
+
+func (m *MockDMRepo) SendMessage(_ context.Context, _ *core.DirectMessage) error {
+	return m.Err
+}
+
+func (m *MockDMRepo) MarkRead(_ context.Context, _, _ string) (int, error) {
+	return m.Marked, m.Err
+}
+
+func (m *MockDMRepo) PollSince(_ context.Context, _ string, _ time.Time) ([]core.DirectMessage, error) {
+	return m.Msgs, m.Err
+}
+
+func (m *MockDMRepo) GetWorkerByProfileID(_ context.Context, _ string) (*core.WorkerProfile, error) {
+	if m.WorkerByProfileID != nil {
+		return m.WorkerByProfileID, m.Err
+	}
+	return nil, m.Err
+}
+
+func (m *MockDMRepo) IsParticipant(_ context.Context, _, _ string) (bool, string, error) {
+	return m.IsParticipantBool, "", m.Err
 }
