@@ -25,8 +25,8 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af168  # v4
-      - uses: actions/setup-go@0a12ed9d6a96ab950c2f0a67f1d8c224f0dd54d4  # v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -41,8 +41,8 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af168  # v4
-      - uses: actions/setup-go@0a12ed9d6a96ab950c2f0a67f1d8c224f0dd54d4  # v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -82,9 +82,9 @@ jobs:
       GOFLAGS: -mod=readonly
 
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af168  # v4
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@0a12ed9d6a96ab950c2f0a67f1d8c224f0dd54d4  # v5
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
@@ -97,13 +97,13 @@ jobs:
 
       - name: Enforce coverage thresholds
         if: success() || failure()
-        uses: vladopajic/go-test-coverage@9f6d3f5e0e5f59fe8b8342e7f76d1a5e4d80e3cc  # v2
+        uses: vladopajic/go-test-coverage@v2
         with:
           config: ./.testcoverage.yml
 
       - name: Upload coverage artifact
         if: always()
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f2fb81e37e  # v4
+        uses: actions/upload-artifact@v4
         with:
           name: backend-coverage-${{ github.sha }}
           path: coverage.out
@@ -111,7 +111,7 @@ jobs:
 
       - name: Comment coverage on PR
         if: github.event_name == 'pull_request' && always()
-        uses: marocchino/sticky-pull-request-comment@52439e0e8235c5bcb88863909cfdf9b729974262  # v2
+        uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: backend-coverage
           message: |
@@ -137,22 +137,22 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af168  # v4
-      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fbde5b8a2f8c2f3d698e28  # v3
-      - uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772  # v3
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@9027b86147ec4f389efb9c1e6d5028d702c72be0  # v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha
             type=ref,event=branch
-      - uses: docker/build-push-action@263435318d4c279d7e447d0c8c4f6080e2a7be4d  # v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           push: true
