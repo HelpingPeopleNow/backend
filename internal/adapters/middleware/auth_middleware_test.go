@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,146 +9,152 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestAuthMiddlewareResolveViaAuthServiceEmpty(t *testing.T) {
-	m := NewAuthMiddleware("", nil)
-	assert.Equal(t, "", m.resolveViaAuthService(nil))
-}
+// ── resolveViaAuthService via httptest server ───────────────────────
 
-func TestAuthMiddlewareResolveViaDBNilDB(t *testing.T) {
-	m := NewAuthMiddleware("http://auth", nil)
+func TestResolveViaAuthServiceOK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"userId": "user-123"})
+	}))
+	defer srv.Close()
+
+	m := NewAuthMiddleware(srv.URL, nil)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	assert.Equal(t, "", m.resolveViaDB(req))
+	req.AddCookie(&http.Cookie{Name: canonicalSessionCookieName, Value: "tok.encrypted"})
+
+	id := m.resolveViaAuthService(req)
+	assert.Equal(t, "user-123", id)
 }
 
-func TestAuthMiddlewareResolve(t *testing.T) {
-	m := NewAuthMiddleware("", nil)
+func TestResolveViaAuthServiceUnauthorized(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	m := NewAuthMiddleware(srv.URL, nil)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	assert.Equal(t, "", m.resolve(req))
+	req.AddCookie(&http.Cookie{Name: canonicalSessionCookieName, Value: "tok.encrypted"})
+
+	id := m.resolveViaAuthService(req)
+	assert.Equal(t, "", id)
 }
 
-func TestAuthMiddlewareWrapReturnsUnauthorized(t *testing.T) {
-	m := NewAuthMiddleware("", nil)
-	handler := m.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestResolveViaAuthServiceUnreachable(t *testing.T) {
+	m := NewAuthMiddleware("http://127.0.0.1:1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: canonicalSessionCookieName, Value: "tok.encrypted"})
+
+	id := m.resolveViaAuthService(req)
+	assert.Equal(t, "", id)
+}
+
+func TestResolveViaAuthServiceMalformedJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{invalid json`))
+	}))
+	defer srv.Close()
+
+	m := NewAuthMiddleware(srv.URL, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: canonicalSessionCookieName, Value: "tok.encrypted"})
+
+	id := m.resolveViaAuthService(req)
+	assert.Equal(t, "", id)
+}
+
+func TestResolveViaAuthServiceNoSessionCookie(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
+	defer srv.Close()
+
+	m := NewAuthMiddleware(srv.URL, nil)
+	// No cookie on request — should short-circuit before HTTP call
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	id := m.resolveViaAuthService(req)
+	assert.Equal(t, "", id)
+	assert.False(t, called, "auth service should not be called without a session cookie")
 }
 
-// ── sessionCookie ────────────────────────────────────────────────────
+func TestResolveViaAuthServiceSecureCookie(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"userId": "secure-user"})
+	}))
+	defer srv.Close()
 
-func TestSessionCookieSecureFirst(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: secureSessionCookieName, Value: "secure.token"})
-	req.AddCookie(&http.Cookie{Name: canonicalSessionCookieName, Value: "canon.token"})
+	m := NewAuthMiddleware(srv.URL, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: secureSessionCookieName, Value: "secure.tok"})
 
-	cookie, ok := sessionCookie(req)
-	assert.True(t, ok)
-	assert.Equal(t, secureSessionCookieName, cookie.Name)
-	assert.Equal(t, "secure.token", cookie.Value)
+	id := m.resolveViaAuthService(req)
+	assert.Equal(t, "secure-user", id)
 }
 
-func TestSessionCookieFallsBackToCanonical(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: canonicalSessionCookieName, Value: "canonical.payload"})
+func TestResolveViaAuthServiceMissingFieldsJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"other": "value"})
+	}))
+	defer srv.Close()
 
-	cookie, ok := sessionCookie(req)
-	assert.True(t, ok)
-	assert.Equal(t, canonicalSessionCookieName, cookie.Name)
+	m := NewAuthMiddleware(srv.URL, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: canonicalSessionCookieName, Value: "tok.encrypted"})
+
+	id := m.resolveViaAuthService(req)
+	// JSON decodes successfully but userId is empty string
+	assert.Equal(t, "", id)
 }
 
-func TestSessionCookieNotFound(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	_, ok := sessionCookie(req)
-	assert.False(t, ok)
+func TestResolveViaAuthServiceServerInternalError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	m := NewAuthMiddleware(srv.URL, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: canonicalSessionCookieName, Value: "tok.encrypted"})
+
+	id := m.resolveViaAuthService(req)
+	assert.Equal(t, "", id)
 }
 
-func TestSessionCookieEmptyValue(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: canonicalSessionCookieName, Value: ""})
-	_, ok := sessionCookie(req)
-	assert.False(t, ok)
+// ── resolve end-to-end via httptest server ──────────────────────────
+
+func TestResolveFallsBackToDB(t *testing.T) {
+	// Auth service returns non-OK, DB is nil → should return ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	m := NewAuthMiddleware(srv.URL, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: canonicalSessionCookieName, Value: "tok.encrypted"})
+
+	id := m.resolve(req)
+	assert.Equal(t, "", id)
 }
 
-// ── hasSessionCookie ─────────────────────────────────────────────────
+func TestResolveViaAuthServiceSucceedsDirectly(t *testing.T) {
+	// Auth service returns user ID → resolve should return it without DB fallback
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"userId": "direct-user"})
+	}))
+	defer srv.Close()
 
-func TestHasSessionCookieTrue(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: canonicalSessionCookieName, Value: "tok"})
-	assert.True(t, hasSessionCookie(req))
-}
+	m := NewAuthMiddleware(srv.URL, nil)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: canonicalSessionCookieName, Value: "tok.encrypted"})
 
-func TestHasSessionCookieFalse(t *testing.T) {
-	req, _ := http.NewRequest(http.MethodGet, "/", nil)
-	assert.False(t, hasSessionCookie(req))
-}
-
-// ── addSessionCookie ─────────────────────────────────────────────────
-
-func TestAddSessionCookieCopiesCookie(t *testing.T) {
-	src, _ := http.NewRequest(http.MethodGet, "/", nil)
-	src.AddCookie(&http.Cookie{Name: canonicalSessionCookieName, Value: "tok.encrypted"})
-
-	dst, _ := http.NewRequest(http.MethodGet, "/", nil)
-	ok := addSessionCookie(dst, src)
-	assert.True(t, ok)
-
-	cookies := dst.Cookies()
-	found := false
-	for _, c := range cookies {
-		if c.Name == canonicalSessionCookieName && c.Value == "tok.encrypted" {
-			found = true
-		}
-	}
-	assert.True(t, found, "cookie should be copied to dst")
-}
-
-func TestAddSessionCookieNoCookie(t *testing.T) {
-	src, _ := http.NewRequest(http.MethodGet, "/", nil)
-	dst, _ := http.NewRequest(http.MethodGet, "/", nil)
-	ok := addSessionCookie(dst, src)
-	assert.False(t, ok)
-}
-
-// ── rawSessionToken ──────────────────────────────────────────────────
-
-func TestRawSessionTokenSplitsAtFirstDot(t *testing.T) {
-	cookie := &http.Cookie{Name: canonicalSessionCookieName, Value: "token.encrypted.payload"}
-	assert.Equal(t, "token", rawSessionToken(cookie))
-}
-
-func TestRawSessionTokenNoDot(t *testing.T) {
-	cookie := &http.Cookie{Name: canonicalSessionCookieName, Value: "tokenonly"}
-	assert.Equal(t, "tokenonly", rawSessionToken(cookie))
-}
-
-func TestRawSessionTokenNil(t *testing.T) {
-	assert.Equal(t, "", rawSessionToken(nil))
-}
-
-func TestRawSessionTokenEmpty(t *testing.T) {
-	cookie := &http.Cookie{Name: canonicalSessionCookieName, Value: ""}
-	assert.Equal(t, "", rawSessionToken(cookie))
-}
-
-// ── addSessionCookie with secure cookie ──────────────────────────────
-
-func TestAddSessionCookieSecureCookie(t *testing.T) {
-	src, _ := http.NewRequest(http.MethodGet, "/", nil)
-	src.AddCookie(&http.Cookie{Name: secureSessionCookieName, Value: "secure.tok"})
-
-	dst, _ := http.NewRequest(http.MethodGet, "/", nil)
-	ok := addSessionCookie(dst, src)
-	assert.True(t, ok)
-
-	cookies := dst.Cookies()
-	found := false
-	for _, c := range cookies {
-		if c.Name == secureSessionCookieName && c.Value == "secure.tok" {
-			found = true
-		}
-	}
-	assert.True(t, found)
+	id := m.resolve(req)
+	assert.Equal(t, "direct-user", id)
 }

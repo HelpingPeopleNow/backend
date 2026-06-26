@@ -1,25 +1,25 @@
 # .testcoverage.yml — vladopajic/go-test-coverage config
 # Per plan §1: statement coverage targets.
-# Phase 1 (current): conservative thresholds, ratchet to plan targets over PRs.
-# Plan targets: total 80%, services/ports/contextkeys 100%, adapters ≥75%.
-threshold: 35
+# Ratcheted to current achievable levels. Integration tests (§4.2) will
+# push numbers higher when PG is available in CI.
+threshold: 60
 
 packages:
-  # Pure logic — plan target 100%, current ratchet
+  # Pure logic — near 100%, ratchet to current
   - path: ./internal/services/
-    threshold: 70
+    threshold: 90
   - path: ./internal/core/
-    threshold: 85
+    threshold: 90
 
-  # Adapter packages — plan target ≥75%, current ratchet
+  # Adapter packages — plan target ≥75%, ratcheted to current
   - path: ./internal/adapters/handler/
-    threshold: 15
+    threshold: 65
   - path: ./internal/adapters/middleware/
-    threshold: 50
+    threshold: 70
   - path: ./internal/adapters/llm/
-    threshold: 25
+    threshold: 50
   - path: ./internal/adapters/ratelimit/
-    threshold: 60
+    threshold: 75
   - path: ./internal/adapters/realtime/
     threshold: 100
 
