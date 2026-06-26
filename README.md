@@ -220,7 +220,7 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/health` | No | Health check → `{"status":"ok"}` |
+| GET | `/health` | No | Health check (composite: PG ping + helper gRPC `health`). Returns 200 when both deps are `ok`; 503 when either is `down`. Response: `{"status":"ok"\|"degraded", "postgres":"ok"\|"down", "grpc_helper":"ok"\|"down", "details":[...]}`. `Content-Type: application/json`. |
 | POST | `/api/v1/chat` | No* | Unified chat: `mode` in body (`"worker_intake"`, `"client_intake"`, `"search"`) → `{"answer","detected_fields","conversation_id"}` |
 | GET | `/api/v1/worker/profile` | Yes* | Get worker profile for authenticated user |
 | DELETE | `/api/v1/worker/profile` | Yes* | Clear worker profile for authenticated user |
@@ -236,21 +236,23 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | GET | `/api/v1/conversations` | Yes | List conversations (supports `?type=worker&limit=N`) |
 | GET | `/api/v1/conversations/:id` | Yes | Get conversation with full message history |
 | GET | `/api/v1/workers/:id/contact` | Yes | Create-or-resume a direct-message conversation with another worker (returns `conversation_id`) |
-| GET, POST, PATCH | `/api/v1/direct-messages`, `/api/v1/direct-messages/:id/*` | Yes | Direct messaging: inbox, thread, send, read, archive, block, report, SSE stream (`/stream`), polling (`/since`) |
-| GET | `/admin/*` | Yes (admin) | Admin entity CRUD (users, worker-profiles, client-profiles, conversations, messages) |
+| GET, POST, PATCH | `/api/v1/direct-messages`, `/api/v1/direct-messages/:id/*` | Yes | Direct messaging: inbox, thread, send, read, archive, block, report, SSE stream (`/stream`), polling (`/since`). Send `body` max **4000 chars** (over → 400). `/since?ts=<RFC3339>` requires the `ts` query param (missing/invalid → 400). Non-participants → 403. Conversations with `status="blocked"` → 403 on send. SSE `stream` with nil broker → 501. |
+| GET | `/metrics` | No | Prometheus metrics in text/plain (counters: `http_requests_total`, `chat_requests_total`, `vector_search_total`, `profile_saves_total`, `conversations_total`, `dm_sent_total`, `dm_received_total`, `auth_resolve_errors_total`; histograms: `chat_llm_duration_seconds`, `auth_resolve_duration_seconds`, `vector_score`). Registered by `metrics_handler.RegisterMetricsRoutes`. |
+| GET | `/admin/*` | Yes (admin) | Admin entity CRUD over exactly 5 entity slugs: `users`, `worker-profiles`, `client-profiles`, `conversations`, `messages` |
 
 *Chat handler is wrapped by `AuthMiddleware` but does not require a session — anonymous users get chat, and only authenticated requests merge fields into the user's profile.
 
 ### Health
 
-Simple health check — no auth required. Used by load balancers, orchestrators, and monitoring to verify the service is alive.
+Composite health check — no auth required. Pings PostgreSQL and the helper gRPC `health` endpoint together. Used by load balancers, orchestrators, and monitoring to verify both dependencies.
 
 ```bash
 curl http://localhost:8081/health
-# → {"status":"ok"}
+# → {"status":"ok","postgres":"ok","grpc_helper":"ok","details":[]}
+# → 503 when degraded, e.g. {"status":"degraded","postgres":"ok","grpc_helper":"down","details":["grpc_helper_err: <msg>"]}
 ```
 
-Returns `200 OK` with `{"status":"ok"}`. Because there is no request body, session, or database dependency, this endpoint is fast and reliable for uptime checks.
+Returns `200 OK` when both PostgreSQL and the helper gRPC endpoint are reachable. Returns `503 Service Unavailable` when either is `down`; the `details` array contains the per-component error messages. `Content-Type: application/json`. Note: a storage or gRPC outage is reflected here even though `:8081` itself can still respond.
 
 ### Worker Profile Intake Chat
 
