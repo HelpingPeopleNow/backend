@@ -394,6 +394,18 @@ func (h *DirectMessagingHandler) archive(
 		return
 	}
 
+	// Notify other participant via SSE
+	conv, _ := h.dm.GetConversation(r.Context(), convID)
+	if conv != nil {
+		go h.pushSSE(conv, ports.Event{
+			Type: "archive",
+			Payload: map[string]interface{}{
+				"conversation_id": convID,
+				"archived_by":     userID,
+			},
+		})
+	}
+
 	slog.Info("dm: conversation archived", "conv_id", convID, "role", role)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -419,6 +431,18 @@ func (h *DirectMessagingHandler) block(
 		return
 	}
 
+	// Notify other participant via SSE
+	conv, _ := h.dm.GetConversation(r.Context(), convID)
+	if conv != nil {
+		go h.pushSSE(conv, ports.Event{
+			Type: "block",
+			Payload: map[string]interface{}{
+				"conversation_id": convID,
+				"blocked_by":      userID,
+			},
+		})
+	}
+
 	slog.Info("dm: conversation blocked", "conv_id", convID)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -442,6 +466,24 @@ func (h *DirectMessagingHandler) report(
 		Reason string `json:"reason"`
 	}
 	json.NewDecoder(r.Body).Decode(&req)
+
+	// Archive the conversation (removes from inbox)
+	if err := h.dm.ArchiveConversation(r.Context(), convID, userID, ""); err != nil {
+		slog.Error("dm: report archive", "conv_id", convID, "error", err)
+	}
+
+	// Notify other participant via SSE
+	conv, _ := h.dm.GetConversation(r.Context(), convID)
+	if conv != nil {
+		go h.pushSSE(conv, ports.Event{
+			Type: "report",
+			Payload: map[string]interface{}{
+				"conversation_id": convID,
+				"reported_by":     userID,
+				"reason":          req.Reason,
+			},
+		})
+	}
 
 	slog.Warn("dm: conversation reported",
 		"conv_id", convID,
