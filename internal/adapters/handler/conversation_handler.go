@@ -37,8 +37,9 @@ type conversationDetail struct {
 }
 
 type msgItem struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string          `json:"role"`
+	Content string          `json:"content"`
+	Workers json.RawMessage `json:"workers,omitempty"`
 }
 
 func (h *ConversationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -128,7 +129,11 @@ func (h *ConversationHandler) getOne(w http.ResponseWriter, r *http.Request, use
 
 	msgItems := make([]msgItem, len(msgs))
 	for i, m := range msgs {
-		msgItems[i] = msgItem{Role: m.Role, Content: m.Content}
+		wj := json.RawMessage(m.WorkersJSON)
+		if len(wj) <= 2 { // "[]" or empty
+			wj = nil
+		}
+		msgItems[i] = msgItem{Role: m.Role, Content: m.Content, Workers: wj}
 	}
 
 	writeJSON(w, http.StatusOK, conversationDetail{

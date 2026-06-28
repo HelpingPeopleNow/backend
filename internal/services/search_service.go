@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -116,7 +117,7 @@ func (s *SearchService) Search(
 		slog.Info("search: pass 1 — no search params, returning conversational response", "answer_len", len(pass1Clean))
 		convID := ""
 		if userID != "" {
-			id, err := s.chats.SaveMessages(ctx, userID, "client-find", message, pass1Clean, conversationID, nil, nil)
+			id, err := s.chats.SaveMessages(ctx, userID, "client-find", message, pass1Clean, conversationID, nil, nil, "")
 			if err != nil {
 				slog.Warn("search: save conversation failed", "error", err)
 			} else {
@@ -205,7 +206,13 @@ func (s *SearchService) Search(
 			"search_params": searchParams,
 			"workers_found": len(workers),
 		}
-		id, err := s.chats.SaveMessages(ctx, userID, "client-find", message, pass2Resp.Answer, conversationID, nil, meta)
+		workersJSON := ""
+		if cards := core.FindTraderCards(workers); len(cards) > 0 {
+			if b, err := json.Marshal(cards); err == nil {
+				workersJSON = string(b)
+			}
+		}
+		id, err := s.chats.SaveMessages(ctx, userID, "client-find", message, pass2Resp.Answer, conversationID, nil, meta, workersJSON)
 		if err != nil {
 			slog.Warn("search: save conversation failed", "error", err)
 		} else {

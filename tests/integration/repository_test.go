@@ -296,7 +296,7 @@ func TestSaveAndLoadConversation(t *testing.T) {
 	ctx := context.Background()
 
 	// Save first message (creates conversation)
-	convID, err := repo.SaveMessages(ctx, "user-chat1", "main", "I need a plumber", "Sure, what's your address?", "", nil, nil)
+	convID, err := repo.SaveMessages(ctx, "user-chat1", "main", "I need a plumber", "Sure, what's your address?", "", nil, nil, "")
 	require.NoError(t, err)
 	assert.NotEmpty(t, convID)
 
@@ -322,10 +322,10 @@ func TestListConversations(t *testing.T) {
 	ctx := context.Background()
 
 	// Create two conversations
-	_, err := repo.SaveMessages(ctx, "user-list", "main", "msg1", "reply1", "", nil, nil)
+	_, err := repo.SaveMessages(ctx, "user-list", "main", "msg1", "reply1", "", nil, nil, "")
 	require.NoError(t, err)
 
-	_, err = repo.SaveMessages(ctx, "user-list", "search", "msg2", "reply2", "", nil, nil)
+	_, err = repo.SaveMessages(ctx, "user-list", "search", "msg2", "reply2", "", nil, nil, "")
 	require.NoError(t, err)
 
 	convs, total, err := repo.ListConversations(ctx, "user-list", "", 10, 0)
@@ -340,7 +340,7 @@ func TestGetConversation(t *testing.T) {
 	repo := repository.NewGormChatRepository(db)
 	ctx := context.Background()
 
-	convID, err := repo.SaveMessages(ctx, "user-get", "main", "hello", "hi", "", nil, nil)
+	convID, err := repo.SaveMessages(ctx, "user-get", "main", "hello", "hi", "", nil, nil, "")
 	require.NoError(t, err)
 
 	conv, err := repo.GetConversation(ctx, "user-get", convID)

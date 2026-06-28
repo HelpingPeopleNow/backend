@@ -56,7 +56,7 @@ type MockChatRepo struct {
 	SaveErr             error
 }
 
-func (m *MockChatRepo) SaveMessages(_ context.Context, userID, convType, userMessage, assistantResponse, conversationID string, fields json.RawMessage, _ map[string]interface{}) (string, error) {
+func (m *MockChatRepo) SaveMessages(_ context.Context, userID, convType, userMessage, assistantResponse, conversationID string, fields json.RawMessage, _ map[string]interface{}, _ string) (string, error) {
 	m.SavedUserID = userID
 	m.SavedConvType = convType
 	m.SavedUserMessage = userMessage

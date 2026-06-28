@@ -19,6 +19,7 @@ type Message struct {
 	ConversationID string    `gorm:"type:uuid;not null;index" json:"conversation_id"`
 	Role           string    `gorm:"type:text;not null" json:"role"`
 	Content        string    `gorm:"type:text;not null" json:"content"`
+	WorkersJSON    string    `gorm:"type:text;default:''" json:"workers_json,omitempty"`
 	CreatedAt      time.Time `gorm:"autoCreateTime" json:"created_at"`
 }
 

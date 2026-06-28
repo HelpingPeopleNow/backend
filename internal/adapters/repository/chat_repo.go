@@ -29,6 +29,7 @@ func (r *GormChatRepository) SaveMessages(
 	conversationID string,
 	fields json.RawMessage,
 	metadata map[string]interface{},
+	workersJSON string,
 ) (string, error) {
 	if conversationID != "" {
 		var existing core.Conversation
@@ -37,7 +38,7 @@ func (r *GormChatRepository) SaveMessages(
 		} else {
 			messages := []core.Message{
 				{ConversationID: conversationID, Role: "user", Content: userMessage},
-				{ConversationID: conversationID, Role: "assistant", Content: assistantResponse},
+				{ConversationID: conversationID, Role: "assistant", Content: assistantResponse, WorkersJSON: workersJSON},
 			}
 			for _, msg := range messages {
 				if err := r.db.WithContext(ctx).Create(&msg).Error; err != nil {
@@ -97,7 +98,7 @@ func (r *GormChatRepository) SaveMessages(
 
 	messages := []core.Message{
 		{ConversationID: conv.ID, Role: "user", Content: userMessage},
-		{ConversationID: conv.ID, Role: "assistant", Content: assistantResponse},
+		{ConversationID: conv.ID, Role: "assistant", Content: assistantResponse, WorkersJSON: workersJSON},
 	}
 	for _, msg := range messages {
 		if err := r.db.WithContext(ctx).Create(&msg).Error; err != nil {

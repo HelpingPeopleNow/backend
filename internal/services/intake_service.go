@@ -117,7 +117,7 @@ func (s *IntakeService) ProcessIntake(
 		if fieldsRaw != nil {
 			meta["extracted_fields"] = fieldsRaw
 		}
-		id, err := s.chats.SaveMessages(ctx, userID, convType, message, answer, conversationID, fieldsRaw, meta)
+		id, err := s.chats.SaveMessages(ctx, userID, convType, message, answer, conversationID, fieldsRaw, meta, "")
 		if err != nil {
 			slog.Warn("intake: save conversation failed", "user_id", userID, "error", err)
 		} else {

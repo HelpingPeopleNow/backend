@@ -8,7 +8,7 @@ import (
 )
 
 type ChatRepository interface {
-	SaveMessages(ctx context.Context, userID string, convType string, userMessage, assistantResponse string, conversationID string, fields json.RawMessage, metadata map[string]interface{}) (string, error)
+	SaveMessages(ctx context.Context, userID string, convType string, userMessage, assistantResponse string, conversationID string, fields json.RawMessage, metadata map[string]interface{}, workersJSON string) (string, error)
 
 	LoadConversation(ctx context.Context, userID string, convType string) (*core.Conversation, error)
 
