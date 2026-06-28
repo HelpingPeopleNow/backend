@@ -3,6 +3,8 @@ package core
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -11,6 +13,7 @@ type WorkerProfile struct {
 	UserID           string    `gorm:"type:text;uniqueIndex;not null" json:"user_id"`
 	Profession       string    `json:"profession"`
 	BusinessName     string    `json:"business_name"`
+	Slug             string    `gorm:"type:text;index" json:"slug"`
 	Bio              string    `json:"bio"`
 	Phone            string    `json:"phone"`
 	City             string    `json:"city"`
@@ -35,6 +38,7 @@ type WorkerProfileDTO struct {
 	UserID           string       `json:"user_id"`
 	Profession       string       `json:"profession"`
 	BusinessName     string       `json:"business_name"`
+	Slug             string       `json:"slug"`
 	Bio              string       `json:"bio"`
 	Phone            string       `json:"phone"`
 	City             string       `json:"city"`
@@ -148,6 +152,7 @@ func (w WorkerProfile) ToDTO() WorkerProfileDTO {
 		UserID:           w.UserID,
 		Profession:       w.Profession,
 		BusinessName:     w.BusinessName,
+		Slug:             w.Slug,
 		Bio:              w.Bio,
 		Phone:            w.Phone,
 		City:             w.City,
@@ -172,6 +177,7 @@ type FindTraderCard struct {
 	ID               string   `json:"id"`
 	Profession       string   `json:"profession"`
 	BusinessName     string   `json:"business_name"`
+	Slug             string   `json:"slug"`
 	Bio              string   `json:"bio"`
 	City             string   `json:"city"`
 	Phone            string   `json:"phone"`
@@ -193,6 +199,7 @@ func (w WorkerProfile) ToFindTraderCard() FindTraderCard {
 		ID:               w.ID,
 		Profession:       w.Profession,
 		BusinessName:     w.BusinessName,
+		Slug:             w.Slug,
 		Bio:              w.Bio,
 		City:             w.City,
 		Phone:            w.Phone,
@@ -223,4 +230,85 @@ func (w WorkerProfile) SearchSummary(index int) string {
 		return fmtSummary(index, name, w.Profession, w.City, rate, w.YearsExperience)
 	}
 	return fmt.Sprintf("%d. %s - %s in %s, %s", index, name, w.Profession, w.City, rate)
+}
+
+// ── Slug helpers ───────────────────────────────────────────────────
+
+func GenerateSlug(businessName string) string {
+	s := strings.ToLower(businessName)
+	s = strings.TrimSpace(s)
+	s = regexp.MustCompile(`[^a-z0-9\s-]`).ReplaceAllString(s, "")
+	s = regexp.MustCompile(`[\s]+`).ReplaceAllString(s, "-")
+	s = regexp.MustCompile(`[-]+`).ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	if len(s) > 50 {
+		s = s[:50]
+		s = strings.TrimRight(s, "-")
+	}
+	return s
+}
+
+func ValidateSlug(slug string) bool {
+	return regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`).MatchString(slug)
+}
+
+// ── Public DTO ─────────────────────────────────────────────────────
+
+type WorkerPublicDTO struct {
+	ID               string       `json:"id"`
+	Slug             string       `json:"slug"`
+	Profession       string       `json:"profession"`
+	BusinessName     string       `json:"business_name"`
+	Bio              string       `json:"bio"`
+	City             string       `json:"city"`
+	ServiceRadiusKm  int          `json:"service_radius_km"`
+	HourlyRate       float64      `json:"hourly_rate"`
+	MinimumCharge    float64      `json:"minimum_charge"`
+	FreeEstimate     bool         `json:"free_estimate"`
+	YearsExperience  int          `json:"years_experience"`
+	Certifications   []string     `json:"certifications"`
+	HasInsurance     bool         `json:"has_insurance"`
+	Languages        []string     `json:"languages"`
+	EmergencyService bool         `json:"emergency_service"`
+	Website          string       `json:"website"`
+	SocialLinks      []SocialLink `json:"social_links"`
+	CreatedAt        time.Time    `json:"created_at"`
+}
+
+func WorkerProfileToPublicDTO(wp *WorkerProfile) WorkerPublicDTO {
+	var certs []string
+	_ = json.Unmarshal([]byte(wp.Certifications), &certs)
+	var langs []string
+	_ = json.Unmarshal([]byte(wp.Languages), &langs)
+	var links []SocialLink
+	_ = json.Unmarshal([]byte(wp.SocialLinks), &links)
+	if certs == nil {
+		certs = []string{}
+	}
+	if langs == nil {
+		langs = []string{}
+	}
+	if links == nil {
+		links = []SocialLink{}
+	}
+	return WorkerPublicDTO{
+		ID:               wp.ID,
+		Slug:             wp.Slug,
+		Profession:       wp.Profession,
+		BusinessName:     wp.BusinessName,
+		Bio:              wp.Bio,
+		City:             wp.City,
+		ServiceRadiusKm:  wp.ServiceRadiusKm,
+		HourlyRate:       wp.HourlyRate,
+		MinimumCharge:    wp.MinimumCharge,
+		FreeEstimate:     wp.FreeEstimate,
+		YearsExperience:  wp.YearsExperience,
+		Certifications:   certs,
+		HasInsurance:     wp.HasInsurance,
+		Languages:        langs,
+		EmergencyService: wp.EmergencyService,
+		Website:          wp.Website,
+		SocialLinks:      links,
+		CreatedAt:        wp.CreatedAt,
+	}
 }

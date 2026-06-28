@@ -80,6 +80,11 @@ func buildMux(d appDeps) *http.ServeMux {
 
 	mux.Handle("/api/v1/admin/", middleware.CORS(d.Auth.Wrap(d.Admin.Wrap(handler.NewAdminHandler(d.DB)))))
 
+	// Public profiles — no auth middleware.
+	publicProfileHandler := handler.NewPublicProfileHandler(d.ProfileRepo)
+	mux.Handle("/api/v1/workers/public/latest", http.HandlerFunc(publicProfileHandler.LatestProfiles))
+	mux.Handle("/api/v1/workers/public/", http.HandlerFunc(publicProfileHandler.ServeHTTP))
+
 	handler.RegisterMetricsRoutes(mux)
 	return mux
 }

@@ -84,3 +84,47 @@ func TestWorkerProfileToFindTraderCard(t *testing.T) {
 	card := wp.ToFindTraderCard()
 	assert.Equal(t, "w1", card.ID)
 }
+
+// ── Slug tests ─────────────────────────────────────────────────────
+
+func TestGenerateSlug(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Acme Plumbing", "acme-plumbing"},
+		{"  Bob's   Plumbing  ", "bobs-plumbing"},
+		{"John & Mary's LLC", "john-marys-llc"},
+		{"HELPING PEOPLE NOW", "helping-people-now"},
+		{"special!@#$%^chars", "specialchars"},
+	}
+	for _, tt := range tests {
+		got := GenerateSlug(tt.input)
+		assert.Equal(t, tt.want, got, "GenerateSlug(%q)", tt.input)
+	}
+}
+
+func TestGenerateSlugTruncation(t *testing.T) {
+	long := "A Very Long Business Name That Should Definitely Be Truncated Because It Exceeds Fifty Characters"
+	slug := GenerateSlug(long)
+	assert.LessOrEqual(t, len(slug), 50, "slug should be truncated to 50 chars")
+	assert.Equal(t, "a-very-long-business-name-that-should-definitely-b", slug)
+}
+
+func TestGenerateSlugStripsLeadingTrailingHyphens(t *testing.T) {
+	slug := GenerateSlug("  -hello world-   ")
+	assert.Equal(t, "hello-world", slug)
+}
+
+func TestValidateSlug(t *testing.T) {
+	assert.True(t, ValidateSlug("acme-plumbing"))
+	assert.True(t, ValidateSlug("hello"))
+	assert.True(t, ValidateSlug("a-b-c"))
+	assert.False(t, ValidateSlug(""))
+	assert.False(t, ValidateSlug("INVALID"))
+	assert.False(t, ValidateSlug("with spaces"))
+	assert.False(t, ValidateSlug("-leading-hyphen"))
+	assert.False(t, ValidateSlug("trailing-hyphen-"))
+	assert.False(t, ValidateSlug("double--hyphen"))
+	assert.False(t, ValidateSlug("special!chars"))
+}

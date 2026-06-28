@@ -59,6 +59,9 @@ type ProfileRepository interface {
 
 	FindWorkers(ctx context.Context, filters core.WorkerSearchFilters) (FindResult, error)
 
+	FindBySlug(ctx context.Context, slug string) (*core.WorkerProfile, error)
+	FindLatestWithSlug(ctx context.Context, limit int) ([]core.WorkerProfile, error)
+
 	// Worker embeddings (vector search) — see Improvements #1, #2 and §8.8
 	// in infra/docs/VECTOR_SEARCH_PLAN.md.
 	UpsertWorkerEmbedding(ctx context.Context, userID, fieldName string, embedding []float32, textHash string) error

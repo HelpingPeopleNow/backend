@@ -149,6 +149,20 @@ func (m *MockProfiles) RawQuery(_ context.Context, _ string, _ ...interface{}) *
 	return nil
 }
 
+func (m *MockProfiles) FindBySlug(_ context.Context, slug string) (*core.WorkerProfile, error) {
+	if m.WorkerProfile != nil && m.WorkerProfile.Slug == slug {
+		return m.WorkerProfile, nil
+	}
+	return nil, nil
+}
+
+func (m *MockProfiles) FindLatestWithSlug(_ context.Context, limit int) ([]core.WorkerProfile, error) {
+	if m.WorkerProfile != nil && m.WorkerProfile.Slug != "" {
+		return []core.WorkerProfile{*m.WorkerProfile}, nil
+	}
+	return nil, nil
+}
+
 func (m *MockProfiles) GetWorkerByProfileID(_ context.Context, _ string) (*core.WorkerProfile, error) {
 	return m.WorkerByProfileID, nil
 }

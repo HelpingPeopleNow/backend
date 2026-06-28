@@ -53,6 +53,28 @@ func (r *GormProfileRepository) GetWorkerProfile(ctx context.Context, userID str
 	return &wp, nil
 }
 
+func (r *GormProfileRepository) FindBySlug(ctx context.Context, slug string) (*core.WorkerProfile, error) {
+	var wp core.WorkerProfile
+	err := r.db.WithContext(ctx).Where("slug = ?", slug).First(&wp).Error
+	if err != nil {
+		if errors.Is(err, gormpkg.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &wp, nil
+}
+
+func (r *GormProfileRepository) FindLatestWithSlug(ctx context.Context, limit int) ([]core.WorkerProfile, error) {
+	var workers []core.WorkerProfile
+	err := r.db.WithContext(ctx).
+		Where("slug IS NOT NULL AND slug != ''").
+		Order("created_at DESC").
+		Limit(limit).
+		Find(&workers).Error
+	return workers, err
+}
+
 func (r *GormProfileRepository) UpsertWorkerProfile(ctx context.Context, userID string, fields map[string]interface{}) error {
 	var existing core.WorkerProfile
 	found := r.db.WithContext(ctx).Where("user_id = ?", userID).First(&existing).Error == nil
@@ -62,6 +84,21 @@ func (r *GormProfileRepository) UpsertWorkerProfile(ctx context.Context, userID 
 	}
 
 	wp.MergeFields(fields)
+
+	// Generate slug if business name is set but slug is empty.
+	if wp.Slug == "" && wp.BusinessName != "" {
+		slug := core.GenerateSlug(wp.BusinessName)
+		baseSlug := slug
+		for i := 2; ; i++ {
+			var existing core.WorkerProfile
+			taken := r.db.WithContext(ctx).Where("slug = ?", slug).First(&existing).Error == nil
+			if !taken {
+				break
+			}
+			slug = fmt.Sprintf("%s-%d", baseSlug, i)
+		}
+		wp.Slug = slug
+	}
 
 	if found {
 		if err := r.db.WithContext(ctx).Save(&wp).Error; err != nil {
