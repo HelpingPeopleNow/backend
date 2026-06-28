@@ -174,13 +174,7 @@ func (h *DirectMessagingHandler) listConversations(
 		limit = 50
 	}
 
-	// Determine role: check if user is a worker (has worker profile) or client
-	role := core.SenderRoleClient
-	if wp, err := h.profs.GetWorkerProfile(r.Context(), userID); err == nil && wp != nil {
-		role = core.SenderRoleWorker
-	}
-
-	convs, err := h.dm.ListConversations(r.Context(), userID, role, status, limit, nil)
+	convs, err := h.dm.ListConversations(r.Context(), userID, status, limit, nil)
 	if err != nil {
 		slog.Error("dm: list conversations", "user_id", userID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
@@ -189,7 +183,7 @@ func (h *DirectMessagingHandler) listConversations(
 
 	items := make([]map[string]interface{}, 0, len(convs))
 	for _, c := range convs {
-		items = append(items, h.conversationItem(r.Context(), c, userID, role))
+		items = append(items, h.conversationItem(r.Context(), c, userID))
 	}
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -567,14 +561,14 @@ func (h *DirectMessagingHandler) pushSSE(conv *core.DirectConversation, event po
 
 // conversationItem builds the inbox item for a conversation.
 func (h *DirectMessagingHandler) conversationItem(
-	ctx context.Context, c core.DirectConversation, userID, role string,
+	ctx context.Context, c core.DirectConversation, userID string,
 ) map[string]interface{} {
-	// Determine who the "other party" is
-	otherRole := "client"
-	otherName := ""
-	otherID := ""
+	// Determine this user's role per-conversation
+	isClient := c.ClientID == userID
 
-	if role == core.SenderRoleClient {
+	var otherRole, otherName, otherID string
+
+	if isClient {
 		otherRole = "worker"
 		// Load worker profile for display
 		wp, err := h.dm.GetWorkerByProfileID(ctx, c.WorkerProfileID)
@@ -586,13 +580,20 @@ func (h *DirectMessagingHandler) conversationItem(
 			otherID = wp.UserID
 		}
 	} else {
+		otherRole = "client"
 		otherID = c.ClientID
-		otherName = c.ClientID // workers see client ID for now; profile display deferred
+		// Load client profile for display
+		cp, err := h.profs.GetClientProfile(ctx, c.ClientID)
+		if err == nil && cp != nil && cp.FullName != "" {
+			otherName = cp.FullName
+		} else {
+			otherName = c.ClientID
+		}
 	}
 
 	// Unread count for this user
 	unread := c.ClientUnreadCount
-	if role == core.SenderRoleWorker {
+	if !isClient {
 		unread = c.WorkerUnreadCount
 	}
 

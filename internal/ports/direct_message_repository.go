@@ -19,9 +19,9 @@ type DirectMessageRepository interface {
 	GetConversation(ctx context.Context, conversationID string) (*core.DirectConversation, error)
 
 	// ListConversations returns conversations for a user, ordered by last_message_at DESC.
-	// The caller specifies whether to filter by client_id or worker_id via userID + role.
+	// Shows conversations where user participates as either client or worker (role-agnostic).
 	// before is an optional cursor (last_message_at value); nil means fetch newest.
-	ListConversations(ctx context.Context, userID string, role string, status string, limit int, before *time.Time) ([]core.DirectConversation, error)
+	ListConversations(ctx context.Context, userID string, status string, limit int, before *time.Time) ([]core.DirectConversation, error)
 
 	// ArchiveConversation sets client_archived_at or worker_archived_at for the calling user.
 	ArchiveConversation(ctx context.Context, conversationID, userID, role string) error

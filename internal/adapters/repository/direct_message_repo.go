@@ -71,20 +71,16 @@ func (r *GormDirectMessageRepository) GetConversation(
 }
 
 func (r *GormDirectMessageRepository) ListConversations(
-	ctx context.Context, userID string, role string, status string,
+	ctx context.Context, userID string, status string,
 	limit int, before *time.Time,
 ) ([]core.DirectConversation, error) {
 	query := r.db.WithContext(ctx).Model(&core.DirectConversation{})
 
-	// Filter by user role
-	switch role {
-	case core.SenderRoleClient:
-		query = query.Where("client_id = ?", userID)
-	case core.SenderRoleWorker:
-		query = query.Where("worker_profile_id IN (SELECT id FROM worker_profiles WHERE user_id = ?)", userID)
-	default:
-		return nil, fmt.Errorf("invalid role: %s", role)
-	}
+	// Show ALL conversations where user participates (as client OR worker)
+	query = query.Where(
+		"client_id = ? OR worker_profile_id IN (SELECT id FROM worker_profiles WHERE user_id = ?)",
+		userID, userID,
+	)
 
 	if status != "" && status != "all" {
 		query = query.Where("status = ?", status)
