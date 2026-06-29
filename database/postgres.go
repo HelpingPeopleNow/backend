@@ -150,6 +150,73 @@ END $$;
 		slog.Warn("migration: pgcrypto extension not available", "error", err)
 	}
 
+	// ── DM schema refactor: client_id/worker_profile_id → user_a_id/user_b_id ──
+	// Detects old schema on existing DBs (e.g. fresh EC2 restored from a backup
+	// taken before commit a328eeb) and migrates data before AutoMigrate runs.
+	// All guards use IF [NOT] EXISTS so the block is a no-op on already-migrated DBs.
+	var hasOldClientID bool
+	if err := db.Raw(`
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = 'direct_conversations'
+			AND column_name = 'client_id'
+		)
+	`).Scan(&hasOldClientID).Error; err != nil {
+		slog.Warn("migration: failed to detect old DM schema", "error", err)
+	}
+
+	if hasOldClientID {
+		slog.Info("migration: direct_conversations has legacy client_id/worker_profile_id columns, migrating to user_a_id/user_b_id")
+
+		// Add new columns NULLABLE — must be NULLABLE so existing rows don't violate NOT NULL.
+		if err := db.Exec(`
+			ALTER TABLE direct_conversations
+				ADD COLUMN IF NOT EXISTS user_a_id TEXT,
+				ADD COLUMN IF NOT EXISTS user_b_id TEXT,
+				ADD COLUMN IF NOT EXISTS user_a_unread_count BIGINT DEFAULT 0,
+				ADD COLUMN IF NOT EXISTS user_b_unread_count BIGINT DEFAULT 0
+		`).Error; err != nil {
+			slog.Warn("migration: failed to add new user_a_id/user_b_id columns", "error", err)
+		}
+
+		// Backfill from old schema. JOIN on worker_profiles to resolve worker_profile_id → user_id.
+		if err := db.Exec(`
+			UPDATE direct_conversations dc
+			SET
+				user_a_id = dc.client_id,
+				user_b_id = wp.user_id,
+				user_a_unread_count = COALESCE(dc.client_unread_count, 0),
+				user_b_unread_count = COALESCE(dc.worker_unread_count, 0)
+			FROM worker_profiles wp
+			WHERE wp.id = dc.worker_profile_id
+			  AND (dc.user_a_id IS NULL OR dc.user_b_id IS NULL)
+		`).Error; err != nil {
+			slog.Warn("migration: failed to backfill user_a_id/user_b_id", "error", err)
+		}
+
+		// Drop old constraint + indexes + columns.
+		if err := db.Exec(`ALTER TABLE direct_conversations DROP CONSTRAINT IF EXISTS unique_client_worker`).Error; err != nil {
+			slog.Warn("migration: failed to drop unique_client_worker", "error", err)
+		}
+		if err := db.Exec(`DROP INDEX IF EXISTS idx_direct_conv_client`).Error; err != nil {
+			slog.Warn("migration: failed to drop idx_direct_conv_client", "error", err)
+		}
+		if err := db.Exec(`DROP INDEX IF EXISTS idx_direct_conv_worker`).Error; err != nil {
+			slog.Warn("migration: failed to drop idx_direct_conv_worker", "error", err)
+		}
+		if err := db.Exec(`
+			ALTER TABLE direct_conversations
+				DROP COLUMN IF EXISTS client_id,
+				DROP COLUMN IF EXISTS worker_profile_id,
+				DROP COLUMN IF EXISTS client_unread_count,
+				DROP COLUMN IF EXISTS worker_unread_count
+		`).Error; err != nil {
+			slog.Warn("migration: failed to drop legacy columns", "error", err)
+		}
+
+		slog.Info("migration: direct_conversations schema refactor complete")
+	}
+
 	if err := db.AutoMigrate(
 		&core.DirectConversation{},
 		&core.DirectMessage{},
