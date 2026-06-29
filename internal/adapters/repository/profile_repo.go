@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -109,11 +111,27 @@ func (r *GormProfileRepository) UpsertWorkerProfile(ctx context.Context, userID 
 
 	wp.MergeFields(fields)
 
-	// Generate slug if business name is set but slug is empty.
-	if wp.Slug == "" && wp.BusinessName != "" {
+	// Always generate slug if missing. Priority: business name → profession+city+shortID.
+	if wp.Slug == "" {
 		slug := core.GenerateSlug(wp.BusinessName)
+		if slug == "" {
+			shortID := wp.ID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
+			} else if shortID == "" {
+				var buf [4]byte
+				if _, err := rand.Read(buf[:]); err == nil {
+					shortID = hex.EncodeToString(buf[:])
+				}
+			}
+			slug = fmt.Sprintf("%s-%s-%s",
+				core.Slugify(wp.Profession),
+				core.Slugify(wp.City),
+				shortID,
+			)
+		}
 		baseSlug := slug
-		for i := 2; ; i++ {
+		for i := 2; i <= 1000; i++ {
 			var existing core.WorkerProfile
 			taken := r.db.WithContext(ctx).Where("slug = ?", slug).First(&existing).Error == nil
 			if !taken {

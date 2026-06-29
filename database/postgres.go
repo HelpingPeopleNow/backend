@@ -229,6 +229,32 @@ END $$;
 		slog.Warn("migration: uuid-to-integer migration failed (may be expected on fresh DB)", "error", err)
 	}
 
+	// ── Slug backfill ──────────────────────────────────────────────────
+	// Generate slugs for existing rows that have empty/null slugs.
+	// Each slug includes a short UUID prefix (from the row's own id),
+	// so collisions are structurally impossible.
+	slog.Info("migration: backfilling empty worker slugs")
+	if err := db.Exec(`
+		UPDATE worker_profiles
+		SET slug = LOWER(REGEXP_REPLACE(
+			COALESCE(NULLIF(business_name, ''), NULLIF(profession, ''), 'worker') || '-' ||
+			COALESCE(NULLIF(city, ''), 'unknown') || '-' ||
+			SUBSTRING(REPLACE(id::text, '-', ''), 1, 8),
+			'[^a-z0-9-]+', '-', 'gi'
+		))
+		WHERE slug IS NULL OR slug = ''
+	`).Error; err != nil {
+		slog.Warn("migration: failed to backfill worker slugs", "error", err)
+	}
+
+	// Unique partial index on slug — prevents future collision bugs at the DB level.
+	if err := db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_profiles_slug_unique
+		ON worker_profiles(slug) WHERE slug IS NOT NULL AND slug != ''
+	`).Error; err != nil {
+		slog.Warn("migration: failed to create unique slug index", "error", err)
+	}
+
 	return db, nil
 }
 

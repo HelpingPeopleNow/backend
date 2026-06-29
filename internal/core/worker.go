@@ -234,6 +234,11 @@ func (w WorkerProfile) SearchSummary(index int) string {
 
 // ── Slug helpers ───────────────────────────────────────────────────
 
+// Slugify converts any arbitrary string into a URL-safe slug.
+func Slugify(s string) string {
+	return GenerateSlug(s)
+}
+
 func GenerateSlug(businessName string) string {
 	s := strings.ToLower(businessName)
 	s = strings.TrimSpace(s)
