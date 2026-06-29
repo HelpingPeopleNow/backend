@@ -245,7 +245,7 @@ func (m *MockDMRepo) GetConversation(_ context.Context, _ string) (*core.DirectC
 	return m.Conv, m.Err
 }
 
-func (m *MockDMRepo) ListConversations(_ context.Context, _, _, _ string, _ int, _ *time.Time) ([]core.DirectConversation, error) {
+func (m *MockDMRepo) ListConversations(_ context.Context, _, _ string, _ int, _ *time.Time) ([]core.DirectConversation, error) {
 	return m.Convs, m.Err
 }
 

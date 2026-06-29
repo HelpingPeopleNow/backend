@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -359,7 +360,7 @@ func TestConversationItemClientRole(t *testing.T) {
 		LastMessagePreview: "Hello!",
 	}
 
-	item := h.conversationItem(nil, conv, "user-1", core.SenderRoleClient)
+	item := h.conversationItem(context.Background(), conv, "user-1")
 	assert.Equal(t, "conv-1", item["id"])
 	assert.Equal(t, 3, item["unread_count"])
 	assert.Equal(t, "active", item["status"])
@@ -387,7 +388,7 @@ func TestConversationItemWorkerRole(t *testing.T) {
 		LastMessagePreview: "Thanks!",
 	}
 
-	item := h.conversationItem(nil, conv, "w-1", core.SenderRoleWorker)
+	item := h.conversationItem(context.Background(), conv, "w-1")
 	assert.Equal(t, 2, item["unread_count"])
 
 	other := item["other_party"].(map[string]interface{})
@@ -400,7 +401,7 @@ func TestConversationItemNoLastMessage(t *testing.T) {
 		ID:     "conv-1",
 		Status: "active",
 	}
-	item := h.conversationItem(nil, conv, "user-1", core.SenderRoleClient)
+	item := h.conversationItem(context.Background(), conv, "user-1")
 	_, hasLastMessage := item["last_message"]
 	assert.False(t, hasLastMessage)
 }
