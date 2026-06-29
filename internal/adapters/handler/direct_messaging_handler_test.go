@@ -352,12 +352,12 @@ func TestConversationItemClientRole(t *testing.T) {
 
 	now := time.Now()
 	conv := core.DirectConversation{
-		ID:                "conv-1",
-		UserAID:           "user-1",
-		UserBID:           "w-user-1",
-		UserAUnreadCount:  3,
-		Status:            "active",
-		LastMessageAt:     &now,
+		ID:                 "conv-1",
+		UserAID:            "user-1",
+		UserBID:            "w-user-1",
+		UserAUnreadCount:   3,
+		Status:             "active",
+		LastMessageAt:      &now,
 		LastMessagePreview: "Hello!",
 	}
 
@@ -383,12 +383,12 @@ func TestConversationItemWorkerRole(t *testing.T) {
 
 	now := time.Now()
 	conv := core.DirectConversation{
-		ID:                "conv-1",
-		UserAID:           "c-1",
-		UserBID:           "w-1",
-		UserBUnreadCount:  2,
-		Status:            "active",
-		LastMessageAt:     &now,
+		ID:                 "conv-1",
+		UserAID:            "c-1",
+		UserBID:            "w-1",
+		UserBUnreadCount:   2,
+		Status:             "active",
+		LastMessageAt:      &now,
 		LastMessagePreview: "Thanks!",
 	}
 
