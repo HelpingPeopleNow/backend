@@ -95,7 +95,7 @@ func (r *GormProfileRepository) FindLatestWithSlug(ctx context.Context, limit in
 	var workers []core.WorkerProfile
 	err := r.db.WithContext(ctx).
 		Where("slug IS NOT NULL AND slug != ''").
-		Order("created_at DESC").
+		Order("GREATEST(updated_at, created_at) DESC").
 		Limit(limit).
 		Find(&workers).Error
 	return workers, err
