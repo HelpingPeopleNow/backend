@@ -2,3 +2,5 @@
 *.log
 backend
 server
+cov.out
+coverage.out
