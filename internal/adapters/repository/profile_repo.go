@@ -166,6 +166,12 @@ func (r *GormProfileRepository) DeleteClientProfile(ctx context.Context, userID 
 //   - QueryVector empty → ILIKE only (branch=ilike).
 //   - findWorkersVector error OR no rows → degrade to ILIKE (branch=ilike_fallback).
 //   - findWorkersVector success → return vector result with TopScore.
+//
+// DEFERRED: VECTOR_SEARCH_MIN_TOP_SCORE (env var, default 0.5) is documented
+// but not wired. At current scale (~7 workers) the per-row MIN_SCORE gate
+// (0.3) + zero-results ILIKE fallback already handle low-quality queries.
+// Wire here when workers exceed ~1,000: read core.GetEnvFloat("VECTOR_SEARCH_MIN_TOP_SCORE", 0.5)
+// and fall back to ILIKE when topScore < minTopScore (VECTOR_SEARCH_PLAN §N1).
 func (r *GormProfileRepository) FindWorkers(ctx context.Context, filters core.WorkerSearchFilters) (ports.FindResult, error) {
 	if !vectorSearchEnabled() {
 		workers, err := r.findWorkersILIKE(ctx, filters)

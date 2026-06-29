@@ -63,14 +63,14 @@ Two-table schema: `direct_conversations` (unique per client+worker pair) + `dire
 - **pgvector extension** auto-installed by `database.Connect()` on startup. HNSW index `idx_worker_embeddings_hnsw` (m=16, ef_construction=64) auto-created with cosine distance.
 - **`worker_embeddings` table** is `core.WorkerEmbedding` (composite PK `user_id`+`field_name`, `embedding vector(768)`, `model`, `text_hash` SHA-256 hex, `timestamptz updated_at`).
 - **`Embed`/`EmbedBatch` gRPC** is the same one helper exposes (`internal/adapters/llm/grpc_client.go::GRPCLLMService.Embed`).
-- **Tunables** in env: `VECTOR_SEARCH_ENABLED` (kill switch, default `true`), `VECTOR_SEARCH_MIN_SCORE` (per-row gate, default `0.3`), `VECTOR_SEARCH_MIN_TOP_SCORE` (fallback trigger, default `0.5`).
+- **Tunables** in env: `VECTOR_SEARCH_ENABLED` (kill switch, default `true`), `VECTOR_SEARCH_MIN_SCORE` (per-row gate, default `0.3`). `VECTOR_SEARCH_MIN_TOP_SCORE` is defined (default `0.5`) but **not yet wired at runtime** — the top-score gate was deferred from V1 because the existing per-row `VECTOR_SEARCH_MIN_SCORE` gate + ILIKE fallback on zero results already handle low-quality queries at current scale. Wire it when workers exceed ~1,000 and vague queries start returning 50 low-score results instead of falling back to ILIKE. (VECTOR_SEARCH_PLAN §N1, fourth-pass review Pitfall #4).
 - **Branch selection** — `ProfileRepository.FindWorkers` returns `FindResult{Branch, Workers, TopScore}` where `Branch` is `"vector"` / `"ilike"` / `"ilike_disabled_via_env"` / `"ilike_fallback"`. Selection is post-fact (in the repo), not pre-fact (in the service), so the slog branch reflects what actually ran.
 - **Metrics** — `vector_search_total{branch=...}` counter and `vector_score` histogram (wired in `internal/adapters/handler/metrics_handler.go` and incremented from `ChatHandler`).
 - **Re-backfill** on schema change or after first enable: `docker exec helpingpeoplenow-helper env DB_HOST=helpingpeoplenow-postgres DB_USER=postgres DB_PASSWORD=postgres DB_NAME=helpingpeoplenow HELPER_GRPC_ADDR=localhost:50051 python3 /app/scripts/backfill_embeddings.py` (idempotent — skips rows whose `text_hash` matches existing).
 
 ## Gotchas
 
-- **Architecture source of truth.** The Architecture section above is the source of truth for the current hexagonal layout. Deeper architectural notes (including the vector-search plan) live in `infra/docs/VECTOR_SEARCH_PLAN.md`.
+- **Architecture source of truth.** The Architecture section above is the source of truth for the current hexagonal layout. Vector search is documented in the Vector search section below; the implementation plan was `infra/docs/VECTOR_SEARCH_PLAN.md` (deleted after shipping).
 - `AuthMiddleware` IS wired: `main.go` constructs `*middleware.AuthMiddleware` via `middleware.NewAuthMiddleware(AUTH_SERVICE_URL, db)` and wraps every protected handler with `d.Auth.Wrap(...)`. Session is resolved via the auth service first, falling back to DB on failure. Do not bypass it from individual handlers.
 - `sessionCookie()` / `rawSessionToken()` (`internal/adapters/middleware/auth.go`) check `__Secure-better-auth.session_token` first, then `better-auth.session_token`. The legacy `better-auth-session` cookie name has been removed.
 - gRPC client uses `insecure.NewCredentials()` with `grpc.WithBlock()` at startup; failure is non-fatal and `ensureClient()` re-dials on each request if nil.
@@ -87,4 +87,4 @@ Two-table schema: `direct_conversations` (unique per client+worker pair) + `dire
 
 Required at startup: `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `AUTH_SERVICE_URL`, `HELPER_GRPC_ADDR`, `HELPER_HEALTH_URL`.
 
-Optional: `PORT` (default `8081`), `HELPER_TIMEOUT_SECONDS` (default `60`, but docker-compose sets `600`), `DATABASE_URL` or `DB_HOST/PORT/USER/PASSWORD/NAME/SSLMODE`, `VECTOR_SEARCH_ENABLED` (default `true`), `VECTOR_SEARCH_MIN_SCORE` (default `0.3`), `VECTOR_SEARCH_MIN_TOP_SCORE` (default `0.5`).
+Optional: `PORT` (default `8081`), `HELPER_TIMEOUT_SECONDS` (default `60`, but docker-compose sets `600`), `DATABASE_URL` or `DB_HOST/PORT/USER/PASSWORD/NAME/SSLMODE`, `VECTOR_SEARCH_ENABLED` (default `true`), `VECTOR_SEARCH_MIN_SCORE` (default `0.3`). Note: `VECTOR_SEARCH_MIN_TOP_SCORE` is defined but not wired (see Vector search section).

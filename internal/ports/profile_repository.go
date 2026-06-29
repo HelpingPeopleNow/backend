@@ -62,8 +62,8 @@ type ProfileRepository interface {
 	FindBySlug(ctx context.Context, slug string) (*core.WorkerProfile, error)
 	FindLatestWithSlug(ctx context.Context, limit int) ([]core.WorkerProfile, error)
 
-	// Worker embeddings (vector search) — see Improvements #1, #2 and §8.8
-	// in infra/docs/VECTOR_SEARCH_PLAN.md.
+	// Worker embeddings (vector search) — deferred per-user debounce,
+	// model-bound hash skip, staleness sweeper, all in IntakeService.
 	UpsertWorkerEmbedding(ctx context.Context, userID, fieldName string, embedding []float32, textHash string) error
 	GetWorkerEmbeddingHashes(ctx context.Context, userID string) (map[string]EmbeddingMeta, error)
 	DeleteWorkerEmbedding(ctx context.Context, userID, fieldName string) error
