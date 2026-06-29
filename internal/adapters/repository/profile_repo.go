@@ -53,6 +53,30 @@ func (r *GormProfileRepository) GetWorkerProfile(ctx context.Context, userID str
 	return &wp, nil
 }
 
+func (r *GormProfileRepository) GetWorkerProfileByID(ctx context.Context, profileID string) (*core.WorkerProfile, error) {
+	var wp core.WorkerProfile
+	err := r.db.WithContext(ctx).Where("id = ?", profileID).First(&wp).Error
+	if err != nil {
+		if errors.Is(err, gormpkg.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &wp, nil
+}
+
+func (r *GormProfileRepository) GetUserEmail(ctx context.Context, userID string) (string, error) {
+	var email string
+	err := r.db.WithContext(ctx).Table("\"user\"").Select("email").Where("id = ?", userID).Scan(&email).Error
+	if err != nil {
+		if errors.Is(err, gormpkg.ErrRecordNotFound) {
+			return "", nil
+		}
+		return "", err
+	}
+	return email, nil
+}
+
 func (r *GormProfileRepository) FindBySlug(ctx context.Context, slug string) (*core.WorkerProfile, error) {
 	var wp core.WorkerProfile
 	err := r.db.WithContext(ctx).Where("slug = ?", slug).First(&wp).Error

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+	"unicode/utf8"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
 	"github.com/HelpingPeopleNow/backend/internal/ports"
@@ -20,21 +21,35 @@ func NewGormDirectMessageRepository(db *gorm.DB) ports.DirectMessageRepository {
 	return &GormDirectMessageRepository{db: db}
 }
 
+// sortUserIDs returns the two IDs in sorted order (user_a_id < user_b_id).
+func sortUserIDs(a, b string) (string, string) {
+	if a < b {
+		return a, b
+	}
+	return b, a
+}
+
 // ── Conversations ────────────────────────────────────────────────────────────
 
 func (r *GormDirectMessageRepository) GetOrCreateConversation(
-	ctx context.Context, clientID, workerProfileID string,
+	ctx context.Context, userID1, userID2 string,
 ) (*core.DirectConversation, bool, error) {
+	a, b := sortUserIDs(userID1, userID2)
+
 	var conv core.DirectConversation
 	err := r.db.WithContext(ctx).
-		Where("client_id = ? AND worker_profile_id = ?", clientID, workerProfileID).
+		Where("user_a_id = ? AND user_b_id = ?", a, b).
 		First(&conv).Error
 	if err == nil {
-		// Existing conversation: un-archive for client if archived
-		if conv.ClientArchivedAt != nil {
+		// Un-archive for the caller if archived
+		if userID1 == a && conv.UserAArchivedAt != nil {
 			_ = r.db.WithContext(ctx).Model(&conv).
-				Update("client_archived_at", nil).Error
-			conv.ClientArchivedAt = nil
+				Update("user_a_archived_at", nil).Error
+			conv.UserAArchivedAt = nil
+		} else if userID1 == b && conv.UserBArchivedAt != nil {
+			_ = r.db.WithContext(ctx).Model(&conv).
+				Update("user_b_archived_at", nil).Error
+			conv.UserBArchivedAt = nil
 		}
 		return &conv, false, nil
 	}
@@ -42,17 +57,16 @@ func (r *GormDirectMessageRepository) GetOrCreateConversation(
 		return nil, false, fmt.Errorf("find conversation: %w", err)
 	}
 
-	// Create new conversation
 	conv = core.DirectConversation{
-		ClientID:        clientID,
-		WorkerProfileID: workerProfileID,
-		Status:          "active",
+		UserAID: a,
+		UserBID: b,
+		Status:  "active",
 	}
 	if err := r.db.WithContext(ctx).Create(&conv).Error; err != nil {
 		return nil, false, fmt.Errorf("create conversation: %w", err)
 	}
 	slog.Info("dm: conversation created",
-		"conv_id", conv.ID, "client_id", clientID, "worker_profile_id", workerProfileID)
+		"conv_id", conv.ID, "user_a", a, "user_b", b)
 	return &conv, true, nil
 }
 
@@ -60,76 +74,80 @@ func (r *GormDirectMessageRepository) GetConversation(
 	ctx context.Context, conversationID string,
 ) (*core.DirectConversation, error) {
 	var conv core.DirectConversation
-	err := r.db.WithContext(ctx).Where("id = ?", conversationID).First(&conv).Error
+	err := r.db.WithContext(ctx).
+		Where("id = ?", conversationID).
+		First(&conv).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("get conversation: %w", err)
 	}
 	return &conv, nil
 }
 
 func (r *GormDirectMessageRepository) ListConversations(
-	ctx context.Context, userID string, status string,
-	limit int, before *time.Time,
+	ctx context.Context, userID string, status string, limit int, before *time.Time,
 ) ([]core.DirectConversation, error) {
-	query := r.db.WithContext(ctx).Model(&core.DirectConversation{})
-
-	// Show ALL conversations where user participates (as client OR worker)
-	query = query.Where(
-		"client_id = ? OR worker_profile_id IN (SELECT id FROM worker_profiles WHERE user_id = ?)",
-		userID, userID,
-	)
-
-	if status != "" && status != "all" {
-		query = query.Where("status = ?", status)
+	if status == "" {
+		status = "active"
 	}
+
+	q := r.db.WithContext(ctx).
+		Where("(user_a_id = ? OR user_b_id = ?) AND status = ?", userID, userID, status)
 
 	if before != nil {
-		query = query.Where("last_message_at < ?", before)
+		q = q.Where("last_message_at < ?", before)
 	}
 
-	query = query.Order("last_message_at DESC NULLS LAST").Limit(limit)
-
 	var convs []core.DirectConversation
-	if err := query.Find(&convs).Error; err != nil {
-		return nil, err
+	if err := q.
+		Order("last_message_at DESC NULLS LAST").
+		Limit(limit).
+		Find(&convs).Error; err != nil {
+		return nil, fmt.Errorf("list conversations: %w", err)
 	}
 	return convs, nil
 }
 
 func (r *GormDirectMessageRepository) ArchiveConversation(
-	ctx context.Context, conversationID, userID, role string,
+	ctx context.Context, conversationID, userID string,
 ) error {
-	conv, err := r.GetConversation(ctx, conversationID)
-	if err != nil || conv == nil {
-		return fmt.Errorf("conversation not found: %s", conversationID)
+	field := "user_a_archived_at"
+	// Determine which side the user is on
+	var count int64
+	r.db.WithContext(ctx).Model(&core.DirectConversation{}).
+		Where("id = ? AND user_b_id = ?", conversationID, userID).
+		Count(&count)
+	if count > 0 {
+		field = "user_b_archived_at"
 	}
 
-	now := time.Now()
-	switch role {
-	case core.SenderRoleClient:
-		if conv.ClientID != userID {
-			return fmt.Errorf("not participant")
-		}
-		return r.db.WithContext(ctx).Model(conv).
-			Update("client_archived_at", now).Error
-	case core.SenderRoleWorker:
-		return r.db.WithContext(ctx).Model(conv).
-			Update("worker_archived_at", now).Error
-	default:
-		return fmt.Errorf("invalid role: %s", role)
+	result := r.db.WithContext(ctx).Model(&core.DirectConversation{}).
+		Where("id = ? AND (user_a_id = ? OR user_b_id = ?)", conversationID, userID, userID).
+		Update(field, time.Now())
+	if result.Error != nil {
+		return fmt.Errorf("archive conversation: %w", result.Error)
 	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("conversation not found or not a participant")
+	}
+	return nil
 }
 
 func (r *GormDirectMessageRepository) BlockConversation(
 	ctx context.Context, conversationID string,
 ) error {
-	return r.db.WithContext(ctx).
-		Model(&core.DirectConversation{}).
+	result := r.db.WithContext(ctx).Model(&core.DirectConversation{}).
 		Where("id = ?", conversationID).
-		Update("status", "blocked").Error
+		Update("status", "blocked")
+	if result.Error != nil {
+		return fmt.Errorf("block conversation: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("conversation not found")
+	}
+	return nil
 }
 
 // ── Messages ─────────────────────────────────────────────────────────────────
@@ -137,18 +155,25 @@ func (r *GormDirectMessageRepository) BlockConversation(
 func (r *GormDirectMessageRepository) GetMessages(
 	ctx context.Context, conversationID string, limit int, before string,
 ) ([]core.DirectMessage, error) {
-	query := r.db.WithContext(ctx).
-		Where("conversation_id = ?", conversationID).
-		Order("created_at DESC").
-		Limit(limit)
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
 
+	q := r.db.WithContext(ctx).
+		Where("conversation_id = ?", conversationID)
 	if before != "" {
-		query = query.Where("created_at < (SELECT created_at FROM direct_messages WHERE id = ?)", before)
+		q = q.Where("id < (SELECT created_at FROM direct_messages WHERE id = ?)", before)
 	}
 
 	var msgs []core.DirectMessage
-	if err := query.Find(&msgs).Error; err != nil {
-		return nil, err
+	if err := q.
+		Order("created_at DESC").
+		Limit(limit).
+		Find(&msgs).Error; err != nil {
+		return nil, fmt.Errorf("get messages: %w", err)
 	}
 	return msgs, nil
 }
@@ -156,141 +181,145 @@ func (r *GormDirectMessageRepository) GetMessages(
 func (r *GormDirectMessageRepository) SendMessage(
 	ctx context.Context, msg *core.DirectMessage,
 ) error {
-	// Validate
 	if len(msg.Body) == 0 || len(msg.Body) > core.MaxDirectMessageLength {
 		return fmt.Errorf("body must be 1-%d characters", core.MaxDirectMessageLength)
 	}
-	if msg.SenderRole != core.SenderRoleClient && msg.SenderRole != core.SenderRoleWorker {
-		return fmt.Errorf("invalid sender_role: %s", msg.SenderRole)
-	}
 
-	// Insert message
-	if err := r.db.WithContext(ctx).Create(msg).Error; err != nil {
-		return fmt.Errorf("insert message: %w", err)
-	}
-
-	// Update conversation: last_message_at, last_message_preview
-	// Truncate by rune (not byte) to avoid splitting multi-byte UTF-8 characters
-	preview := msg.Body
-	runes := []rune(preview)
-	if len(runes) > 120 {
-		preview = string(runes[:120])
-	}
-	updates := map[string]interface{}{
-		"last_message_at":      msg.CreatedAt,
-		"last_message_preview": preview,
-	}
-
-	// Increment the OTHER party's unread count
-	if msg.SenderRole == core.SenderRoleClient {
-		updates["worker_unread_count"] = gorm.Expr("worker_unread_count + 1")
-	} else {
-		updates["client_unread_count"] = gorm.Expr("client_unread_count + 1")
-	}
-
-	return r.db.WithContext(ctx).
-		Model(&core.DirectConversation{}).
+	// Determine which unread count to increment (the other party's)
+	var conv core.DirectConversation
+	if err := r.db.WithContext(ctx).
 		Where("id = ?", msg.ConversationID).
-		Updates(updates).Error
+		First(&conv).Error; err != nil {
+		return fmt.Errorf("conversation not found: %w", err)
+	}
+
+	unreadField := "user_a_unread_count"
+	if msg.SenderID == conv.UserAID {
+		unreadField = "user_b_unread_count"
+	}
+
+	tx := r.db.WithContext(ctx).Begin()
+
+	// Create the message
+	if err := tx.Create(msg).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("create message: %w", err)
+	}
+
+	// Update conversation metadata
+	preview := msg.Body
+	if utf8.RuneCountInString(preview) > 120 {
+		preview = string([]rune(preview)[:120])
+	}
+	if err := tx.Model(&core.DirectConversation{}).
+		Where("id = ?", msg.ConversationID).
+		Updates(map[string]interface{}{
+			"last_message_at":      msg.CreatedAt,
+			"last_message_preview": preview,
+			unreadField:            gorm.Expr("GREATEST(0, " + unreadField + " + 1)"),
+		}).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("update conversation: %w", err)
+	}
+
+	return tx.Commit().Error
 }
 
 func (r *GormDirectMessageRepository) MarkRead(
-	ctx context.Context, conversationID, readerRole string,
+	ctx context.Context, conversationID, userID string,
 ) (int, error) {
-	// Determine which role is the OTHER party (whose messages we're marking as read)
-	otherRole := core.SenderRoleClient
-	if readerRole == core.SenderRoleClient {
-		otherRole = core.SenderRoleWorker
+	var conv core.DirectConversation
+	if err := r.db.WithContext(ctx).
+		Where("id = ?", conversationID).
+		First(&conv).Error; err != nil {
+		return 0, fmt.Errorf("conversation not found: %w", err)
 	}
 
-	now := time.Now()
-	result := r.db.WithContext(ctx).
-		Model(&core.DirectMessage{}).
-		Where("conversation_id = ? AND sender_role = ? AND read_at IS NULL", conversationID, otherRole).
-		Update("read_at", now)
+	// The other party is the one who sent the unread messages
+	otherID := conv.UserAID
+	if otherID == userID {
+		otherID = conv.UserBID
+	}
+
+	// Mark messages from the other party as read
+	result := r.db.WithContext(ctx).Model(&core.DirectMessage{}).
+		Where("conversation_id = ? AND sender_id = ? AND read_at IS NULL", conversationID, otherID).
+		Update("read_at", time.Now())
 
 	if result.Error != nil {
-		return 0, result.Error
+		return 0, fmt.Errorf("mark read: %w", result.Error)
 	}
 
-	count := int(result.RowsAffected)
-	if count > 0 {
-		// Reset unread counter for the reader
-		unreadCol := "client_unread_count"
-		if readerRole == core.SenderRoleWorker {
-			unreadCol = "worker_unread_count"
-		}
-		_ = r.db.WithContext(ctx).
-			Model(&core.DirectConversation{}).
-			Where("id = ?", conversationID).
-			Update(unreadCol, 0).Error
+	// Reset the caller's unread count
+	unreadField := "user_a_unread_count"
+	if conv.UserBID == userID {
+		unreadField = "user_b_unread_count"
+	}
+	if err := r.db.WithContext(ctx).Model(&core.DirectConversation{}).
+		Where("id = ?", conversationID).
+		Update(unreadField, 0).Error; err != nil {
+		return 0, fmt.Errorf("reset unread count: %w", err)
 	}
 
-	return count, nil
+	return int(result.RowsAffected), nil
 }
 
 func (r *GormDirectMessageRepository) PollSince(
 	ctx context.Context, userID string, since time.Time,
 ) ([]core.DirectMessage, error) {
-	// Messages where the user is a participant and created after the given time
 	var msgs []core.DirectMessage
 	err := r.db.WithContext(ctx).
-		Model(&core.DirectMessage{}).
 		Joins("JOIN direct_conversations ON direct_conversations.id = direct_messages.conversation_id").
+		Where("(direct_conversations.user_a_id = ? OR direct_conversations.user_b_id = ?)", userID, userID).
+		Where("direct_messages.sender_id != ?", userID).
 		Where("direct_messages.created_at > ?", since).
-		Where(
-			"(direct_conversations.client_id = ? OR direct_conversations.worker_profile_id IN (SELECT id FROM worker_profiles WHERE user_id = ?))",
-			userID, userID,
-		).
-		Where("direct_messages.sender_id != ?", userID). // only other party's messages
 		Order("direct_messages.created_at ASC").
 		Find(&msgs).Error
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("poll since: %w", err)
 	}
 	return msgs, nil
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-// GetWorkerByProfileID loads a worker profile by its UUID (worker_profiles.id).
-func (r *GormDirectMessageRepository) GetWorkerByProfileID(
-	ctx context.Context, profileID string,
-) (*core.WorkerProfile, error) {
-	var wp core.WorkerProfile
-	err := r.db.WithContext(ctx).Where("id = ?", profileID).First(&wp).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &wp, nil
-}
-
-// IsParticipant checks whether the given user is a participant in a conversation.
 func (r *GormDirectMessageRepository) IsParticipant(
 	ctx context.Context, convID, userID string,
-) (bool, string, error) {
-	// role is "client" or "worker"
-	var conv core.DirectConversation
-	err := r.db.WithContext(ctx).Where("id = ?", convID).First(&conv).Error
+) (bool, error) {
+	var count int64
+	err := r.db.WithContext(ctx).Model(&core.DirectConversation{}).
+		Where("id = ? AND (user_a_id = ? OR user_b_id = ?)", convID, userID, userID).
+		Count(&count).Error
 	if err != nil {
-		return false, "", err
+		return false, fmt.Errorf("check participant: %w", err)
 	}
-	if conv.ClientID == userID {
-		return true, core.SenderRoleClient, nil
-	}
-	// Check if user is the worker
-	var wp core.WorkerProfile
-	err = r.db.WithContext(ctx).
-		Where("id = ? AND user_id = ?", conv.WorkerProfileID, userID).
-		First(&wp).Error
-	if err == nil {
-		return true, core.SenderRoleWorker, nil
-	}
-	return false, "", nil
+	return count > 0, nil
 }
 
-// Ensure DirectMessageRepository interface is satisfied.
-var _ ports.DirectMessageRepository = (*GormDirectMessageRepository)(nil)
+// ── Reports ──────────────────────────────────────────────────────────────────
+
+func (r *GormDirectMessageRepository) CreateReport(
+	ctx context.Context, report *core.DirectMessageReport,
+) error {
+	if err := r.db.WithContext(ctx).Create(report).Error; err != nil {
+		return fmt.Errorf("create report: %w", err)
+	}
+	slog.Warn("dm: report created",
+		"report_id", report.ID,
+		"conv_id", report.ConversationID,
+		"reported_by", report.ReportedBy,
+		"reason", report.Reason,
+	)
+	return nil
+}
+
+func (r *GormDirectMessageRepository) ListReports(
+	ctx context.Context,
+) ([]core.DirectMessageReport, error) {
+	var reports []core.DirectMessageReport
+	if err := r.db.WithContext(ctx).
+		Order("created_at DESC").
+		Limit(100).
+		Find(&reports).Error; err != nil {
+		return nil, fmt.Errorf("list reports: %w", err)
+	}
+	return reports, nil
+}

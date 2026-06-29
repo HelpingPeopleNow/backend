@@ -47,7 +47,7 @@ func Connect() (*gorm.DB, error) {
 		slog.Warn("migration: pgvector extension not available (vector search disabled)", "error", err)
 	}
 
-	// Domain models. *core.WorkerEmbedding is the new embedding row.
+	// Domain models.
 	if err := db.AutoMigrate(
 		&core.SystemPrompt{},
 		&core.WorkerProfile{},
@@ -56,6 +56,7 @@ func Connect() (*gorm.DB, error) {
 		&core.Message{},
 		&core.DirectConversation{},
 		&core.DirectMessage{},
+		&core.DirectMessageReport{},
 		&core.WorkerEmbedding{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to migrate: %w", err)
@@ -141,34 +142,42 @@ END $$;
 		slog.Warn("migration: failed to add find_trader_presentation_prompt column", "error", err)
 	}
 
-	// Direct messaging migrations (idempotent)
+	// Direct messaging migration — AutoMigrate creates tables if they don't exist
+	// and adds missing columns/indexes on existing ones. No DROP so data persists
+	// across restarts. The old role-based schema (client_id/worker_profile_id) was
+	// migrated away from in June 2026 — the code below is the current schema.
 	if err := db.Exec(`CREATE EXTENSION IF NOT EXISTS pgcrypto`).Error; err != nil {
 		slog.Warn("migration: pgcrypto extension not available", "error", err)
 	}
 
+	if err := db.AutoMigrate(
+		&core.DirectConversation{},
+		&core.DirectMessage{},
+		&core.DirectMessageReport{},
+	); err != nil {
+		slog.Warn("migration: failed to auto-migrate DM tables", "error", err)
+	}
+
+	// Drop old conversation_status enum type if it still exists (pre-June 2026 legacy)
+	if err := db.Exec(`DROP TYPE IF EXISTS conversation_status`).Error; err != nil {
+		slog.Warn("migration: failed to drop conversation_status type", "error", err)
+	}
+
+	// User-to-user indexes
 	if err := db.Exec(`
-		DO $$ BEGIN
-			CREATE TYPE conversation_status AS ENUM ('active', 'archived', 'blocked');
-		EXCEPTION WHEN duplicate_object THEN NULL;
-		END $$;
+		CREATE INDEX IF NOT EXISTS idx_direct_conv_a
+			ON direct_conversations(user_a_id, last_message_at DESC)
+			WHERE status = 'active'
 	`).Error; err != nil {
-		slog.Warn("migration: failed to create conversation_status enum", "error", err)
+		slog.Warn("migration: failed to create idx_direct_conv_a", "error", err)
 	}
 
 	if err := db.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_direct_conv_client
-			ON direct_conversations(client_id, last_message_at DESC)
+		CREATE INDEX IF NOT EXISTS idx_direct_conv_b
+			ON direct_conversations(user_b_id, last_message_at DESC)
 			WHERE status = 'active'
 	`).Error; err != nil {
-		slog.Warn("migration: failed to create idx_direct_conv_client", "error", err)
-	}
-
-	if err := db.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_direct_conv_worker
-			ON direct_conversations(worker_profile_id, last_message_at DESC)
-			WHERE status = 'active'
-	`).Error; err != nil {
-		slog.Warn("migration: failed to create idx_direct_conv_worker", "error", err)
+		slog.Warn("migration: failed to create idx_direct_conv_b", "error", err)
 	}
 
 	if err := db.Exec(`
@@ -187,31 +196,24 @@ END $$;
 	}
 
 	if err := db.Exec(`
-		DO $$ BEGIN
-			IF NOT EXISTS (
-				SELECT 1 FROM pg_constraint WHERE conname = 'unique_client_worker'
-			) THEN
-				ALTER TABLE direct_conversations
-					ADD CONSTRAINT unique_client_worker
-					UNIQUE (client_id, worker_profile_id);
-			END IF;
-		END $$;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_direct_conv_users
+			ON direct_conversations(user_a_id, user_b_id)
 	`).Error; err != nil {
-		slog.Warn("migration: failed to add unique_client_worker constraint", "error", err)
+		slog.Warn("migration: failed to create idx_direct_conv_users", "error", err)
 	}
 
 	if err := db.Exec(`
 		DO $$ BEGIN
 			IF NOT EXISTS (
-				SELECT 1 FROM pg_constraint WHERE conname = 'fk_sender_user'
+				SELECT 1 FROM pg_constraint WHERE conname = 'fk_dm_sender'
 			) THEN
 				ALTER TABLE direct_messages
-					ADD CONSTRAINT fk_sender_user
+					ADD CONSTRAINT fk_dm_sender
 					FOREIGN KEY (sender_id) REFERENCES "user"(id) ON DELETE CASCADE;
 			END IF;
 		END $$;
 	`).Error; err != nil {
-		slog.Warn("migration: failed to add fk_sender_user constraint", "error", err)
+		slog.Warn("migration: failed to add fk_dm_sender constraint", "error", err)
 	}
 
 	if err := db.Exec(`DO $$ BEGIN

@@ -15,6 +15,6 @@ type Broker interface {
 
 // Event is a real-time event delivered via SSE.
 type Event struct {
-	Type    string // "message" | "read" | "typing"
+	Type    string // "message" | "read" | "archive" | "block" | "report"
 	Payload any
 }

@@ -100,9 +100,17 @@ type MockProfiles struct {
 	EmbeddingMeta     map[string]ports.EmbeddingMeta
 	StaleWorkerIDs    []string
 	WorkerByProfileID *core.WorkerProfile
+	UserEmails        map[string]string
 }
 
 func (m *MockProfiles) GetWorkerProfile(_ context.Context, _ string) (*core.WorkerProfile, error) {
+	return m.WorkerProfile, nil
+}
+
+func (m *MockProfiles) GetWorkerProfileByID(_ context.Context, _ string) (*core.WorkerProfile, error) {
+	if m.WorkerByProfileID != nil {
+		return m.WorkerByProfileID, nil
+	}
 	return m.WorkerProfile, nil
 }
 
@@ -161,6 +169,15 @@ func (m *MockProfiles) FindLatestWithSlug(_ context.Context, limit int) ([]core.
 		return []core.WorkerProfile{*m.WorkerProfile}, nil
 	}
 	return nil, nil
+}
+
+func (m *MockProfiles) GetUserEmail(_ context.Context, userID string) (string, error) {
+	if m.UserEmails != nil {
+		if email, ok := m.UserEmails[userID]; ok {
+			return email, nil
+		}
+	}
+	return "", nil
 }
 
 func (m *MockProfiles) GetWorkerByProfileID(_ context.Context, _ string) (*core.WorkerProfile, error) {
@@ -230,11 +247,11 @@ type MockDMRepo struct {
 	Conv              *core.DirectConversation
 	Convs             []core.DirectConversation
 	Msgs              []core.DirectMessage
+	Reports           []core.DirectMessageReport
 	Err               error
 	Created           bool
 	Marked            int
 	IsParticipantBool bool
-	WorkerByProfileID *core.WorkerProfile
 }
 
 func (m *MockDMRepo) GetOrCreateConversation(_ context.Context, _, _ string) (*core.DirectConversation, bool, error) {
@@ -249,7 +266,7 @@ func (m *MockDMRepo) ListConversations(_ context.Context, _, _ string, _ int, _ 
 	return m.Convs, m.Err
 }
 
-func (m *MockDMRepo) ArchiveConversation(_ context.Context, _, _, _ string) error {
+func (m *MockDMRepo) ArchiveConversation(_ context.Context, _, _ string) error {
 	return m.Err
 }
 
@@ -273,13 +290,14 @@ func (m *MockDMRepo) PollSince(_ context.Context, _ string, _ time.Time) ([]core
 	return m.Msgs, m.Err
 }
 
-func (m *MockDMRepo) GetWorkerByProfileID(_ context.Context, _ string) (*core.WorkerProfile, error) {
-	if m.WorkerByProfileID != nil {
-		return m.WorkerByProfileID, m.Err
-	}
-	return nil, m.Err
+func (m *MockDMRepo) IsParticipant(_ context.Context, _, _ string) (bool, error) {
+	return m.IsParticipantBool, m.Err
 }
 
-func (m *MockDMRepo) IsParticipant(_ context.Context, _, _ string) (bool, string, error) {
-	return m.IsParticipantBool, "", m.Err
+func (m *MockDMRepo) CreateReport(_ context.Context, _ *core.DirectMessageReport) error {
+	return m.Err
+}
+
+func (m *MockDMRepo) ListReports(_ context.Context) ([]core.DirectMessageReport, error) {
+	return m.Reports, m.Err
 }

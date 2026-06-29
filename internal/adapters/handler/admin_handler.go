@@ -35,6 +35,18 @@ var entities = map[string]entityMeta{
 		Table:   "messages",
 		Columns: []string{"id", "conversation_id", "role", "content", "created_at"},
 	},
+	"direct-conversations": {
+		Table:   "direct_conversations",
+		Columns: []string{"id", "user_a_id", "user_b_id", "status", "user_a_unread_count", "user_b_unread_count", "last_message_preview", "last_message_at", "created_at", "updated_at"},
+	},
+	"direct-messages": {
+		Table:   "direct_messages",
+		Columns: []string{"id", "conversation_id", "sender_id", "body", "created_at", "read_at", "deleted_at"},
+	},
+	"direct-message-reports": {
+		Table:   "direct_message_reports",
+		Columns: []string{"id", "conversation_id", "reported_by", "reason", "created_at"},
+	},
 }
 
 type AdminHandler struct {

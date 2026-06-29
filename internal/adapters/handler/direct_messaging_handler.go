@@ -100,8 +100,6 @@ func (h *DirectMessagingHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-// extractSegment extracts a path segment between two known strings.
-// e.g. "/api/v1/direct-messages/abc-123/messages" → "abc-123"
 func extractSegment(path, prefix, suffix string) string {
 	s := strings.TrimPrefix(path, prefix)
 	s = strings.TrimSuffix(s, suffix)
@@ -119,8 +117,7 @@ func (h *DirectMessagingHandler) getOrCreateContact(
 		return
 	}
 
-	// Load worker profile
-	wp, err := h.dm.GetWorkerByProfileID(r.Context(), workerProfileID)
+	wp, err := h.profs.GetWorkerProfileByID(r.Context(), workerProfileID)
 	if err != nil {
 		slog.Error("dm: load worker", "worker_profile_id", workerProfileID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
@@ -130,14 +127,12 @@ func (h *DirectMessagingHandler) getOrCreateContact(
 		writeError(w, http.StatusNotFound, "worker_not_found")
 		return
 	}
-
-	// Prevent self-messaging
 	if wp.UserID == userID {
 		writeError(w, http.StatusBadRequest, "cannot_message_self")
 		return
 	}
 
-	conv, created, err := h.dm.GetOrCreateConversation(r.Context(), userID, workerProfileID)
+	conv, created, err := h.dm.GetOrCreateConversation(r.Context(), userID, wp.UserID)
 	if err != nil {
 		slog.Error("dm: get-or-create conversation", "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
@@ -200,8 +195,7 @@ func (h *DirectMessagingHandler) getMessages(
 		return
 	}
 
-	// Verify participant
-	ok, role, err := h.dm.IsParticipant(r.Context(), convID, userID)
+	ok, err := h.dm.IsParticipant(r.Context(), convID, userID)
 	if err != nil {
 		slog.Error("dm: check participant", "conv_id", convID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
@@ -229,7 +223,7 @@ func (h *DirectMessagingHandler) getMessages(
 	}
 
 	// Mark messages from the other party as read
-	h.dm.MarkRead(r.Context(), convID, role)
+	h.dm.MarkRead(r.Context(), convID, userID)
 
 	// Reverse to chronological order for display
 	result := make([]core.DirectMessage, len(msgs))
@@ -264,14 +258,18 @@ func (h *DirectMessagingHandler) sendMessage(
 		return
 	}
 
-	// Rate limit: 30 messages per minute per user
 	if h.limiter != nil && !h.limiter.Allow(userID+":send") {
 		writeError(w, http.StatusTooManyRequests, "rate_limited")
 		return
 	}
 
-	// Verify participant
-	ok, role, err := h.dm.IsParticipant(r.Context(), convID, userID)
+	conv, err := h.dm.GetConversation(r.Context(), convID)
+	if err != nil || conv == nil {
+		writeError(w, http.StatusNotFound, "conversation_not_found")
+		return
+	}
+
+	ok, err := h.dm.IsParticipant(r.Context(), convID, userID)
 	if err != nil {
 		slog.Error("dm: check participant", "conv_id", convID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
@@ -282,12 +280,6 @@ func (h *DirectMessagingHandler) sendMessage(
 		return
 	}
 
-	// Check if blocked
-	conv, err := h.dm.GetConversation(r.Context(), convID)
-	if err != nil || conv == nil {
-		writeError(w, http.StatusNotFound, "conversation_not_found")
-		return
-	}
 	if conv.IsBlocked() {
 		writeError(w, http.StatusForbidden, "conversation blocked")
 		return
@@ -296,7 +288,6 @@ func (h *DirectMessagingHandler) sendMessage(
 	msg := &core.DirectMessage{
 		ConversationID: convID,
 		SenderID:       userID,
-		SenderRole:     role,
 		Body:           req.Body,
 	}
 	if err := h.dm.SendMessage(r.Context(), msg); err != nil {
@@ -305,31 +296,29 @@ func (h *DirectMessagingHandler) sendMessage(
 		return
 	}
 
-	IncrDMSent(role)
+	IncrDMSent("user")
 
-	// Push SSE event to participants (async — don't block the HTTP response)
 	go h.pushSSE(conv, ports.Event{
 		Type: "message",
 		Payload: map[string]interface{}{
 			"id":              msg.ID,
 			"conversation_id": msg.ConversationID,
 			"sender_id":       msg.SenderID,
-			"sender_role":     msg.SenderRole,
 			"body":            msg.Body,
 			"created_at":      msg.CreatedAt.Format(time.RFC3339),
 		},
-	})
+	}, userID)
 
 	slog.Info("dm: message sent",
 		"conv_id", convID,
-		"sender_role", role,
+		"sender_id", userID,
 		"body_len", len(req.Body),
 	)
 
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"id":              msg.ID,
 		"conversation_id": msg.ConversationID,
-		"sender_role":     msg.SenderRole,
+		"sender_id":       msg.SenderID,
 		"body":            msg.Body,
 		"created_at":      msg.CreatedAt,
 	})
@@ -344,20 +333,19 @@ func (h *DirectMessagingHandler) markRead(
 		return
 	}
 
-	ok, role, err := h.dm.IsParticipant(r.Context(), convID, userID)
+	ok, err := h.dm.IsParticipant(r.Context(), convID, userID)
 	if err != nil || !ok {
 		writeError(w, http.StatusForbidden, "not_participant")
 		return
 	}
 
-	count, err := h.dm.MarkRead(r.Context(), convID, role)
+	count, err := h.dm.MarkRead(r.Context(), convID, userID)
 	if err != nil {
 		slog.Error("dm: mark read", "conv_id", convID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 
-	// Push SSE read receipt to participants (async)
 	conv, err := h.dm.GetConversation(r.Context(), convID)
 	if err == nil && conv != nil {
 		go h.pushSSE(conv, ports.Event{
@@ -366,7 +354,7 @@ func (h *DirectMessagingHandler) markRead(
 				"conversation_id": convID,
 				"read_by":         userID,
 			},
-		})
+		}, userID)
 	}
 
 	slog.Debug("dm: marked read", "conv_id", convID, "count", count)
@@ -382,19 +370,18 @@ func (h *DirectMessagingHandler) archive(
 		return
 	}
 
-	ok, role, err := h.dm.IsParticipant(r.Context(), convID, userID)
+	ok, err := h.dm.IsParticipant(r.Context(), convID, userID)
 	if err != nil || !ok {
 		writeError(w, http.StatusForbidden, "not_participant")
 		return
 	}
 
-	if err := h.dm.ArchiveConversation(r.Context(), convID, userID, role); err != nil {
+	if err := h.dm.ArchiveConversation(r.Context(), convID, userID); err != nil {
 		slog.Error("dm: archive", "conv_id", convID, "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
 		return
 	}
 
-	// Notify other participant via SSE
 	conv, _ := h.dm.GetConversation(r.Context(), convID)
 	if conv != nil {
 		go h.pushSSE(conv, ports.Event{
@@ -403,10 +390,10 @@ func (h *DirectMessagingHandler) archive(
 				"conversation_id": convID,
 				"archived_by":     userID,
 			},
-		})
+		}, userID)
 	}
 
-	slog.Info("dm: conversation archived", "conv_id", convID, "role", role)
+	slog.Info("dm: conversation archived", "conv_id", convID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -419,7 +406,7 @@ func (h *DirectMessagingHandler) block(
 		return
 	}
 
-	ok, _, err := h.dm.IsParticipant(r.Context(), convID, userID)
+	ok, err := h.dm.IsParticipant(r.Context(), convID, userID)
 	if err != nil || !ok {
 		writeError(w, http.StatusForbidden, "not_participant")
 		return
@@ -431,7 +418,6 @@ func (h *DirectMessagingHandler) block(
 		return
 	}
 
-	// Notify other participant via SSE
 	conv, _ := h.dm.GetConversation(r.Context(), convID)
 	if conv != nil {
 		go h.pushSSE(conv, ports.Event{
@@ -440,7 +426,7 @@ func (h *DirectMessagingHandler) block(
 				"conversation_id": convID,
 				"blocked_by":      userID,
 			},
-		})
+		}, userID)
 	}
 
 	slog.Info("dm: conversation blocked", "conv_id", convID)
@@ -456,7 +442,7 @@ func (h *DirectMessagingHandler) report(
 		return
 	}
 
-	ok, _, err := h.dm.IsParticipant(r.Context(), convID, userID)
+	ok, err := h.dm.IsParticipant(r.Context(), convID, userID)
 	if err != nil || !ok {
 		writeError(w, http.StatusForbidden, "not_participant")
 		return
@@ -467,12 +453,21 @@ func (h *DirectMessagingHandler) report(
 	}
 	json.NewDecoder(r.Body).Decode(&req)
 
-	// Archive the conversation (removes from inbox)
-	if err := h.dm.ArchiveConversation(r.Context(), convID, userID, ""); err != nil {
+	// Persist the report
+	report := &core.DirectMessageReport{
+		ConversationID: convID,
+		ReportedBy:     userID,
+		Reason:         req.Reason,
+	}
+	if err := h.dm.CreateReport(r.Context(), report); err != nil {
+		slog.Error("dm: persist report", "conv_id", convID, "error", err)
+	}
+
+	// Archive the conversation for the reporting user
+	if err := h.dm.ArchiveConversation(r.Context(), convID, userID); err != nil {
 		slog.Error("dm: report archive", "conv_id", convID, "error", err)
 	}
 
-	// Notify other participant via SSE
 	conv, _ := h.dm.GetConversation(r.Context(), convID)
 	if conv != nil {
 		go h.pushSSE(conv, ports.Event{
@@ -482,7 +477,7 @@ func (h *DirectMessagingHandler) report(
 				"reported_by":     userID,
 				"reason":          req.Reason,
 			},
-		})
+		}, userID)
 	}
 
 	slog.Warn("dm: conversation reported",
@@ -551,11 +546,13 @@ func (h *DirectMessagingHandler) streamSSE(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("Transfer-Encoding", "chunked")
 	w.WriteHeader(http.StatusOK)
+
+	// Emit open event so the frontend knows the connection is live
+	fmt.Fprintf(w, "event: open\ndata: {}\n\n")
 	flusher.Flush()
 
 	slog.Info("sse: connection opened", "user_id", userID)
 
-	// Heartbeat ticker — keeps connection alive for proxies (Traefik/nginx idle timeout ~60s)
 	heartbeat := time.NewTicker(25 * time.Second)
 	defer heartbeat.Stop()
 
@@ -566,6 +563,7 @@ func (h *DirectMessagingHandler) streamSSE(w http.ResponseWriter, r *http.Reques
 			return
 
 		case <-heartbeat.C:
+			// SSE comments keep proxies alive; also emit as named event for the frontend
 			fmt.Fprintf(w, ": heartbeat\n\n")
 			flusher.Flush()
 
@@ -585,17 +583,21 @@ func (h *DirectMessagingHandler) streamSSE(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-// pushSSE broadcasts an event to all participants of a conversation.
-func (h *DirectMessagingHandler) pushSSE(conv *core.DirectConversation, event ports.Event) {
+// pushSSE broadcasts an event to both participants of a conversation.
+// If skipUserID is non-empty, that user is skipped (avoids echoing the action back to the actor).
+func (h *DirectMessagingHandler) pushSSE(conv *core.DirectConversation, event ports.Event, skipUserID ...string) {
 	if h.broker == nil || conv == nil {
 		return
 	}
-	// Notify the client
-	_ = h.broker.Publish(conv.ClientID, event)
-	// Notify the worker (resolve worker_profiles.id → user_id)
-	wp, err := h.dm.GetWorkerByProfileID(context.Background(), conv.WorkerProfileID)
-	if err == nil && wp != nil {
-		_ = h.broker.Publish(wp.UserID, event)
+	skip := ""
+	if len(skipUserID) > 0 {
+		skip = skipUserID[0]
+	}
+	if conv.UserAID != skip {
+		_ = h.broker.Publish(conv.UserAID, event)
+	}
+	if conv.UserBID != skip {
+		_ = h.broker.Publish(conv.UserBID, event)
 	}
 }
 
@@ -605,46 +607,47 @@ func (h *DirectMessagingHandler) pushSSE(conv *core.DirectConversation, event po
 func (h *DirectMessagingHandler) conversationItem(
 	ctx context.Context, c core.DirectConversation, userID string,
 ) map[string]interface{} {
-	// Determine this user's role per-conversation
-	isClient := c.ClientID == userID
+	otherUserID := c.OtherUserID(userID)
 
-	var otherRole, otherName, otherID string
+	var otherName, otherType string
 
-	if isClient {
-		otherRole = "worker"
-		// Load worker profile for display
-		wp, err := h.dm.GetWorkerByProfileID(ctx, c.WorkerProfileID)
-		if err == nil && wp != nil {
-			otherName = wp.BusinessName
-			if otherName == "" {
-				otherName = wp.Profession
-			}
-			otherID = wp.UserID
+	wp, err := h.profs.GetWorkerProfile(ctx, otherUserID)
+	if err == nil && wp != nil {
+		otherName = wp.BusinessName
+		if otherName == "" {
+			otherName = wp.Profession
 		}
-	} else {
-		otherRole = "client"
-		otherID = c.ClientID
-		// Load client profile for display
-		cp, err := h.profs.GetClientProfile(ctx, c.ClientID)
+		otherType = "worker"
+	}
+
+	if otherName == "" {
+		cp, err := h.profs.GetClientProfile(ctx, otherUserID)
 		if err == nil && cp != nil && cp.FullName != "" {
 			otherName = cp.FullName
-		} else {
-			otherName = c.ClientID
+			otherType = "client"
 		}
 	}
 
-	// Unread count for this user
-	unread := c.ClientUnreadCount
-	if !isClient {
-		unread = c.WorkerUnreadCount
+	if otherName == "" {
+		if email, err := h.profs.GetUserEmail(ctx, otherUserID); err == nil && email != "" {
+			otherName = email
+		} else {
+			otherName = otherUserID
+		}
+		otherType = "user"
+	}
+
+	unread := c.UserAUnreadCount
+	if c.UserBID == userID {
+		unread = c.UserBUnreadCount
 	}
 
 	item := map[string]interface{}{
 		"id": c.ID,
 		"other_party": map[string]interface{}{
-			"id":   otherID,
+			"id":   otherUserID,
 			"name": otherName,
-			"role": otherRole,
+			"type": otherType,
 		},
 		"unread_count": unread,
 		"status":       c.Status,

@@ -86,7 +86,7 @@ func TestDirectMessagingHandlerMethodNotAllowed(t *testing.T) {
 
 func TestDirectMessagingHandlerMarkRead(t *testing.T) {
 	repo := &testingutil.MockDMRepo{
-		Conv:              &core.DirectConversation{ID: "conv-1", ClientID: "user-1"},
+		Conv:              &core.DirectConversation{ID: "conv-1", UserAID: "user-1", UserBID: "other-1"},
 		Marked:            3,
 		IsParticipantBool: true,
 	}
@@ -168,7 +168,7 @@ func TestDirectMessagingHandlerReportNotParticipant(t *testing.T) {
 
 func TestDirectMessagingHandlerSendMessage(t *testing.T) {
 	repo := &testingutil.MockDMRepo{
-		Conv:              &core.DirectConversation{ID: "conv-1", ClientID: "user-1", WorkerProfileID: "wp-1"},
+		Conv:              &core.DirectConversation{ID: "conv-1", UserAID: "user-1", UserBID: "other-1"},
 		IsParticipantBool: true,
 	}
 	h := newDMHandlerWithRepo(repo)
@@ -202,7 +202,7 @@ func TestDirectMessagingHandlerSendMessageNotParticipant(t *testing.T) {
 	body := `{"body":"Hello!"}`
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, dmAuthReq(http.MethodPost, "/api/v1/direct-messages/conv-1/messages", body))
-	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestDirectMessagingHandlerSendMessageBlocked(t *testing.T) {
@@ -286,11 +286,12 @@ func TestDirectMessagingHandlerPollSinceInvalidTS(t *testing.T) {
 
 func TestDirectMessagingHandlerGetOrCreateContact(t *testing.T) {
 	repo := &testingutil.MockDMRepo{
-		Conv:              &core.DirectConversation{ID: "conv-new"},
-		Created:           true,
+		Conv:    &core.DirectConversation{ID: "conv-new", UserAID: "user-1", UserBID: "w-1"},
+		Created: true,
+	}
+	profs := &testingutil.MockProfiles{
 		WorkerByProfileID: &core.WorkerProfile{UserID: "w-1", Profession: "plumber", BusinessName: "PlumbCo", City: "Madrid"},
 	}
-	profs := &testingutil.MockProfiles{}
 	h := NewDirectMessagingHandler(repo, profs, testingutil.NewMockBroker(), ratelimit.NewRateLimiter(30, time.Minute))
 
 	rec := httptest.NewRecorder()
@@ -305,10 +306,10 @@ func TestDirectMessagingHandlerGetOrCreateContact(t *testing.T) {
 }
 
 func TestDirectMessagingHandlerGetOrCreateContactSelfMessaging(t *testing.T) {
-	repo := &testingutil.MockDMRepo{
+	profs := &testingutil.MockProfiles{
 		WorkerByProfileID: &core.WorkerProfile{UserID: "user-1"}, // same user!
 	}
-	h := NewDirectMessagingHandler(repo, &testingutil.MockProfiles{}, testingutil.NewMockBroker(), ratelimit.NewRateLimiter(30, time.Minute))
+	h := NewDirectMessagingHandler(&testingutil.MockDMRepo{}, profs, testingutil.NewMockBroker(), ratelimit.NewRateLimiter(30, time.Minute))
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, dmAuthReq(http.MethodGet, "/api/v1/workers/wp-1/contact", ""))
@@ -316,10 +317,10 @@ func TestDirectMessagingHandlerGetOrCreateContactSelfMessaging(t *testing.T) {
 }
 
 func TestDirectMessagingHandlerGetOrCreateContactWorkerNotFound(t *testing.T) {
-	repo := &testingutil.MockDMRepo{
+	profs := &testingutil.MockProfiles{
 		WorkerByProfileID: nil, // not found
 	}
-	h := NewDirectMessagingHandler(repo, &testingutil.MockProfiles{}, testingutil.NewMockBroker(), ratelimit.NewRateLimiter(30, time.Minute))
+	h := NewDirectMessagingHandler(&testingutil.MockDMRepo{}, profs, testingutil.NewMockBroker(), ratelimit.NewRateLimiter(30, time.Minute))
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, dmAuthReq(http.MethodGet, "/api/v1/workers/wp-1/contact", ""))
@@ -344,19 +345,19 @@ func TestDirectMessagingHandlerSSEBrokerNil(t *testing.T) {
 // ── Conversation item helper ─────────────────────────────────────────
 
 func TestConversationItemClientRole(t *testing.T) {
-	repo := &testingutil.MockDMRepo{
-		WorkerByProfileID: &core.WorkerProfile{UserID: "w-1", BusinessName: "PlumbCo", Profession: "plumber"},
+	profs := &testingutil.MockProfiles{
+		WorkerProfile: &core.WorkerProfile{UserID: "w-user-1", BusinessName: "PlumbCo", Profession: "plumber"},
 	}
-	h := NewDirectMessagingHandler(repo, &testingutil.MockProfiles{}, testingutil.NewMockBroker(), ratelimit.NewRateLimiter(30, time.Minute))
+	h := NewDirectMessagingHandler(&testingutil.MockDMRepo{}, profs, testingutil.NewMockBroker(), ratelimit.NewRateLimiter(30, time.Minute))
 
 	now := time.Now()
 	conv := core.DirectConversation{
-		ID:                 "conv-1",
-		ClientID:           "user-1",
-		WorkerProfileID:    "wp-1",
-		ClientUnreadCount:  3,
-		Status:             "active",
-		LastMessageAt:      &now,
+		ID:                "conv-1",
+		UserAID:           "user-1",
+		UserBID:           "w-user-1",
+		UserAUnreadCount:  3,
+		Status:            "active",
+		LastMessageAt:     &now,
 		LastMessagePreview: "Hello!",
 	}
 
@@ -366,25 +367,28 @@ func TestConversationItemClientRole(t *testing.T) {
 	assert.Equal(t, "active", item["status"])
 
 	other := item["other_party"].(map[string]interface{})
-	assert.Equal(t, "w-1", other["id"])
+	assert.Equal(t, "w-user-1", other["id"])
 	assert.Equal(t, "PlumbCo", other["name"])
-	assert.Equal(t, "worker", other["role"])
+	assert.Equal(t, "worker", other["type"])
 
 	lastMsg := item["last_message"].(map[string]interface{})
 	assert.Equal(t, "Hello!", lastMsg["preview"])
 }
 
 func TestConversationItemWorkerRole(t *testing.T) {
-	h := newDMHandler()
+	profs := &testingutil.MockProfiles{
+		ClientProfile: &core.ClientProfile{UserID: "c-1", FullName: "Clara Client"},
+	}
+	h := NewDirectMessagingHandler(&testingutil.MockDMRepo{}, profs, testingutil.NewMockBroker(), ratelimit.NewRateLimiter(30, time.Minute))
 
 	now := time.Now()
 	conv := core.DirectConversation{
-		ID:                 "conv-1",
-		ClientID:           "c-1",
-		WorkerProfileID:    "wp-1",
-		WorkerUnreadCount:  2,
-		Status:             "active",
-		LastMessageAt:      &now,
+		ID:                "conv-1",
+		UserAID:           "c-1",
+		UserBID:           "w-1",
+		UserBUnreadCount:  2,
+		Status:            "active",
+		LastMessageAt:     &now,
 		LastMessagePreview: "Thanks!",
 	}
 
@@ -392,7 +396,7 @@ func TestConversationItemWorkerRole(t *testing.T) {
 	assert.Equal(t, 2, item["unread_count"])
 
 	other := item["other_party"].(map[string]interface{})
-	assert.Equal(t, "client", other["role"])
+	assert.Equal(t, "client", other["type"])
 }
 
 func TestConversationItemNoLastMessage(t *testing.T) {

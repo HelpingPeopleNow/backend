@@ -49,8 +49,9 @@ func TestDirectMessagingContactCreation(t *testing.T) {
 
 	var resp map[string]interface{}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.NotEmpty(t, resp["id"])
-	assert.Equal(t, "active", resp["status"])
+	assert.NotEmpty(t, resp["conversation_id"])
+	assert.Contains(t, resp, "worker")
+	assert.Equal(t, true, resp["created"])
 }
 
 func TestDirectMessagingContactIdempotent(t *testing.T) {

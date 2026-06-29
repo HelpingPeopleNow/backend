@@ -25,7 +25,7 @@ func TestWorkerProfileMergeFields(t *testing.T) {
 	}
 	wp.MergeFields(fields)
 
-	assert.Equal(t, "plumber", wp.Profession)
+	assert.Equal(t, "Plumber", wp.Profession)
 	assert.Equal(t, "10 years experience", wp.Bio)
 	assert.Equal(t, "Madrid", wp.City)
 	assert.Equal(t, "Bob's Plumbing", wp.BusinessName)

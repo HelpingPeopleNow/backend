@@ -7,24 +7,25 @@ import (
 	"github.com/HelpingPeopleNow/backend/internal/core"
 )
 
-// DirectMessageRepository manages direct conversations and messages.
+// DirectMessageRepository manages direct conversations and messages between users.
 type DirectMessageRepository interface {
 	// Conversations
 
-	// GetOrCreateConversation finds or creates a conversation between a client and worker.
+	// GetOrCreateConversation finds or creates a conversation between two users.
+	// userID1 and userID2 are sorted so the smaller ID becomes user_a_id.
 	// Returns the conversation and a flag indicating whether it was newly created.
-	GetOrCreateConversation(ctx context.Context, clientID, workerProfileID string) (*core.DirectConversation, bool, error)
+	GetOrCreateConversation(ctx context.Context, userID1, userID2 string) (*core.DirectConversation, bool, error)
 
 	// GetConversation returns a conversation by ID.
 	GetConversation(ctx context.Context, conversationID string) (*core.DirectConversation, error)
 
 	// ListConversations returns conversations for a user, ordered by last_message_at DESC.
-	// Shows conversations where user participates as either client or worker (role-agnostic).
+	// Shows conversations where user is either user_a or user_b.
 	// before is an optional cursor (last_message_at value); nil means fetch newest.
 	ListConversations(ctx context.Context, userID string, status string, limit int, before *time.Time) ([]core.DirectConversation, error)
 
-	// ArchiveConversation sets client_archived_at or worker_archived_at for the calling user.
-	ArchiveConversation(ctx context.Context, conversationID, userID, role string) error
+	// ArchiveConversation sets user_a_archived_at or user_b_archived_at for the calling user.
+	ArchiveConversation(ctx context.Context, conversationID, userID string) error
 
 	// BlockConversation sets status='blocked'.
 	BlockConversation(ctx context.Context, conversationID string) error
@@ -39,9 +40,9 @@ type DirectMessageRepository interface {
 	// Increments the OTHER party's unread count.
 	SendMessage(ctx context.Context, msg *core.DirectMessage) error
 
-	// MarkRead marks all unread messages in a conversation as read for the given reader role.
+	// MarkRead marks all unread messages in a conversation as read for the calling user.
 	// Returns the count of messages that were marked read.
-	MarkRead(ctx context.Context, conversationID, readerRole string) (int, error)
+	MarkRead(ctx context.Context, conversationID, userID string) (int, error)
 
 	// PollSince returns messages for a user that were created after the given time.
 	// Used as polling fallback when SSE is unavailable.
@@ -49,10 +50,14 @@ type DirectMessageRepository interface {
 
 	// Helpers
 
-	// GetWorkerByProfileID loads a worker profile by its UUID (worker_profiles.id).
-	GetWorkerByProfileID(ctx context.Context, profileID string) (*core.WorkerProfile, error)
-
 	// IsParticipant checks whether the given user is a participant in a conversation.
-	// Returns (isParticipant, role, error).
-	IsParticipant(ctx context.Context, convID, userID string) (bool, string, error)
+	IsParticipant(ctx context.Context, convID, userID string) (bool, error)
+
+	// Reports
+
+	// CreateReport persists a report for a conversation.
+	CreateReport(ctx context.Context, report *core.DirectMessageReport) error
+
+	// ListReports returns all reports (for admin moderation).
+	ListReports(ctx context.Context) ([]core.DirectMessageReport, error)
 }

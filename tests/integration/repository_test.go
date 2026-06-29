@@ -357,24 +357,14 @@ func TestDirectMessageFlow(t *testing.T) {
 	repo := repository.NewGormDirectMessageRepository(db)
 	ctx := context.Background()
 
-	// Need a worker profile for the FK
-	profileRepo := repository.NewGormProfileRepository(db)
-	require.NoError(t, profileRepo.UpsertWorkerProfile(ctx, "worker-dm1", map[string]interface{}{
-		"profession": "Plumber",
-	}))
-
-	// Get worker by profile ID — we need the profile ID
-	wp, err := profileRepo.GetWorkerProfile(ctx, "worker-dm1")
-	require.NoError(t, err)
-
-	// Create DM conversation
-	conv, isNew, err := repo.GetOrCreateConversation(ctx, "client-dm1", wp.ID)
+	// Create DM conversation between two users
+	conv, isNew, err := repo.GetOrCreateConversation(ctx, "user-a-dm1", "user-b-dm1")
 	require.NoError(t, err)
 	assert.True(t, isNew)
 	require.NotNil(t, conv)
 
 	// Get same conversation (not new)
-	conv2, isNew2, err := repo.GetOrCreateConversation(ctx, "client-dm1", wp.ID)
+	conv2, isNew2, err := repo.GetOrCreateConversation(ctx, "user-a-dm1", "user-b-dm1")
 	require.NoError(t, err)
 	assert.False(t, isNew2)
 	assert.Equal(t, conv.ID, conv2.ID)
@@ -382,9 +372,8 @@ func TestDirectMessageFlow(t *testing.T) {
 	// Send a message
 	msg := &core.DirectMessage{
 		ConversationID: conv.ID,
-		SenderID:       "client-dm1",
-		SenderRole:     core.SenderRoleClient,
-		Body:           "Hi, I need a plumber urgently!",
+		SenderID:       "user-a-dm1",
+		Body:           "Hi!",
 		CreatedAt:      time.Now(),
 	}
 	err = repo.SendMessage(ctx, msg)
@@ -395,11 +384,11 @@ func TestDirectMessageFlow(t *testing.T) {
 	msgs, err := repo.GetMessages(ctx, conv.ID, 10, "")
 	require.NoError(t, err)
 	assert.Len(t, msgs, 1)
-	assert.Equal(t, "Hi, I need a plumber urgently!", msgs[0].Body)
-	assert.Equal(t, core.SenderRoleClient, msgs[0].SenderRole)
+	assert.Equal(t, "Hi!", msgs[0].Body)
+	assert.Equal(t, "user-a-dm1", msgs[0].SenderID)
 
-	// Mark as read
-	count, err := repo.MarkRead(ctx, conv.ID, core.SenderRoleWorker)
+	// Mark as read (user-b marks messages from user-a as read)
+	count, err := repo.MarkRead(ctx, conv.ID, "user-b-dm1")
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
 }

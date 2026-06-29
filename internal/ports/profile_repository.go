@@ -50,6 +50,7 @@ type ProfileRepository interface {
 	RawQuerier
 
 	GetWorkerProfile(ctx context.Context, userID string) (*core.WorkerProfile, error)
+	GetWorkerProfileByID(ctx context.Context, profileID string) (*core.WorkerProfile, error)
 	UpsertWorkerProfile(ctx context.Context, userID string, fields map[string]interface{}) error
 	DeleteWorkerProfile(ctx context.Context, userID string) error
 
@@ -58,6 +59,8 @@ type ProfileRepository interface {
 	DeleteClientProfile(ctx context.Context, userID string) error
 
 	FindWorkers(ctx context.Context, filters core.WorkerSearchFilters) (FindResult, error)
+
+	GetUserEmail(ctx context.Context, userID string) (string, error)
 
 	FindBySlug(ctx context.Context, slug string) (*core.WorkerProfile, error)
 	FindLatestWithSlug(ctx context.Context, limit int) ([]core.WorkerProfile, error)
