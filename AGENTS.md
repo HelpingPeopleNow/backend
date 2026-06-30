@@ -53,10 +53,10 @@ Two-table schema: `direct_conversations` (unique per client+worker pair) + `dire
 - **Repository**: `GormDirectMessageRepository` in `internal/adapters/repository/direct_message_repo.go` — implements `DirectMessageRepository` (12 methods on `DirectMessageRepository` interface in `internal/ports/direct_message_repository.go`)
 - **Handler**: `DirectMessagingHandler` dispatches by path segment (`ServeHTTP` switch in `internal/adapters/handler/direct_messaging_handler.go`). Auth via `contextkeys.GetUserID(r.Context())`.
 - **SSE broker**: In-process pub/sub in `internal/adapters/realtime/sse_broker.go`. Subscribe creates buffered channels (32), Publish copies subscriber list under RLock and does non-blocking sends (drops on full). Cleanup goroutines per subscription.
-- **SSE `/stream`**: Heartbeat every 25s to keep connections alive through Traefik/nginx. Events: `message`, `read`.
+- **SSE `/stream`**: Heartbeat every 25s to keep connections alive through Traefik/nginx. Events: `open` (connection established), `message`, `read`, `archive`, `block`, `report`.
 - **Rate limiting**: Per-user token bucket (30 msg/min) in `internal/adapters/ratelimit/rate_limiter.go` (cap 30, refill 1/min). Applied to `sendMessage` endpoint. Cleanup goroutine removes inactive buckets.
 - **`pushSSE`**: Launched as async goroutine (`go h.pushSSE(...)`) after DB write — doesn't block HTTP response. Loads worker profile via `context.Background()` to resolve `worker_profiles.id` → `user_id` for publishing.
-- **Report endpoint**: `POST /api/v1/direct-messages/{id}/report` — logs a warning with `conv_id` + `reported_by` + `reason`. No DB storage yet.
+- **Report endpoint**: `POST /api/v1/direct-messages/{id}/report` — persists a `DirectMessageReport` via `h.dm.CreateReport()`, archives the conversation for the reporting user, and emits a `report` SSE event.
 
 ## Vector search
 

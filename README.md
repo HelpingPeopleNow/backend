@@ -25,7 +25,7 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
 1. **Worker profile intake chat** — receives `POST /api/v1/chat` with `mode: "worker_intake"`, uses the `worker_profile_prompt` system prompt designed to gather worker profile fields conversationally, appends a language instruction to the system prompt based on the `lang` parameter, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the worker profile via map-based upsert
 2. **Client profile intake chat** — receives `POST /api/v1/chat` with `mode: "client_intake"`, uses the `client_profile_prompt` system prompt designed to gather client profile fields conversationally, appends a language instruction to the system prompt based on the `lang` parameter, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the client profile via map-based upsert
 3. **System prompt management** — admin can read/update the worker profile prompt (`worker_profile_prompt`), the client profile prompt (`client_profile_prompt`), and the LLM provider (`llm_provider`) via REST endpoints
-4. **LLM provider runtime switch** — admin can toggle between `opencode` (external), `ollama` (local), and `mistral` (cloud) without restarting the container; empty = uses the helper's auto fallback chain (Mistral → OpenCode → Ollama)
+4. **LLM provider runtime switch** — admin can toggle between `opencode0` (big-pickle), `opencode1`, `opencode2` (external), `ollama` (local), and `mistral` (cloud) without restarting the container; empty = uses the helper's auto fallback chain (Mistral → OpenCode 0 → OpenCode 1 → OpenCode 2 → Ollama)
 5. **Conversation persistence** — all chat messages (worker, client) are saved to the database and can be loaded on page reload via the conversations API
 6. **Search/find professionals** — receives `POST /api/v1/chat` with `mode: "search"`, uses two-pass LLM (filter-fill then presentation) to match clients with workers, returns recommended worker cards
 7. **Profile reset** — worker and client profiles can be cleared via `DELETE /api/v1/worker/profile` and `DELETE /api/v1/client/profile`
@@ -231,13 +231,15 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | PUT | `/api/v1/system-prompts/client_profile` | Yes (admin) | Update the client profile prompt text |
 | PUT | `/api/v1/system-prompts/find_trader_search` | Yes (admin) | Update the find-trader search-params prompt |
 | PUT | `/api/v1/system-prompts/find_trader_presentation` | Yes (admin) | Update the find-trader results-presentation prompt |
-| PUT | `/api/v1/system-prompts/provider` | Yes (admin) | Set LLM provider ("opencode1", "opencode2", "ollama", "mistral", or "" for auto fallback chain) |
+| PUT | `/api/v1/system-prompts/provider` | Yes (admin) | Set LLM provider ("opencode0", "opencode1", "opencode2", "ollama", "mistral", or "" for auto fallback chain) |
 | PUT | `/api/v1/user/reset-role` | Yes* | Clear user role (reset to "") |
 | GET | `/api/v1/conversations` | Yes | List conversations (supports `?type=worker&limit=N`) |
 | GET | `/api/v1/conversations/:id` | Yes | Get conversation with full message history |
 | GET | `/api/v1/workers/:id/contact` | Yes | Create-or-resume a direct-message conversation with another worker (returns `conversation_id`) |
 | GET, POST, PATCH | `/api/v1/direct-messages`, `/api/v1/direct-messages/:id/*` | Yes (DM middleware sets user from session) | Direct messaging: inbox, thread, send, read, archive, block, report, SSE stream (`/stream`), polling (`/since`). Errors: `body` over 4000 chars → 400; empty `body` → 400; invalid JSON → 400; `/since?ts=` missing → 400; `/since?ts=` unparseable RFC3339 → 400; `DELETE` on `/api/v1/direct-messages` → 404; SSE `stream` with nil broker → 501. Auth/authorization: no `user_id` in context → 401; authenticated but not a conversation participant → 403; conversation `status="blocked"` → 403 on send. |
 | GET | `/metrics` | No | Prometheus metrics in text/plain (counters: `http_requests_total`, `chat_requests_total`, `vector_search_total`, `profile_saves_total`, `conversations_total`, `dm_sent_total`, `dm_received_total`, `auth_resolve_errors_total`; histograms: `chat_llm_duration_seconds`, `auth_resolve_duration_seconds`, `vector_score`). Registered by `metrics_handler.RegisterMetricsRoutes`. |
+| GET | `/api/v1/workers/public/latest` | No | Public worker profiles — paginated list (default limit 6, capped at 20). Returns `WorkerPublicDTO` (private fields stripped). |
+| GET | `/api/v1/workers/public/{slug}` | No | Public worker profile by URL-friendly slug. Returns `WorkerPublicDTO` (private fields stripped). 404 on missing/invalid slug. |
 | GET | `/admin/*` | Yes (admin) | Admin entity CRUD over exactly 5 entity slugs: `users`, `worker-profiles`, `client-profiles`, `conversations`, `messages` |
 
 *Chat handler is wrapped by `AuthMiddleware` but does not require a session — anonymous users get chat, and only authenticated requests merge fields into the user's profile.
@@ -369,7 +371,7 @@ Singleton row (`id=1`) with five key columns:
 | `client_profile_prompt` | `TEXT` | System prompt sent to the helper on client profile intake chat |
 | `find_trader_search_prompt` | `TEXT` | System prompt sent to the helper for the search-params pass |
 | `find_trader_presentation_prompt` | `TEXT` | System prompt sent to the helper for the results-presentation pass |
-| `llm_provider` | `VARCHAR(32)` | `"opencode1"`, `"opencode2"`, `"ollama"`, `"mistral"`, or `""` for auto fallback chain |
+| `llm_provider` | `VARCHAR(32)` | `"opencode0"`, `"opencode1"`, `"opencode2"`, `"ollama"`, `"mistral"`, or `""` for auto fallback chain |
 
 NOTE: there is no `helper_prompt` column. (The unread `helper_prompt` column referenced in older docs is not part of the `system_prompts` GORM model — admin PUT/GET talk to the four columns above.)
 
@@ -394,12 +396,12 @@ message AskRequest {
   string question = 1;
   repeated Message history = 2;
   string system_prompt = 3;   // loaded by backend from DB (worker_profile, client_profile, find_trader_*)
-  string llm_provider = 4;    // "opencode1" | "opencode2" | "mistral" | "ollama" | "" (= auto fallback chain)
+  string llm_provider = 4;    // "opencode0" | "opencode1" | "opencode2" | "mistral" | "ollama" | "" (= auto fallback chain)
   bool skip_role_detection = 5;  // backend always sends true; JSON role-tag detection is reserved for future search flows
 }
 ```
 
-> Note: the proto field comment uses `"ollama" | "opencode" | ""` as a shorthand, but the helper loads adapters under the keys `opencode1`, `opencode2`, `mistral`, `ollama` — see `helper/main.py` and `infra/docker-compose.yml`. The backend always sends `skip_role_detection=true`; the helper never appends the role-tag JSON instruction.
+> Note: the proto field comment uses `"ollama" | "opencode" | ""` as a shorthand, but the helper loads adapters under the keys `opencode0`, `opencode1`, `opencode2`, `mistral`, `ollama` — see `helper/main.py` and `infra/docker-compose.yml`. The backend always sends `skip_role_detection=true`; the helper never appends the role-tag JSON instruction.
 
 Proto definition: `proto/helper/helper.proto` (canonical source). Generated Go bindings in `helper.pb.go` / `helper_grpc.pb.go` are checked in.
 
@@ -430,7 +432,8 @@ All handlers use Go's `log/slog` with structured key-value pairs:
 | `SearchService` | Branch (vector/ilike), top score, cache_hit, duration_ms |
 | `SystemPromptHandler` | GET/PUT operations, column name, cache refresh |
 | `AuthMiddleware` | Session validation via auth service + DB fallback, missing/invalid cookies |
-| `ConversationHandler` | Conversation list/get operations, user ID, conversation count |
+| `ConversationHandler` | Conversation list/get operations, user ID, conversation count, workers JSON readout |
+| `PublicProfileHandler` | Public profile lookups by slug, latest profiles list |
 | `DirectMessagingHandler` | DM send/read/archive, SSE subscribers, rate-limit decisions |
 
 ---
