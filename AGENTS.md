@@ -68,6 +68,19 @@ Two-table schema: `direct_conversations` (unique per client+worker pair) + `dire
 - **Metrics** — `vector_search_total{branch=...}` counter and `vector_score` histogram (wired in `internal/adapters/handler/metrics_handler.go` and incremented from `ChatHandler`).
 - **Re-backfill** on schema change or after first enable: `docker exec helpingpeoplenow-helper env DB_HOST=helpingpeoplenow-postgres DB_USER=postgres DB_PASSWORD=postgres DB_NAME=helpingpeoplenow HELPER_GRPC_ADDR=localhost:50051 python3 /app/scripts/backfill_embeddings.py` (idempotent — skips rows whose `text_hash` matches existing).
 
+## GPS Geolocation
+
+GPS coordinates enable proximity-based worker search. Clients and workers can optionally provide latitude/longitude, which are used to compute real-world distances and sort search results nearest-first.
+
+- **Profile latitude/longitude fields** — `WorkerProfile` and `ClientProfile` both have `Latitude` and `Longitude` fields (nullable `*float64`). These persist the user's last-known location.
+- **Haversine distance** — `core.HaversineKm(lat1, lon1, lat2, lon2)` in `internal/core/haversine.go` computes great-circle distance in kilometres between two coordinate pairs. Used by search to rank workers by proximity.
+- **ChatHandler request body** — `latitude` and `longitude` optional float64 fields in the chat request. Accepted by all three modes (`worker_intake`, `client_intake`, `search`). The frontend sends the browser's geolocation on every chat request.
+- **Intake GPS storage** — `IntakeService.ProcessIntake` upserts the request's latitude/longitude directly onto the profile, bypassing the LLM `[FIELDS]` parsing. Coordinates are never sent to the LLM; they are extracted from the request body and written to the profile before (or alongside) the map-merge step.
+- **Search request coords override** — `SearchService.Search` prefers the latitude/longitude from the incoming chat request over whatever is stored on the profile. This means a client searching from a different location gets results relative to where they are *now*, not where they last saved.
+- **Search results sorted nearest-first** — Both `findWorkersILIKE` (ILIKE branch) and `FindWorkers` (vector branch) compute `distance_km` for every candidate using `HaversineKm` against the request coordinates, then sort ascending by distance. Workers without valid coordinates sort to the end.
+- **System prompts GPS-aware** — The `find_trader_search_prompt` and `find_trader_presentation_prompt` system prompts include instructions for the LLM to consider distance when presenting results to clients, e.g. mentioning proximity or suggesting the client confirm travel distance.
+- **DB migration** — Adds `latitude DOUBLE PRECISION` and `longitude DOUBLE PRECISION` columns to both `worker_profiles` and `client_profiles` tables. Creates `idx_worker_profiles_coords` index on `(latitude, longitude)` for efficient coordinate lookups. Columns are nullable; existing rows default to NULL.
+
 ## Gotchas
 
 - **Architecture source of truth.** The Architecture section above is the source of truth for the current hexagonal layout. Vector search is documented in the Vector search section below; the implementation plan was `infra/docs/VECTOR_SEARCH_PLAN.md` (deleted after shipping).
