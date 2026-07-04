@@ -76,3 +76,32 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(statusCode)
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+// Livez is a lightweight liveness probe that only checks Postgres.
+// It ignores the helper gRPC service so Docker healthchecks don't kill
+// the backend container when the helper is temporarily down.
+func (h *HealthHandler) Livez(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	postgres := "ok"
+	if sqlDB, err := h.db.DB(); err != nil {
+		postgres = "down"
+		slog.Error("livez: postgres unavailable", "error", err)
+	} else if err := sqlDB.PingContext(ctx); err != nil {
+		postgres = "down"
+		slog.Error("livez: postgres ping failed", "error", err)
+	}
+
+	SetHealthStatus("postgres", postgres == "ok")
+
+	if postgres == "ok" {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(healthResponse{Status: "ok", Postgres: "ok"})
+	} else {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(healthResponse{Status: "down", Postgres: postgres})
+	}
+}

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
 	"gorm.io/driver/postgres"
@@ -39,6 +41,15 @@ func Connect() (*gorm.DB, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
+	}
+
+	// Bounded connection pool — default database/sql limits are unlimited,
+	// which can exhaust Postgres connections under load.
+	if sqlDB, err := db.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(intEnv("DB_MAX_OPEN_CONNS", 20))
+		sqlDB.SetMaxIdleConns(intEnv("DB_MAX_IDLE_CONNS", 5))
+		sqlDB.SetConnMaxLifetime(time.Hour)
+		sqlDB.SetConnMaxIdleTime(10 * time.Minute)
 	}
 
 	// ── pgvector extension (must precede AutoMigrate for the
@@ -339,6 +350,15 @@ END $$;
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func intEnv(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

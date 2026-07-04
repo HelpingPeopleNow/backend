@@ -61,6 +61,7 @@ func buildMux(d appDeps) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.Handle("/health", handler.NewHealthHandler(d.DB, d.LLM))
+	mux.Handle("/livez", handler.NewHealthHandler(d.DB, d.LLM))
 
 	mux.Handle("/api/v1/chat", middleware.CORS(d.Auth.Wrap(handler.NewChatHandler(d.Intake, d.Search, d.PromptRepo))))
 	mux.Handle("/api/v1/worker/profile", middleware.CORS(d.Auth.Wrap(handler.NewWorkerHandler(d.ProfileRepo))))
