@@ -35,6 +35,8 @@ type chatRequest struct {
 	History        []chatMessage `json:"history,omitempty"`
 	ConversationID string        `json:"conversation_id,omitempty"`
 	Lang           string        `json:"lang,omitempty"`
+	Latitude       *float64      `json:"latitude,omitempty"`
+	Longitude      *float64      `json:"longitude,omitempty"`
 }
 
 type chatMessage struct {
@@ -81,7 +83,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch mode {
 	case "worker_intake":
-		result, err := h.intakeService.ProcessIntake(r.Context(), userID, services.IntakeModeWorker, req.Message, history, provider, req.Lang, req.ConversationID)
+		result, err := h.intakeService.ProcessIntake(r.Context(), userID, services.IntakeModeWorker, req.Message, history, provider, req.Lang, req.ConversationID, req.Latitude, req.Longitude)
 		if err != nil {
 			handleLLMError(w, err)
 			return
@@ -93,7 +95,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case "client_intake":
-		result, err := h.intakeService.ProcessIntake(r.Context(), userID, services.IntakeModeClient, req.Message, history, provider, req.Lang, req.ConversationID)
+		result, err := h.intakeService.ProcessIntake(r.Context(), userID, services.IntakeModeClient, req.Message, history, provider, req.Lang, req.ConversationID, req.Latitude, req.Longitude)
 		if err != nil {
 			handleLLMError(w, err)
 			return
@@ -105,7 +107,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case "search":
-		result, err := h.searchService.Search(r.Context(), userID, req.Message, history, provider, req.Lang, req.ConversationID)
+		result, err := h.searchService.Search(r.Context(), userID, req.Message, history, provider, req.Lang, req.ConversationID, req.Latitude, req.Longitude)
 		if err != nil {
 			handleLLMError(w, err)
 			return

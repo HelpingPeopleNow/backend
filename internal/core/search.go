@@ -11,6 +11,15 @@ type WorkerSearchFilters struct {
 	FreeEstimateOnly bool
 	InsuredOnly      bool
 
+	// Latitude/Longitude from the client's GPS — when both are non-nil,
+	// the repository adds Haversine distance to results and orders by
+	// nearest first. Falls back to city-text matching when absent.
+	Latitude  *float64
+	Longitude *float64
+	// MaxDistanceKm caps results when coordinates are provided.
+	// 0 means no cap (all workers returned, sorted by distance).
+	MaxDistanceKm *int
+
 	// QueryVector is populated by SearchService.Search after Pass 1
 	// extracts the search params and we Embed() the raw user message.
 	// Repository detects non-nil and switches to the vector branch.

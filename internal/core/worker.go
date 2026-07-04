@@ -29,6 +29,9 @@ type WorkerProfile struct {
 	EmergencyService bool      `json:"emergency_service"`
 	Website          string    `json:"website"`
 	SocialLinks      string    `json:"social_links"`
+	Latitude         *float64  `json:"latitude,omitempty" gorm:"type:double precision"`
+	Longitude        *float64  `json:"longitude,omitempty" gorm:"type:double precision"`
+	DistanceKm       *float64  `json:"distance_km,omitempty" gorm:"-"` // computed, not persisted
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -54,6 +57,8 @@ type WorkerProfileDTO struct {
 	EmergencyService bool         `json:"emergency_service"`
 	Website          string       `json:"website"`
 	SocialLinks      []SocialLink `json:"social_links"`
+	Latitude         *float64     `json:"latitude,omitempty"`
+	Longitude        *float64     `json:"longitude,omitempty"`
 	CreatedAt        time.Time    `json:"created_at"`
 	UpdatedAt        time.Time    `json:"updated_at"`
 }
@@ -109,6 +114,12 @@ func (w *WorkerProfile) MergeFields(fields map[string]interface{}) {
 	}
 	if v, ok := rawFloat(fields, "minimum_charge"); ok {
 		w.MinimumCharge = v
+	}
+	if v, ok := rawFloat(fields, "latitude"); ok {
+		w.Latitude = &v
+	}
+	if v, ok := rawFloat(fields, "longitude"); ok {
+		w.Longitude = &v
 	}
 	if v, ok := rawInt(fields, "service_radius_km"); ok {
 		w.ServiceRadiusKm = v
@@ -168,6 +179,8 @@ func (w WorkerProfile) ToDTO() WorkerProfileDTO {
 		EmergencyService: w.EmergencyService,
 		Website:          w.Website,
 		SocialLinks:      social,
+		Latitude:         w.Latitude,
+		Longitude:        w.Longitude,
 		CreatedAt:        w.CreatedAt,
 		UpdatedAt:        w.UpdatedAt,
 	}
@@ -187,6 +200,9 @@ type FindTraderCard struct {
 	Certifications   []string `json:"certifications"`
 	HasInsurance     bool     `json:"has_insurance"`
 	EmergencyService bool     `json:"emergency_service"`
+	Latitude         *float64 `json:"latitude,omitempty"`
+	Longitude        *float64 `json:"longitude,omitempty"`
+	DistanceKm       *float64 `json:"distance_km,omitempty"`
 }
 
 func (w WorkerProfile) ToFindTraderCard() FindTraderCard {
@@ -209,6 +225,9 @@ func (w WorkerProfile) ToFindTraderCard() FindTraderCard {
 		Certifications:   certs,
 		HasInsurance:     w.HasInsurance,
 		EmergencyService: w.EmergencyService,
+		Latitude:         w.Latitude,
+		Longitude:        w.Longitude,
+		DistanceKm:       w.DistanceKm,
 	}
 }
 
@@ -277,6 +296,8 @@ type WorkerPublicDTO struct {
 	EmergencyService bool         `json:"emergency_service"`
 	Website          string       `json:"website"`
 	SocialLinks      []SocialLink `json:"social_links"`
+	Latitude         *float64     `json:"latitude,omitempty"`
+	Longitude        *float64     `json:"longitude,omitempty"`
 	CreatedAt        time.Time    `json:"created_at"`
 }
 
@@ -314,6 +335,8 @@ func WorkerProfileToPublicDTO(wp *WorkerProfile) WorkerPublicDTO {
 		EmergencyService: wp.EmergencyService,
 		Website:          wp.Website,
 		SocialLinks:      links,
+		Latitude:         wp.Latitude,
+		Longitude:        wp.Longitude,
 		CreatedAt:        wp.CreatedAt,
 	}
 }

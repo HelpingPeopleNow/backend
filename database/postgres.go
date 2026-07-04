@@ -322,6 +322,17 @@ END $$;
 		slog.Warn("migration: failed to create unique slug index", "error", err)
 	}
 
+	// ── Geolocation index ───────────────────────────────────────────
+	// Partial index on (latitude, longitude) for distance-based search.
+	// Only indexed where coordinates are present — NULL rows are excluded.
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_worker_profiles_coords
+		ON worker_profiles (latitude, longitude)
+		WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+	`).Error; err != nil {
+		slog.Warn("migration: failed to create geolocation index", "error", err)
+	}
+
 	return db, nil
 }
 

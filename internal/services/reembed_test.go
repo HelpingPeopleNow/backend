@@ -36,7 +36,7 @@ func TestSearchEmptyPrompt(t *testing.T) {
 	prompts := &testingutil.MockPrompts{SP: &core.SystemPrompt{FindTraderSearchPrompt: ""}}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, prompts)
 
-	result, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "")
+	result, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "ilike_disabled_via_env", result.Branch)
 }
@@ -45,7 +45,7 @@ func TestSearchConversationalNoUserID(t *testing.T) {
 	llm := &testingutil.MockLLM{Answer: "What do you need?"}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	result, err := svc.Search(t.Context(), "", "hi there", nil, "", "", "")
+	result, err := svc.Search(t.Context(), "", "hi there", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "", result.ConversationID)
 }
@@ -58,11 +58,11 @@ func TestSearchCacheHit(t *testing.T) {
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
 
 	// First call
-	result1, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "")
+	result1, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 
 	// Second call with same query — should hit cache
-	result2, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "")
+	result2, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 
 	// Both should have the same answer (from cache)
@@ -80,7 +80,7 @@ func TestSearchClientCityFallback(t *testing.T) {
 	}
 	svc := NewSearchService(llm, profs, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	result, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "")
+	result, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 	assert.NotNil(t, result)
 }

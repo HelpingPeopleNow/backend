@@ -123,7 +123,7 @@ func TestSearchTwoPassWithFilters(t *testing.T) {
 	chatRepo := &testingutil.MockChatRepo{ReturnID: "s1"}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
 
-	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "")
+	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	// Two-pass: SearchResult has Workers, not DetectedFields
@@ -135,7 +135,7 @@ func TestSearchConversationalNoFilters(t *testing.T) {
 	chatRepo := &testingutil.MockChatRepo{ReturnID: "s2"}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
 
-	result, err := svc.Search(t.Context(), "user-1", "hi", nil, "", "", "")
+	result, err := svc.Search(t.Context(), "user-1", "hi", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 	assert.Nil(t, result.Workers)
 	assert.Equal(t, "s2", result.ConversationID)
@@ -145,7 +145,7 @@ func TestSearchLLMError(t *testing.T) {
 	llm := &testingutil.MockLLM{AskErr: assert.AnError}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	_, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "")
+	_, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "", nil, nil)
 	assert.Error(t, err)
 }
 
@@ -154,6 +154,6 @@ func TestSearchPromptLoadError(t *testing.T) {
 	prompts := &testingutil.MockPrompts{GetErr: assert.AnError}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, prompts)
 
-	_, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "")
+	_, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "", nil, nil)
 	assert.Error(t, err)
 }

@@ -72,7 +72,7 @@ func TestProcessIntakeWorkerFields(t *testing.T) {
 	chatRepo := &testingutil.MockChatRepo{ReturnID: "conv-1"}
 	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
 
-	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "I'm a plumber", nil, "", "", "")
+	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "I'm a plumber", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "plumber", result.DetectedFields["profession"])
 	assert.Equal(t, "Madrid", result.DetectedFields["city"])
@@ -84,7 +84,7 @@ func TestProcessIntakeClientFields(t *testing.T) {
 	chatRepo := &testingutil.MockChatRepo{ReturnID: "conv-2"}
 	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
 
-	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeClient, "I'm Alvaro", nil, "", "", "")
+	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeClient, "I'm Alvaro", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "Alvaro", result.DetectedFields["full_name"])
 	assert.Equal(t, "Madrid", result.DetectedFields["city"])
@@ -94,7 +94,7 @@ func TestProcessIntakeNoFieldsConversational(t *testing.T) {
 	llm := &testingutil.MockLLM{Answer: "Hello! I'm here to help."}
 	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "Hi!", nil, "", "", "")
+	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "Hi!", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 	assert.Nil(t, result.DetectedFields)
 }
@@ -103,7 +103,7 @@ func TestProcessIntakeUnknownModeWithFields(t *testing.T) {
 	llm := &testingutil.MockLLM{Answer: "[FIELDS]{\"profession\":\"plumber\"}[/FIELDS]"}
 	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	_, err := svc.ProcessIntake(t.Context(), "user-1", "bad_mode", "test", nil, "", "", "")
+	_, err := svc.ProcessIntake(t.Context(), "user-1", "bad_mode", "test", nil, "", "", "", nil, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown intake mode")
 }
@@ -112,7 +112,7 @@ func TestProcessIntakeLLMError(t *testing.T) {
 	llm := &testingutil.MockLLM{AskErr: fmt.Errorf("LLM down")}
 	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	_, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "test", nil, "", "", "")
+	_, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "test", nil, "", "", "", nil, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "LLM down")
 }
@@ -122,7 +122,7 @@ func TestProcessIntakePromptLoadError(t *testing.T) {
 	prompts := &testingutil.MockPrompts{GetErr: fmt.Errorf("DB down")}
 	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, prompts)
 
-	_, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "test", nil, "", "", "")
+	_, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "test", nil, "", "", "", nil, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "DB down")
 }
@@ -131,7 +131,7 @@ func TestProcessIntakeWithLanguage(t *testing.T) {
 	llm := &testingutil.MockLLM{Answer: "[FIELDS]{\"profession\":\"plumber\"}[/FIELDS]"}
 	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "soy fontanero", nil, "", "es", "")
+	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "soy fontanero", nil, "", "es", "", nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "plumber", result.DetectedFields["profession"])
 }
@@ -140,7 +140,7 @@ func TestProcessIntakeNoUserID(t *testing.T) {
 	llm := &testingutil.MockLLM{Answer: "[FIELDS]{\"profession\":\"plumber\"}[/FIELDS]"}
 	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	result, err := svc.ProcessIntake(t.Context(), "", IntakeModeWorker, "plumber", nil, "", "", "")
+	result, err := svc.ProcessIntake(t.Context(), "", IntakeModeWorker, "plumber", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "", result.ConversationID)
 }
@@ -152,7 +152,7 @@ func TestProcessIntakeSaveErrorDoesNotFail(t *testing.T) {
 	chatRepo := &testingutil.MockChatRepo{SaveErr: fmt.Errorf("disk full")}
 	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
 
-	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "plumber", nil, "", "", "")
+	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "plumber", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "plumber", result.DetectedFields["profession"])
 	assert.Equal(t, "", result.ConversationID)
@@ -163,7 +163,7 @@ func TestProcessIntakeWorkerTriggersReembed(t *testing.T) {
 	chatRepo := &testingutil.MockChatRepo{ReturnID: "conv-1"}
 	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
 
-	_, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "plumber", nil, "", "", "")
+	_, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "plumber", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 
 	svc.reembedMu.Lock()
@@ -183,7 +183,7 @@ func TestProcessIntakeClientDoesNotTriggerReembed(t *testing.T) {
 	chatRepo := &testingutil.MockChatRepo{ReturnID: "conv-2"}
 	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
 
-	_, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeClient, "I'm Alvaro", nil, "", "", "")
+	_, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeClient, "I'm Alvaro", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 
 	svc.reembedMu.Lock()
@@ -196,7 +196,7 @@ func TestProcessIntakeConversationalDoesNotTriggerReembed(t *testing.T) {
 	llm := &testingutil.MockLLM{Answer: "Hello!"}
 	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	_, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "hi", nil, "", "", "")
+	_, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "hi", nil, "", "", "", nil, nil)
 	require.NoError(t, err)
 
 	svc.reembedMu.Lock()

@@ -69,6 +69,8 @@ func (s *IntakeService) ProcessIntake(
 	provider string,
 	lang string,
 	conversationID string,
+	latitude *float64,
+	longitude *float64,
 ) (*IntakeResult, error) {
 	sp, err := s.prompts.Get(ctx)
 	if err != nil {
@@ -87,6 +89,14 @@ func (s *IntakeService) ProcessIntake(
 	_, fieldsRaw := core.ParseFields(llmResp.Answer)
 
 	if fieldsMap != nil && userID != "" {
+		// Inject GPS coords into fields map — bypasses LLM extraction
+		// since coordinates come from the browser, not conversation.
+		if latitude != nil {
+			fieldsMap["latitude"] = *latitude
+		}
+		if longitude != nil {
+			fieldsMap["longitude"] = *longitude
+		}
 		var upsertErr error
 		switch mode {
 		case IntakeModeWorker:

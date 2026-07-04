@@ -78,6 +78,8 @@ func (s *SearchService) Search(
 	provider string,
 	lang string,
 	conversationID string,
+	requestLat *float64,
+	requestLng *float64,
 ) (*SearchResult, error) {
 	start := time.Now()
 
@@ -94,9 +96,12 @@ func (s *SearchService) Search(
 	}
 
 	clientCity := ""
+	var clientLat, clientLng *float64
 	if userID != "" {
 		if cp, err := s.profiles.GetClientProfile(ctx, userID); err == nil && cp != nil {
 			clientCity = cp.City
+			clientLat = cp.Latitude
+			clientLng = cp.Longitude
 		}
 	}
 
@@ -130,6 +135,15 @@ func (s *SearchService) Search(
 	filters := searchFiltersFromJSON(searchParams)
 	if filters.City == "" {
 		filters.City = clientCity
+	}
+	// Inject client GPS coords into search filters — request coords
+	// override stored profile coords (more recent / accurate).
+	if requestLat != nil && requestLng != nil {
+		filters.Latitude = requestLat
+		filters.Longitude = requestLng
+	} else if clientLat != nil && clientLng != nil {
+		filters.Latitude = clientLat
+		filters.Longitude = clientLng
 	}
 
 	slog.Info("search: querying workers",
@@ -354,6 +368,9 @@ func buildWorkerSummaries(workers []core.WorkerProfile, originalMessage string) 
 	sb.WriteString("Here are the matching workers:\n")
 	for i, w := range workers {
 		sb.WriteString(w.SearchSummary(i + 1))
+		if w.DistanceKm != nil {
+			sb.WriteString(fmt.Sprintf(", distance: %.1f km", *w.DistanceKm))
+		}
 		if w.Phone != "" {
 			sb.WriteString(fmt.Sprintf(", phone: %s", w.Phone))
 		}

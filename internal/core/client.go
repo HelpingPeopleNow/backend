@@ -13,6 +13,8 @@ type ClientProfile struct {
 	PreferredContact string    `json:"preferred_contact"`
 	PropertyType     string    `json:"property_type"`
 	Notes            string    `json:"notes"`
+	Latitude         *float64  `json:"latitude,omitempty" gorm:"type:double precision"`
+	Longitude        *float64  `json:"longitude,omitempty" gorm:"type:double precision"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -28,6 +30,8 @@ type ClientProfileDTO struct {
 	PreferredContact string    `json:"preferred_contact"`
 	PropertyType     string    `json:"property_type"`
 	Notes            string    `json:"notes"`
+	Latitude         *float64  `json:"latitude,omitempty"`
+	Longitude        *float64  `json:"longitude,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -57,6 +61,12 @@ func (c *ClientProfile) MergeFields(fields map[string]interface{}) {
 	if v, ok := rawString(fields, "notes"); ok {
 		c.Notes = v
 	}
+	if v, ok := rawFloat(fields, "latitude"); ok {
+		c.Latitude = &v
+	}
+	if v, ok := rawFloat(fields, "longitude"); ok {
+		c.Longitude = &v
+	}
 }
 
 func (c ClientProfile) ToDTO() ClientProfileDTO {
@@ -71,6 +81,8 @@ func (c ClientProfile) ToDTO() ClientProfileDTO {
 		PreferredContact: c.PreferredContact,
 		PropertyType:     c.PropertyType,
 		Notes:            c.Notes,
+		Latitude:         c.Latitude,
+		Longitude:        c.Longitude,
 		CreatedAt:        c.CreatedAt,
 		UpdatedAt:        c.UpdatedAt,
 	}

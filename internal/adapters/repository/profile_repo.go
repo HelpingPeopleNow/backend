@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
@@ -215,33 +216,76 @@ func (r *GormProfileRepository) DeleteClientProfile(ctx context.Context, userID 
 // Wire here when workers exceed ~1,000: read core.GetEnvFloat("VECTOR_SEARCH_MIN_TOP_SCORE", 0.5)
 // and fall back to ILIKE when topScore < minTopScore (VECTOR_SEARCH_PLAN §N1).
 func (r *GormProfileRepository) FindWorkers(ctx context.Context, filters core.WorkerSearchFilters) (ports.FindResult, error) {
+	hasCoords := filters.Latitude != nil && filters.Longitude != nil
+	var workers []core.WorkerProfile
+	var branch string
+	var topScore float64
+
 	if !vectorSearchEnabled() {
-		workers, err := r.findWorkersILIKE(ctx, filters)
+		w, err := r.findWorkersILIKE(ctx, filters)
 		if err != nil {
 			return ports.FindResult{}, err
 		}
-		return ports.FindResult{Workers: workers, Branch: "ilike_disabled_via_env", TopScore: 0}, nil
-	}
-	if len(filters.QueryVector) == 0 {
-		workers, err := r.findWorkersILIKE(ctx, filters)
+		workers, branch, topScore = w, "ilike_disabled_via_env", 0
+	} else if len(filters.QueryVector) == 0 {
+		w, err := r.findWorkersILIKE(ctx, filters)
 		if err != nil {
 			return ports.FindResult{}, err
 		}
-		return ports.FindResult{Workers: workers, Branch: "ilike", TopScore: 0}, nil
+		workers, branch, topScore = w, "ilike", 0
+	} else {
+		w, sc, err := r.findWorkersVector(ctx, filters)
+		if err != nil || len(w) == 0 {
+			if err != nil {
+				slog.Warn("repository: vector search failed, falling back to ILIKE", "error", err)
+			}
+			w2, err2 := r.findWorkersILIKE(ctx, filters)
+			if err2 != nil {
+				return ports.FindResult{}, err2
+			}
+			workers, branch, topScore = w2, "ilike_fallback", 0
+		} else {
+			workers, branch, topScore = w, "vector", sc
+		}
 	}
 
-	workers, topScore, err := r.findWorkersVector(ctx, filters)
-	if err != nil || len(workers) == 0 {
-		if err != nil {
-			slog.Warn("repository: vector search failed, falling back to ILIKE", "error", err)
+	// Compute distance when GPS coordinates are provided — flows to
+	// FindTraderCard.DistanceKm for frontend display.
+	if hasCoords {
+		lat, lng := *filters.Latitude, *filters.Longitude
+		for i := range workers {
+			if workers[i].Latitude != nil && workers[i].Longitude != nil {
+				d := core.HaversineKm(lat, lng, *workers[i].Latitude, *workers[i].Longitude)
+				workers[i].DistanceKm = &d
+			}
 		}
-		workers, err := r.findWorkersILIKE(ctx, filters)
-		if err != nil {
-			return ports.FindResult{}, err
+		// Re-sort by distance (nearest first) — workers from ILIKE/vector
+		// may not be distance-ordered yet.
+		sort.Slice(workers, func(i, j int) bool {
+			if workers[i].DistanceKm == nil {
+				return false
+			}
+			if workers[j].DistanceKm == nil {
+				return true
+			}
+			return *workers[i].DistanceKm < *workers[j].DistanceKm
+		})
+		// Apply MaxDistanceKm filter post-computation.
+		if filters.MaxDistanceKm != nil && *filters.MaxDistanceKm > 0 {
+			maxD := float64(*filters.MaxDistanceKm)
+			filtered := workers[:0]
+			for _, w := range workers {
+				if w.DistanceKm != nil && *w.DistanceKm <= maxD {
+					filtered = append(filtered, w)
+				} else if w.DistanceKm == nil {
+					filtered = append(filtered, w) // keep unknown-distance workers
+				}
+			}
+			workers = filtered
 		}
-		return ports.FindResult{Workers: workers, Branch: "ilike_fallback", TopScore: 0}, nil
 	}
-	return ports.FindResult{Workers: workers, Branch: "vector", TopScore: topScore}, nil
+
+	return ports.FindResult{Workers: workers, Branch: branch, TopScore: topScore}, nil
 }
 
 func vectorSearchEnabled() bool {
@@ -249,6 +293,7 @@ func vectorSearchEnabled() bool {
 }
 
 func (r *GormProfileRepository) findWorkersILIKE(ctx context.Context, filters core.WorkerSearchFilters) ([]core.WorkerProfile, error) {
+	hasCoords := filters.Latitude != nil && filters.Longitude != nil
 	query := r.db.WithContext(ctx).Model(&core.WorkerProfile{})
 
 	if filters.Profession != "" {
@@ -267,7 +312,22 @@ func (r *GormProfileRepository) findWorkersILIKE(ctx context.Context, filters co
 		query = query.Where("has_insurance = true")
 	}
 
-	if filters.City != "" {
+	if hasCoords {
+		// Haversine distance expression — computes km from the search origin.
+		// Used for both filtering (MaxDistanceKm) and ordering (nearest first).
+		haversineExpr := `
+			(6371 * acos(
+				cos(radians(?)) * cos(radians(latitude)) *
+				cos(radians(longitude) - radians(?)) +
+				sin(radians(?)) * sin(radians(latitude))
+			))`
+		lat, lng := *filters.Latitude, *filters.Longitude
+		query = query.Select("*, "+haversineExpr+" AS distance_km", lat, lng, lat)
+		if filters.MaxDistanceKm != nil && *filters.MaxDistanceKm > 0 {
+			query = query.Where(haversineExpr+" <= ?", lat, lng, lat, float64(*filters.MaxDistanceKm))
+		}
+		query = query.Order("distance_km ASC")
+	} else if filters.City != "" {
 		query = query.Order(gormpkg.Expr("CASE WHEN LOWER(city) = LOWER(?) THEN 0 ELSE 1 END, created_at DESC", filters.City))
 	} else {
 		query = query.Order("created_at DESC")

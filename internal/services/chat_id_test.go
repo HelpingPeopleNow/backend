@@ -17,7 +17,7 @@ func TestProcessIntakePassesConversationID(t *testing.T) {
 	prompts := &testingutil.MockPrompts{}
 
 	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, chatRepo, prompts)
-	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "I'm a plumber", nil, "", "", expectedID)
+	result, err := svc.ProcessIntake(t.Context(), "user-1", IntakeModeWorker, "I'm a plumber", nil, "", "", expectedID, nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, expectedID, chatRepo.SavedConversationID)
@@ -30,7 +30,7 @@ func TestProcessIntakeEmptyConversationIDCreatesNew(t *testing.T) {
 	prompts := &testingutil.MockPrompts{}
 
 	svc := NewIntakeService(llm, &testingutil.MockProfiles{}, chatRepo, prompts)
-	result, err := svc.ProcessIntake(t.Context(), "user-2", IntakeModeWorker, "I'm an electrician", nil, "", "", "")
+	result, err := svc.ProcessIntake(t.Context(), "user-2", IntakeModeWorker, "I'm an electrician", nil, "", "", "", nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, "", chatRepo.SavedConversationID)
@@ -46,7 +46,7 @@ func TestSearchPassesConversationID(t *testing.T) {
 	prompts := &testingutil.MockPrompts{}
 
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, chatRepo, prompts)
-	result, err := svc.Search(t.Context(), "user-3", "need a plumber", nil, "", "", expectedID)
+	result, err := svc.Search(t.Context(), "user-3", "need a plumber", nil, "", "", expectedID, nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, expectedID, chatRepo.SavedConversationID)
@@ -60,7 +60,7 @@ func TestSearchConversationalPathPassesConversationID(t *testing.T) {
 	prompts := &testingutil.MockPrompts{}
 
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, chatRepo, prompts)
-	result, err := svc.Search(t.Context(), "user-4", "hi, I need help", nil, "", "", expectedID)
+	result, err := svc.Search(t.Context(), "user-4", "hi, I need help", nil, "", "", expectedID, nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, expectedID, chatRepo.SavedConversationID)
