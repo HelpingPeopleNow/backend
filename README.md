@@ -22,12 +22,12 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
 
 ## What It Does
 
-1. **Worker profile intake chat** — receives `POST /api/v1/chat` with `mode: "worker_intake"`, uses the `worker_profile_prompt` system prompt designed to gather worker profile fields conversationally, appends a language instruction to the system prompt based on the `lang` parameter, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the worker profile via map-based upsert
-2. **Client profile intake chat** — receives `POST /api/v1/chat` with `mode: "client_intake"`, uses the `client_profile_prompt` system prompt designed to gather client profile fields conversationally, appends a language instruction to the system prompt based on the `lang` parameter, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the client profile via map-based upsert
+1. **Worker profile intake chat** — receives `POST /api/v1/chat` with `mode: "worker_intake"`, uses the `worker_profile_prompt` system prompt designed to gather worker profile fields conversationally, appends a language instruction to the system prompt based on the `lang` parameter, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the worker profile via map-based upsert; accepts optional `latitude` and `longitude` in the request body to persist the worker's GPS coordinates
+2. **Client profile intake chat** — receives `POST /api/v1/chat` with `mode: "client_intake"`, uses the `client_profile_prompt` system prompt designed to gather client profile fields conversationally, appends a language instruction to the system prompt based on the `lang` parameter, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the client profile via map-based upsert; accepts optional `latitude` and `longitude` in the request body to persist the client's GPS coordinates
 3. **System prompt management** — admin can read/update the worker profile prompt (`worker_profile_prompt`), the client profile prompt (`client_profile_prompt`), and the LLM provider (`llm_provider`) via REST endpoints
 4. **LLM provider runtime switch** — admin can toggle between `opencode0` (big-pickle), `opencode1`, `opencode2` (external), `ollama` (local), and `mistral` (cloud) without restarting the container; empty = uses the helper's auto fallback chain (Mistral → OpenCode 0 → OpenCode 1 → OpenCode 2 → Ollama)
 5. **Conversation persistence** — all chat messages (worker, client) are saved to the database and can be loaded on page reload via the conversations API
-6. **Search/find professionals** — receives `POST /api/v1/chat` with `mode: "search"`, uses two-pass LLM (filter-fill then presentation) to match clients with workers, returns recommended worker cards
+6. **Search/find professionals** — receives `POST /api/v1/chat` with `mode: "search"`, uses two-pass LLM (filter-fill then presentation) to match clients with workers, returns recommended worker cards with `distance_km` (Haversine) when GPS coordinates are provided in the request
 7. **Profile reset** — worker and client profiles can be cleared via `DELETE /api/v1/worker/profile` and `DELETE /api/v1/client/profile`
 
 ---
@@ -200,6 +200,8 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | Emergency | `emergency_service` | boolean |
 | Website | `website` | string |
 | Social Links | `social_links` (preferred) OR per-platform `instagram`/`facebook`/`twitter`/`linkedin`/`tiktok`/`youtube` (each `string` URL) | `{platform,url}[]` — both forms are normalized into a single deduplicated `{platform,url}` array by the package-internal `core.mergeSocialLinks` helper (`backend/internal/core/fields.go`), invoked from `WorkerProfile.MergeFields` (`backend/internal/core/worker.go:113`). Not callable directly outside the `core` package. |
+| Latitude | `latitude` | number (float64) — GPS coordinate for distance-based search |
+| Longitude | `longitude` | number (float64) — GPS coordinate for distance-based search |
 
 **Client profile fields mapped from detected_fields:**
 
@@ -213,6 +215,8 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | Preferred Contact | `preferred_contact` | string |
 | Property Type | `property_type` | string |
 | Notes | `notes` | string |
+| Latitude | `latitude` | number (float64) — GPS coordinate for distance-based search |
+| Longitude | `longitude` | number (float64) — GPS coordinate for distance-based search |
 
 ---
 
@@ -221,7 +225,7 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/health` | No | Health check (composite: PG ping + helper gRPC `health`). Returns 200 when both deps are `ok`; 503 when either is `down`. Response: `{"status":"ok"\|"degraded", "postgres":"ok"\|"down", "grpc_helper":"ok"\|"down", "details":{<key>:<err>}}` — `details` is a **map[string]string** keyed by `postgres_err` / `grpc_helper_err`. `Content-Type: application/json`. |
-| POST | `/api/v1/chat` | No* | Unified chat: `mode` in body (`"worker_intake"`, `"client_intake"`, `"search"`) → `{"answer","detected_fields","conversation_id"}` |
+| POST | `/api/v1/chat` | No* | Unified chat: `mode` in body (`"worker_intake"`, `"client_intake"`, `"search"`) → `{"answer","detected_fields","conversation_id"}`; search mode returns worker cards with optional `distance_km` when `latitude`/`longitude` provided |
 | GET | `/api/v1/worker/profile` | Yes* | Get worker profile for authenticated user |
 | DELETE | `/api/v1/worker/profile` | Yes* | Clear worker profile for authenticated user |
 | GET | `/api/v1/client/profile` | Yes* | Get client profile for authenticated user |
@@ -261,7 +265,7 @@ Returns `200 OK` when both PostgreSQL and the helper gRPC endpoint are reachable
 ```bash
 curl -X POST http://localhost:8081/api/v1/chat \
   -H "Content-Type: application/json" \
-  -d '{"mode":"worker_intake","message":"I am a plumber in Madrid","history":[],"lang":"en"}'
+  -d '{"mode":"worker_intake","message":"I am a plumber in Madrid","history":[],"lang":"en","latitude":40.4168,"longitude":-3.7038}'
 ```
 
 Response:
@@ -277,12 +281,14 @@ Response:
 }
 ```
 
+> **GPS coordinates:** `latitude` and `longitude` are optional in the chat request body. When provided, they are persisted to the user's profile (worker or client) for distance-based search.
+
 ### Client Profile Intake Chat
 
 ```bash
 curl -X POST http://localhost:8081/api/v1/chat \
   -H "Content-Type: application/json" \
-  -d '{"mode":"client_intake","message":"Hi, I need help fixing my bathroom","history":[],"lang":"en"}'
+  -d '{"mode":"client_intake","message":"Hi, I need help fixing my bathroom","history":[],"lang":"en","latitude":40.4168,"longitude":-3.7038}'
 ```
 
 Response:
@@ -417,6 +423,22 @@ All chat endpoints accept a `lang` field in the JSON request body. The backend a
 - `lang: "en"` → appends `IMPORTANT: Always respond in English`
 
 This instruction is appended to the system prompt for both `handleIntake` (worker/client) and both passes of `handleSearch`.
+
+---
+
+## GPS Geolocation
+
+The backend supports GPS-based distance search. Users provide `latitude` and `longitude` coordinates in the chat request body, which are persisted to their profile and used to calculate distances to matched workers.
+
+**Request body fields:**
+- `latitude` (float64, optional) — GPS latitude coordinate
+- `longitude` (float64, optional) — GPS longitude coordinate
+
+**Distance calculation:** When both client and worker have GPS coordinates, the backend computes straight-line distance using the [Haversine formula](https://en.wikipedia.org/wiki/Haversine_formula). Results include a `distance_km` field (in kilometers) for each matched worker, sorted by proximity.
+
+**Search response (mode: "search"):** Each worker card in the results array includes:
+- `distance_km` (float64) — Haversine distance in kilometers from the client's location; only present when both parties have GPS coordinates
+- `slug` — URL-friendly identifier for public profile links
 
 ---
 
