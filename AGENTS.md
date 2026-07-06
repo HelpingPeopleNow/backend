@@ -30,6 +30,8 @@ A second workflow `.github/workflows/vector-parity.yml` runs `helper/scripts/tes
 - **Chat uses a single unified endpoint** (`/api/v1/chat`) with `mode` in the request body.
 - **Conversations** — `ConversationHandler` lists/fetches saved conversations from the `conversations` table with `messages` sub-table. Used by frontend to resume chat on page reload.
 - **Re-embed on profile change** — `IntakeService.scheduleReembed` debounces a 60s per-user timer; `runStalenessSweeper` runs every 10 min in `main.go` to catch profiles that updated without a chat message. Both paths feed `IntakeService.ReembedWorker` (bounded by `reembedSem` cap of 3 to respect Ollama's `NUM_PARALLEL=1`).
+- **Reembed kill switch** — `IntakeService.SetReembedEnabled(bool)` toggles re-embedding at runtime. When disabled, `ReembedWorker` and `scheduleReembed` short-circuit immediately. Controlled via `POST /api/v1/admin/reembed` (admin-protected, `ReembedToggleHandler`). Env `REEMBED_ENABLED` sets the default at startup. The toggle and metrics live in `internal/metrics/` (not `handler/` or `services/`) to avoid a handler↔services import cycle.
+- **`internal/metrics/` package** — Standalone Prometheus helpers (gauge, counter, render) used by both `services/intake_service.go` and `adapters/handler/metrics_handler.go`. Houses reembed metrics: `reembed_enabled` (gauge), `reembed_skipped_total{reason}`, `reembed_completed_total`. The handler's `metricsHandler` appends `metrics.Render()` to the `/metrics` output.
 
 ## Handlers
 
@@ -44,6 +46,7 @@ A second workflow `.github/workflows/vector-parity.yml` runs `helper/scripts/tes
 | `ConversationHandler` | `/api/v1/conversations`, `/api/v1/conversations/{id}` | GET | List/get conversations |
 | `DirectMessagingHandler` | `/api/v1/workers/{id}/contact`, `/api/v1/direct-messages`, `/api/v1/direct-messages/{id}/{action}` | GET, POST, PATCH | Direct messaging: contact, inbox, thread, send, read, archive, block, report, SSE `/stream`, polling `/since` |
 | `AdminHandler` | `/api/v1/admin/{entity}/{id?}` | GET, PUT, DELETE | Generic admin CRUD over 5 entity slugs (`users`, `worker-profiles`, `client-profiles`, `conversations`, `messages`) |
+| `ReembedToggleHandler` | `/api/v1/admin/reembed` | POST | Runtime kill switch for the re-embedding pipeline (admin-protected). Body: `{"enabled": true/false}`. |
 | `PublicProfileHandler` | `/api/v1/workers/public/latest`, `/api/v1/workers/public/{slug}` | GET | Public worker profiles — no auth required. Latest returns paginated list (default limit 6), slug returns single profile by URL-friendly slug. Returns `WorkerPublicDTO` (private fields stripped). |
 
 ## Direct Messaging
