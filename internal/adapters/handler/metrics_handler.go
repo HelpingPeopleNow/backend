@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	metricspkg "github.com/HelpingPeopleNow/backend/internal/metrics"
 )
 
 // ---------------------------------------------------------------------------
@@ -50,7 +52,7 @@ var metrics = struct {
 	// VECTOR_SEARCH_PLAN §12.3 — vector search metrics. NO Prometheus
 	// client_golang import (Improvement #7): use the existing custom
 	// registry pattern.
-	vectorSearchTotal map[string]*counter   // key: status ("vector"|"ilike"|"ilike_disabled_via_env"|"ilike_low_top_score")
+	vectorSearchTotal map[string]*counter   // key: status (vector|ilike|ilike_disabled_via_env|ilike_low_top_score)
 	vectorScore       map[string]*histogram // histogram of top_score from the vector branch
 }{
 	httpRequestsTotal:      make(map[string]*counter),
@@ -490,6 +492,9 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 		metricType: "histogram",
 		histograms: metrics.vectorScore,
 	}))
+
+	// 15–17. reembed metrics live in internal/metrics — appended below.
+	write(metricspkg.Render())
 
 	w.Write([]byte(sb.String()))
 }

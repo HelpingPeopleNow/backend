@@ -326,3 +326,51 @@ func TestReembedWorkerViaIntake(t *testing.T) {
 
 	svc.ReembedWorker("user-1")
 }
+
+// ── P2-2 kill switch tests ──────────────────────────────────────
+
+func TestKillSwitchBlocksScheduleReembed(t *testing.T) {
+	svc := NewIntakeService(&testingutil.MockLLM{}, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+
+	svc.SetReembedEnabled(false)
+
+	// scheduleReembed should be a no-op when kill switch is off.
+	svc.scheduleReembed("user-1")
+
+	svc.reembedMu.Lock()
+	_, ok := svc.reembedTimers["user-1"]
+	svc.reembedMu.Unlock()
+	assert.False(t, ok, "timer should NOT be created when kill switch is off")
+}
+
+func TestKillSwitchBlocksReembedWorker(t *testing.T) {
+	profs := &testingutil.MockProfiles{
+		WorkerProfile: &core.WorkerProfile{UserID: "u1"},
+		EmbeddingMeta: map[string]ports.EmbeddingMeta{},
+	}
+	llm := &testingutil.MockLLM{
+		EmbedFn: func(_ context.Context, _ string) ([]float32, error) {
+			t.Fatal("Embed should not be called when kill switch is off")
+			return nil, nil
+		},
+	}
+	svc := NewIntakeService(llm, profs, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+	svc.SetReembedEnabled(false)
+
+	svc.ReembedWorker("u1")
+}
+
+func TestKillSwitchToggle(t *testing.T) {
+	svc := NewIntakeService(&testingutil.MockLLM{}, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+
+	// Default: enabled
+	assert.True(t, svc.IsReembedEnabled(), "default should be enabled")
+
+	// Disable
+	svc.SetReembedEnabled(false)
+	assert.False(t, svc.IsReembedEnabled(), "should be disabled after toggle")
+
+	// Re-enable
+	svc.SetReembedEnabled(true)
+	assert.True(t, svc.IsReembedEnabled(), "should be re-enabled after toggle")
+}

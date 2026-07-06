@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
+	"github.com/HelpingPeopleNow/backend/internal/metrics"
 	"github.com/HelpingPeopleNow/backend/internal/ports"
 )
 
@@ -53,6 +54,36 @@ func NewIntakeService(
 		reembedEnabled: enabled,
 		reembedSem:     make(chan struct{}, 3),
 		reembedTimers:  make(map[string]*time.Timer),
+	}
+}
+
+// IsReembedEnabled reports whether the re-embedding kill switch is on.
+// P2-2 audit: needed by the admin toggle handler so it can return the
+// current state and by tests to assert flip behavior.
+func (s *IntakeService) IsReembedEnabled() bool {
+	s.reembedMu.Lock()
+	defer s.reembedMu.Unlock()
+	return s.reembedEnabled
+}
+
+// SetReembedEnabled toggles the re-embedding kill switch at runtime.
+// P2-2 audit: lets ops pause / resume embedding via the admin endpoint
+// without redeploying. When set to false, in-flight ReembedWorker calls
+// complete (semaphore is held), but new scheduleReembed/sweeper work
+// becomes a no-op. Threadsafe under reembedMu (the same lock guarding
+// the timer map).
+func (s *IntakeService) SetReembedEnabled(enabled bool) {
+	s.reembedMu.Lock()
+	previous := s.reembedEnabled
+	s.reembedEnabled = enabled
+	s.reembedMu.Unlock()
+
+	if previous != enabled {
+		if enabled {
+			slog.Info("intake: REEMBED_ENABLED toggled ON — new re-embeds will be scheduled")
+		} else {
+			slog.Warn("intake: REEMBED_ENABLED toggled OFF — re-embedding paused (in-flight may complete)")
+		}
 	}
 }
 
@@ -190,6 +221,7 @@ func (s *IntakeService) scheduleReembed(userID string) {
 func (s *IntakeService) ReembedWorker(userID string) {
 	if !s.reembedEnabled {
 		slog.Debug("reembedWorker: skipped (REEMBED_ENABLED=false)", "user_id", userID)
+		metrics.IncrReembedSkipped("kill_switch")
 		return
 	}
 	s.reembedSem <- struct{}{}
@@ -213,12 +245,14 @@ func (s *IntakeService) reembedWorker(ctx context.Context, userID string) {
 	wp, err := s.profiles.GetWorkerProfile(ctx, userID)
 	if err != nil || wp == nil {
 		slog.Warn("reembedWorker: profile not found", "user_id", userID, "error", err)
+		metrics.IncrReembedSkipped("no_profile")
 		return
 	}
 
 	fieldTexts := core.BuildFieldTexts(wp)
 	if len(fieldTexts) == 0 {
 		slog.Debug("reembedWorker: no fields to embed", "user_id", userID)
+		metrics.IncrReembedSkipped("no_fields")
 		return
 	}
 
@@ -239,20 +273,24 @@ func (s *IntakeService) reembedWorker(ctx context.Context, userID string) {
 		prior, ok := existing[fieldName]
 		if ok && prior.Hash == newHash && prior.Model == currentModel {
 			skipped++
+			metrics.IncrReembedSkipped("no_change")
 			continue
 		}
 		vec, err := s.llm.Embed(ctx, text)
 		if err != nil {
 			slog.Warn("reembedWorker: Embed failed", "user_id", userID,
 				"field", fieldName, "error", err)
+			metrics.IncrReembedCompleted("embed_err")
 			continue
 		}
 		if err := s.profiles.UpsertWorkerEmbedding(ctx, userID, fieldName, vec, newHash); err != nil {
 			slog.Warn("reembedWorker: Upsert failed", "user_id", userID,
 				"field", fieldName, "error", err)
+			metrics.IncrReembedCompleted("upsert_err")
 			continue
 		}
 		reembedded++
+		metrics.IncrReembedCompleted("ok")
 	}
 
 	slog.Info("reembedWorker: done", "user_id", userID,

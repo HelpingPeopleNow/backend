@@ -80,6 +80,7 @@ func buildMux(d appDeps) *http.ServeMux {
 	mux.Handle("/api/v1/system-prompts/", middleware.CORS(d.Auth.Wrap(d.Admin.Wrap(handler.NewSystemPromptHandler(d.PromptRepo)))))
 
 	mux.Handle("/api/v1/admin/", middleware.CORS(d.Auth.Wrap(d.Admin.Wrap(handler.NewAdminHandler(d.DB)))))
+	mux.Handle("/api/v1/admin/reembed", middleware.CORS(d.Auth.Wrap(d.Admin.Wrap(handler.NewReembedToggleHandler(d.Intake)))))
 
 	// Public profiles — no auth middleware.
 	publicProfileHandler := handler.NewPublicProfileHandler(d.ProfileRepo)
