@@ -92,18 +92,23 @@ func buildMux(d appDeps) *http.ServeMux {
 
 // runStalenessSweeper (VECTOR_SEARCH_PLAN §8.10 / Improvement #11).
 //
-// Uses a persistent wg that survives across ticks so the sweeper can
-// drain in-flight ReembedWorker goroutines on SIGTERM/shutdown instead of
-// leaving them orphaned.
+// P2-2 audit: the previous implementation spawned one blocked goroutine
+// per stale worker; at ~dozens that's fine, at thousands it leaks
+// goroutines. We now use a bounded worklist channel with cap = sem
+// size: workers drain the channel and call ReembedWorker, which itself
+// acquires the semaphore. The loop never spawns more than `semCap`
+// in-flight goroutines, the drain on shutdown still uses the wg, and
+// the original NUM_PARALLEL=1 Ollama slot is still preserved (each
+// worker holds one sem token for the duration of the embed).
 //
 // Loop semantics:
-//   - Listen on tick.C and ctx.Done() via select.
-//   - On each tick: fan out ReembedWorker for stale IDs, incrementing wg.
-//     Do NOT block the loop on wg.Wait() — that would pile up ticks.
-//   - On ctx.Done: wg.Wait() to drain, then return.
-//
-// The IntakeService.reembedSem still bounds in-flight concurrency to 3
-// (NUM_PARALLEL=1 Ollama slot is preserved).
+//   - On each tick: find stale IDs, send them into the worklist channel
+//     (non-blocking; if the channel is full, the ID is logged and
+//     dropped — they'll be picked up on the next tick, no data loss).
+//   - N drain workers (cap = sem) read from the channel and call
+//     ReembedWorker; pendingWG tracks them for clean shutdown.
+//   - On ctx.Done: close the channel, drainers exit when empty, then
+//     wg.Wait() to ensure all ReembedWorker calls have returned.
 func runStalenessSweeper(
 	ctx context.Context,
 	intake *services.IntakeService,
@@ -113,12 +118,29 @@ func runStalenessSweeper(
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 
+	const semCap = 3
+	worklist := make(chan string, semCap)
 	var pendingWG sync.WaitGroup
+
+	// Start drain workers.
+	for i := 0; i < semCap; i++ {
+		go func() {
+			for uid := range worklist {
+				pendingWG.Add(1)
+				func(userID string) {
+					defer pendingWG.Done()
+					// Per-worker 60s deadline lives inside IntakeService.ReembedWorker.
+					intake.ReembedWorker(userID)
+				}(uid)
+			}
+		}()
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("sweeper: shutdown requested; draining in-flight re-embeds")
+			slog.Info("sweeper: shutdown requested; closing worklist and draining in-flight re-embeds")
+			close(worklist)
 			pendingWG.Wait()
 			slog.Info("sweeper: all in-flight re-embeds drained, exiting")
 			return
@@ -137,14 +159,18 @@ func runStalenessSweeper(
 				continue
 			}
 			slog.Info("sweeper: re-embedding stale workers", "count", len(ids))
+			enqueued := 0
+			dropped := 0
 			for _, uid := range ids {
-				pendingWG.Add(1)
-				go func(userID string) {
-					defer pendingWG.Done()
-					// Per-worker 60s deadline lives inside IntakeService.ReembedWorker.
-					intake.ReembedWorker(userID)
-				}(uid)
+				select {
+				case worklist <- uid:
+					enqueued++
+				default:
+					dropped++
+					slog.Warn("sweeper: worklist full; deferring stale worker to next tick", "user_id", uid)
+				}
 			}
+			slog.Info("sweeper: tick complete", "enqueued", enqueued, "dropped", dropped)
 			cancel()
 		}
 	}

@@ -25,9 +25,14 @@ type IntakeService struct {
 	// reembedMu guards reembedTimers so concurrent ProcessIntake calls
 	// don't race on the same user's pending timer.
 	// reembedTimers holds at most ONE pending time.Timer per user.
-	reembedSem    chan struct{}
-	reembedMu     sync.Mutex
-	reembedTimers map[string]*time.Timer
+	//
+	// reembedEnabled (P2-2 audit remediation): global kill switch. When
+	// false, scheduleReembed/ReembedWorker become no-ops so a melting Ollama
+	// daemon can be paused without disabling the whole vector search.
+	reembedEnabled bool
+	reembedSem     chan struct{}
+	reembedMu      sync.Mutex
+	reembedTimers  map[string]*time.Timer
 }
 
 func NewIntakeService(
@@ -36,13 +41,18 @@ func NewIntakeService(
 	chats ports.ChatRepository,
 	prompts ports.SystemPromptRepository,
 ) *IntakeService {
+	enabled := core.GetEnvBool("REEMBED_ENABLED", true)
+	if !enabled {
+		slog.Warn("intake: REEMBED_ENABLED=false — re-embedding is paused (existing vectors continue to serve searches)")
+	}
 	return &IntakeService{
-		llm:           llm,
-		profiles:      profiles,
-		chats:         chats,
-		prompts:       prompts,
-		reembedSem:    make(chan struct{}, 3),
-		reembedTimers: make(map[string]*time.Timer),
+		llm:            llm,
+		profiles:       profiles,
+		chats:          chats,
+		prompts:        prompts,
+		reembedEnabled: enabled,
+		reembedSem:     make(chan struct{}, 3),
+		reembedTimers:  make(map[string]*time.Timer),
 	}
 }
 
@@ -151,6 +161,9 @@ func (s *IntakeService) ProcessIntake(
 // reembedWorker; if the user is mid-chat at fire time, the embedding
 // will reflect only the latest merged profile.
 func (s *IntakeService) scheduleReembed(userID string) {
+	if !s.reembedEnabled {
+		return
+	}
 	s.reembedMu.Lock()
 	defer s.reembedMu.Unlock()
 
@@ -170,7 +183,15 @@ func (s *IntakeService) scheduleReembed(userID string) {
 // and the §8.10 staleness sweeper (Improvement #4 / Pitfall #2 fix).
 // Acquiring s.reembedSem here means the intake path and the sweeper
 // keep competing for the same Ollama slot — no two uncoordinated caps.
+//
+// P2-2 audit: respects the REEMBED_ENABLED kill switch. Returns
+// immediately (without touching the semaphore) when re-embedding is
+// paused, so existing vectors continue to serve searches unchanged.
 func (s *IntakeService) ReembedWorker(userID string) {
+	if !s.reembedEnabled {
+		slog.Debug("reembedWorker: skipped (REEMBED_ENABLED=false)", "user_id", userID)
+		return
+	}
 	s.reembedSem <- struct{}{}
 	defer func() { <-s.reembedSem }()
 
