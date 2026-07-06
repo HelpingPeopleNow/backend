@@ -14,7 +14,7 @@ type mockToggler struct {
 }
 
 func (m *mockToggler) SetReembedEnabled(enabled bool) { m.enabled = enabled }
-func (m *mockToggler) IsReembedEnabled() bool          { return m.enabled }
+func (m *mockToggler) IsReembedEnabled() bool         { return m.enabled }
 
 func TestReembedToggleGetReturnsState(t *testing.T) {
 	mock := &mockToggler{enabled: true}
