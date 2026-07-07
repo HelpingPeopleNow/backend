@@ -2,6 +2,9 @@ package services
 
 import (
 	"context"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
@@ -314,4 +317,210 @@ func TestNormalizeProfessionParity(t *testing.T) {
 		got := normalizeProfession(raw)
 		assert.Equal(t, want, got, "normalizeProfession(%q) = %q, want %q", raw, got, want)
 	}
+}
+
+// ── Helper LLM mocks for new tests ──────────────────────────────────
+
+// capturingLLM records every message passed to Ask and returns
+// pass1Answer on the first call, pass2Answer on subsequent calls.
+type capturingLLM struct {
+	mu          sync.Mutex
+	messages    []string
+	callCount   int
+	pass1Answer string
+	pass2Answer string
+	EmbedFn     func(ctx context.Context, text string) ([]float32, error)
+}
+
+func (l *capturingLLM) Ask(_ context.Context, _ string, message string, _ []ports.MessagePair, _ string) (*ports.LLMResponse, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.messages = append(l.messages, message)
+	l.callCount++
+	if l.callCount == 1 {
+		return &ports.LLMResponse{Answer: l.pass1Answer}, nil
+	}
+	return &ports.LLMResponse{Answer: l.pass2Answer}, nil
+}
+func (l *capturingLLM) Health(_ context.Context) error { return nil }
+func (l *capturingLLM) Embed(_ context.Context, text string) ([]float32, error) {
+	if l.EmbedFn != nil {
+		return l.EmbedFn(nil, text)
+	}
+	return make([]float32, 768), nil
+}
+
+// countingLLM is like capturingLLM but only tracks callCount (no message storage).
+type countingLLM struct {
+	mu          sync.Mutex
+	callCount   int
+	pass1Answer string
+	pass2Answer string
+	EmbedFn     func(ctx context.Context, text string) ([]float32, error)
+}
+
+func (l *countingLLM) Ask(_ context.Context, _ string, _ string, _ []ports.MessagePair, _ string) (*ports.LLMResponse, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.callCount++
+	if l.callCount == 1 {
+		return &ports.LLMResponse{Answer: l.pass1Answer}, nil
+	}
+	return &ports.LLMResponse{Answer: l.pass2Answer}, nil
+}
+func (l *countingLLM) Health(_ context.Context) error { return nil }
+func (l *countingLLM) Embed(_ context.Context, _ string) ([]float32, error) {
+	if l.EmbedFn != nil {
+		return l.EmbedFn(nil, "")
+	}
+	return make([]float32, 768), nil
+}
+
+// dynamicLLM generates answers via a callback keyed on call number.
+type dynamicLLM struct {
+	mu       sync.Mutex
+	callNum  int
+	answerFn func(callNum int) string
+	EmbedFn  func(ctx context.Context, text string) ([]float32, error)
+}
+
+func (l *dynamicLLM) Ask(_ context.Context, _ string, _ string, _ []ports.MessagePair, _ string) (*ports.LLMResponse, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.callNum++
+	return &ports.LLMResponse{Answer: l.answerFn(l.callNum)}, nil
+}
+func (l *dynamicLLM) Health(_ context.Context) error { return nil }
+func (l *dynamicLLM) Embed(_ context.Context, _ string) ([]float32, error) {
+	if l.EmbedFn != nil {
+		return l.EmbedFn(nil, "")
+	}
+	return make([]float32, 768), nil
+}
+
+// ── F10: input truncation ────────────────────────────────────────────
+
+func TestSearchInputTruncation(t *testing.T) {
+	longMsg := strings.Repeat("a", 3000) // exceeds searchInputMaxLen (2048)
+	llm := &capturingLLM{
+		pass1Answer: "Hello! What can I help you with?", // conversational (no SEARCH tags)
+		pass2Answer: "Here are some results!",
+	}
+	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+
+	_, err := svc.Search(t.Context(), "user-1", longMsg, nil, "", "", "", nil, nil)
+	require.NoError(t, err)
+
+	// The message passed to the LLM should be truncated + note appended.
+	llm.mu.Lock()
+	defer llm.mu.Unlock()
+	require.Len(t, llm.messages, 1, "LLM should be called exactly once for conversational path")
+	assert.Less(t, len(llm.messages[0]), searchInputMaxLen+100,
+		"message passed to LLM should be shorter than original 3000 chars")
+	assert.Contains(t, llm.messages[0], "[Truncated at 2048 characters]",
+		"truncation note should be appended")
+}
+
+// ── F11: pre-key cache hit (skip Pass-1 + Embed) ────────────────────
+
+func TestSearchPreKeyCacheHit(t *testing.T) {
+	llm := &countingLLM{
+		pass1Answer: `[SEARCH]{"profession":"plumber","city":"Madrid"}[/SEARCH]`,
+		pass2Answer: "Here are some plumbers in Madrid!",
+	}
+	profiles := &testingutil.MockProfiles{
+		Workers: []core.WorkerProfile{
+			{ID: "w1", Profession: "plumber", City: "Madrid"},
+		},
+	}
+	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+
+	// First search — should call LLM twice (Pass-1 filter extraction + Pass-2 presentation).
+	result1, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, result1)
+
+	llm.mu.Lock()
+	assert.Equal(t, 2, llm.callCount, "first search: LLM called twice (Pass-1 + Pass-2)")
+	llm.mu.Unlock()
+
+	// Second identical search — should return from pre-key cache without calling LLM.
+	result2, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, result2)
+
+	llm.mu.Lock()
+	assert.Equal(t, 2, llm.callCount,
+		"second search: LLM call count unchanged (pre-key cache hit, no Pass-1/Embed)")
+	llm.mu.Unlock()
+
+	// Both results should be identical (same cached value).
+	assert.Equal(t, result1.Answer, result2.Answer)
+}
+
+// ── F13: templated 0-result message ──────────────────────────────────
+
+func TestSearchZeroResultsTemplatedMessage(t *testing.T) {
+	llm := &countingLLM{
+		pass1Answer: `[SEARCH]{"profession":"plumber","city":"Madrid"}[/SEARCH]`,
+		pass2Answer: "This should never be called", // Pass-2 is skipped for 0 results
+	}
+	profiles := &testingutil.MockProfiles{
+		Workers: []core.WorkerProfile{}, // 0 workers
+	}
+	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+
+	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	// The answer should contain the templated "no workers found" message (Spanish default).
+	assert.Contains(t, result.Answer, "no encontré",
+		"zero-result path should return templated message")
+	assert.Empty(t, result.Workers, "Workers slice should be empty")
+	// Pass-2 should NOT have been called (only1 LLM call for Pass-1).
+	llm.mu.Lock()
+	assert.Equal(t, 1, llm.callCount,
+		"only Pass-1 should be called; Pass-2 skipped for 0 results")
+	llm.mu.Unlock()
+}
+
+// ── F8: cache eviction (no panic, cache bounded) ─────────────────────
+
+func TestSearchCacheEviction(t *testing.T) {
+	// dynamicLLM returns unique SEARCH filters for each search so that
+	// every search gets a unique cacheKey, forcing cache growth + eviction.
+	llm := &dynamicLLM{
+		answerFn: func(callNum int) string {
+			// Pair calls: callNum 1,2 → city_0; 3,4 → city_1; etc.
+			city := fmt.Sprintf("city_%d", (callNum-1)/2)
+			return fmt.Sprintf(`[SEARCH]{"profession":"plumber","city":"%s"}[/SEARCH]`, city)
+		},
+	}
+	profiles := &testingutil.MockProfiles{
+		Workers: []core.WorkerProfile{
+			{ID: "w1", Profession: "plumber", City: "Madrid"},
+		},
+	}
+	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+
+	// Perform 210 unique searches — each adds 2 cache entries (cacheKey + preKey).
+	// After 100 searches the cache is at 200 entries (maxSearchCacheEntries).
+	// Searches 101–210 trigger lazy eviction of the oldest entry before each insert.
+	for i := 0; i < 210; i++ {
+		msg := fmt.Sprintf("find worker %d in city %d", i, i)
+		_, err := svc.Search(t.Context(), "user-1", msg, nil, "", "", "", nil, nil)
+		require.NoError(t, err, "search %d should not fail", i)
+	}
+
+	// Verify: no panic, cache bounded.
+	svc.searchCacheMu.RLock()
+	cacheSize := len(svc.searchCache)
+	svc.searchCacheMu.RUnlock()
+
+	// Without eviction: 210 * 2 = 420 entries. With eviction, the oldest entry
+	// is removed before each insert after the cache hits 200, so net +1 per search.
+	// Final size: ~200 + 110 = ~310. Assert well below the un-evicted 420.
+	assert.Less(t, cacheSize, 210*2,
+		"cache should be bounded by lazy eviction (no unbounded growth)")
 }

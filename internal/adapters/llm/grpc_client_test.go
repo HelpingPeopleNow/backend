@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -126,4 +127,126 @@ func TestEmbedEnsureClientFails(t *testing.T) {
 	_, err := svc.Embed(context.Background(), "text")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "gRPC dial")
+}
+
+// --- Circuit breaker tests (F3) ---
+
+func TestBreakerClosedByDefault(t *testing.T) {
+	svc := NewGRPCLLMService("localhost:1", "")
+	gsvc := svc.(*GRPCLLMService)
+	assert.Equal(t, "closed", gsvc.BreakerState())
+}
+
+func TestBreakerOpensAfterFiveFails(t *testing.T) {
+	svc := NewGRPCLLMService("localhost:1", "")
+	gsvc := svc.(*GRPCLLMService)
+
+	// Call breakerFail directly 5 times (avoids slow gRPC dial).
+	for i := 0; i < 5; i++ {
+		gsvc.breakerFail()
+	}
+	assert.Equal(t, "open", gsvc.BreakerState())
+	assert.Equal(t, 5, gsvc.breakerFails)
+}
+
+func TestBreakerOpenRejectsAsk(t *testing.T) {
+	svc := NewGRPCLLMService("localhost:1", "")
+	gsvc := svc.(*GRPCLLMService)
+
+	// Trip the breaker open via breakerFail (fast).
+	for i := 0; i < 5; i++ {
+		gsvc.breakerFail()
+	}
+	require.Equal(t, "open", gsvc.BreakerState())
+
+	// Ask should fail immediately with breaker error, no gRPC dial attempt.
+	_, err := svc.Ask(context.Background(), "sys", "msg", nil, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "breaker")
+}
+
+func TestBreakerOpenRejectsEmbed(t *testing.T) {
+	svc := NewGRPCLLMService("localhost:1", "")
+	gsvc := svc.(*GRPCLLMService)
+
+	// Trip the breaker open via breakerFail (fast).
+	for i := 0; i < 5; i++ {
+		gsvc.breakerFail()
+	}
+	require.Equal(t, "open", gsvc.BreakerState())
+
+	// Embed should also be rejected.
+	_, err := svc.Embed(context.Background(), "text")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "breaker")
+}
+
+func TestBreakerHalfOpenAfterCooldown(t *testing.T) {
+	svc := NewGRPCLLMService("localhost:1", "")
+	gsvc := svc.(*GRPCLLMService)
+
+	// Trip the breaker open via breakerFail (fast).
+	for i := 0; i < 5; i++ {
+		gsvc.breakerFail()
+	}
+	require.Equal(t, "open", gsvc.BreakerState())
+
+	// Simulate cooldown by setting breakerOpenedAt to 31 seconds ago.
+	gsvc.breakerMu.Lock()
+	gsvc.breakerOpenedAt = time.Now().Add(-31 * time.Second)
+	gsvc.breakerMu.Unlock()
+
+	// Ask should now be allowed (half-open probe via breakerAllow) but will
+	// fail at gRPC dial, which calls breakerFail again (6th fail).
+	_, err := svc.Ask(context.Background(), "sys", "msg", nil, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gRPC dial")
+
+	// After dial failure in half-open, breaker goes back to open.
+	gsvc.breakerMu.Lock()
+	fails := gsvc.breakerFails
+	gsvc.breakerMu.Unlock()
+	assert.Equal(t, 6, fails)
+}
+
+func TestBreakerSuccessResetsState(t *testing.T) {
+	svc := NewGRPCLLMService("localhost:1", "")
+	gsvc := svc.(*GRPCLLMService)
+
+	// Trip open.
+	for i := 0; i < 5; i++ {
+		gsvc.breakerFail()
+	}
+	require.Equal(t, "open", gsvc.BreakerState())
+
+	// Move to half-open.
+	gsvc.breakerMu.Lock()
+	gsvc.breakerOpenedAt = time.Now().Add(-31 * time.Second)
+	gsvc.breakerMu.Unlock()
+
+	// Manually call breakerSuccess to simulate a successful probe.
+	gsvc.breakerSuccess()
+	assert.Equal(t, "closed", gsvc.BreakerState())
+	assert.Equal(t, 0, gsvc.breakerFails)
+}
+
+func TestBreakerStateLabels(t *testing.T) {
+	svc := NewGRPCLLMService("localhost:1", "")
+	gsvc := svc.(*GRPCLLMService)
+
+	// Default: closed.
+	assert.Equal(t, "closed", gsvc.BreakerState())
+
+	// Force open.
+	gsvc.breakerMu.Lock()
+	gsvc.breakerState = breakerOpen
+	gsvc.breakerOpenedAt = time.Now()
+	gsvc.breakerMu.Unlock()
+	assert.Equal(t, "open", gsvc.BreakerState())
+
+	// Force half-open.
+	gsvc.breakerMu.Lock()
+	gsvc.breakerState = breakerHalfOpen
+	gsvc.breakerMu.Unlock()
+	assert.Equal(t, "half_open", gsvc.BreakerState())
 }

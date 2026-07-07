@@ -48,7 +48,10 @@ type SearchService struct {
 	floorCachedAt time.Time
 }
 
-const maxSearchCacheEntries = 200 // F8: bound cache size
+const (
+	maxSearchCacheEntries = 200  // F8: bound cache size
+	searchInputMaxLen     = 2048 // F10: cap input at 2KB to prevent oversized prompts
+)
 
 type searchCacheEntry struct {
 	result      *SearchResult
@@ -120,6 +123,11 @@ func (s *SearchService) Search(
 		searchPrompt = fmt.Sprintf("The client is based in %s. Use this as the default city unless they specify a different one.\n\n%s", clientCity, searchPrompt)
 	}
 	searchPrompt = applyLanguage(searchPrompt, lang)
+
+	// F10: cap input at 2KB to prevent oversized prompts.
+	if len(message) > searchInputMaxLen {
+		message = message[:searchInputMaxLen] + "\n\n[Truncated at 2048 characters]"
+	}
 
 	// F11: cheap pre-key check before Pass-1/Embed — hash just the raw
 	// message + city to short-circuit identical repeat queries.
