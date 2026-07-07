@@ -1,9 +1,11 @@
 package services
 
 import (
+	"context"
 	"testing"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
+	"github.com/HelpingPeopleNow/backend/internal/ports"
 	"github.com/HelpingPeopleNow/backend/internal/testingutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -156,4 +158,125 @@ func TestSearchPromptLoadError(t *testing.T) {
 
 	_, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "", nil, nil)
 	assert.Error(t, err)
+}
+
+// ── GPS injection into filters (lines 141-147) ────────────────────
+
+func TestSearchGPSInjectionFromRequest(t *testing.T) {
+	llm := &testingutil.MockLLM{Answer: `[SEARCH]{"profession":"plumber","city":"Madrid"}[/SEARCH]`}
+	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+
+	lat, lng := 40.4168, -3.7038
+	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", &lat, &lng)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	// Two-pass flow executed with GPS coords injected
+	assert.Equal(t, "ilike", result.Branch)
+}
+
+func TestSearchGPSInjectionFromClientProfile(t *testing.T) {
+	llm := &testingutil.MockLLM{Answer: `[SEARCH]{"profession":"plumber","city":"Madrid"}[/SEARCH]`}
+	clat, clng := 40.4168, -3.7038
+	profiles := &testingutil.MockProfiles{
+		ClientProfile: &core.ClientProfile{
+			City:      "Madrid",
+			Latitude:  &clat,
+			Longitude: &clng,
+		},
+	}
+	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+
+	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "ilike", result.Branch)
+}
+
+// ── Embed failure fallback (lines 169-172) ────────────────────────
+
+func TestSearchEmbedFailureFallback(t *testing.T) {
+	llm := &testingutil.MockLLM{
+		Answer:  `[SEARCH]{"profession":"plumber","city":"Madrid"}[/SEARCH]`,
+		EmbedFn: func(_ context.Context, _ string) ([]float32, error) { return nil, assert.AnError },
+	}
+	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+
+	result, err := svc.Search(t.Context(), "", "need a plumber", nil, "", "", "", nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "ilike", result.Branch)
+}
+
+// ── FindWorkers error (lines 235-237) ─────────────────────────────
+
+func TestSearchFindWorkersError(t *testing.T) {
+	llm := &testingutil.MockLLM{Answer: `[SEARCH]{"profession":"plumber","city":"Madrid"}[/SEARCH]`}
+	profiles := &testingutil.MockProfiles{WorkersErr: assert.AnError}
+	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+
+	_, err := svc.Search(t.Context(), "", "need a plumber", nil, "", "", "", nil, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "find workers")
+}
+
+// ── Pass 2 LLM error (lines 248-250) ─────────────────────────────
+
+func TestSearchPass2LLMError(t *testing.T) {
+	pass1Answer := `[SEARCH]{"profession":"plumber","city":"Madrid"}[/SEARCH]`
+	llm2 := &pass2ErrorLLM{pass1Answer: pass1Answer}
+	profiles := &testingutil.MockProfiles{
+		Workers: []core.WorkerProfile{{ID: "w1", Profession: "plumber", City: "Madrid"}},
+	}
+	svc := NewSearchService(llm2, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+
+	_, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "pass 2")
+}
+
+// pass2ErrorLLM returns pass1 answer on first Ask, error on second.
+type pass2ErrorLLM struct {
+	pass1Answer string
+	callCount   int
+}
+
+func (l *pass2ErrorLLM) Ask(_ context.Context, _, _ string, _ []ports.MessagePair, _ string) (*ports.LLMResponse, error) {
+	l.callCount++
+	if l.callCount == 1 {
+		return &ports.LLMResponse{Answer: l.pass1Answer}, nil
+	}
+	return nil, assert.AnError
+}
+func (l *pass2ErrorLLM) Health(_ context.Context) error { return nil }
+func (l *pass2ErrorLLM) Embed(_ context.Context, _ string) ([]float32, error) {
+	return make([]float32, 768), nil
+}
+
+// ── SaveMessages error on search path (lines 265-267) ─────────────
+
+func TestSearchSaveConversationError(t *testing.T) {
+	llm := &testingutil.MockLLM{Answer: `[SEARCH]{"profession":"plumber","city":"Madrid"}[/SEARCH]`}
+	chatRepo := &testingutil.MockChatRepo{SaveErr: assert.AnError}
+	svc := NewSearchService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
+
+	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	require.NoError(t, err)
+	// Save failed but search still returns result with empty ConversationID
+	assert.Equal(t, "", result.ConversationID)
+}
+
+// ── buildWorkerSummaries with DistanceKm (lines 406-408) ──────────
+
+func TestBuildWorkerSummariesWithDistanceKm(t *testing.T) {
+	dist := 3.7
+	workers := []core.WorkerProfile{
+		{
+			ID:         "w1",
+			Profession: "plumber",
+			City:       "Madrid",
+			DistanceKm: &dist,
+		},
+	}
+	summaries := buildWorkerSummaries(workers, "need a plumber")
+	assert.Contains(t, summaries, "distance: 3.7 km")
 }
