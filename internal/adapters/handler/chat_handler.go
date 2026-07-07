@@ -11,21 +11,34 @@ import (
 	"github.com/HelpingPeopleNow/backend/internal/services"
 )
 
+const (
+	searchRateLimit = 10       // max searches per minute per user (F2)
+	maxSearchInput  = 2 * 1024 // 2 KB cap on search message length (F10)
+)
+
 type ChatHandler struct {
-	intakeService *services.IntakeService
-	searchService *services.SearchService
-	prompts       ports.SystemPromptRepository
+	intakeService     *services.IntakeService
+	searchService     *services.SearchService
+	prompts           ports.SystemPromptRepository
+	searchRateLimiter SearchRateLimiter
+}
+
+// SearchRateLimiter is the interface for per-user search rate limiting (F2).
+type SearchRateLimiter interface {
+	Allow(key string) bool
 }
 
 func NewChatHandler(
 	intakeService *services.IntakeService,
 	searchService *services.SearchService,
 	prompts ports.SystemPromptRepository,
+	searchRateLimiter SearchRateLimiter,
 ) *ChatHandler {
 	return &ChatHandler{
-		intakeService: intakeService,
-		searchService: searchService,
-		prompts:       prompts,
+		intakeService:     intakeService,
+		searchService:     searchService,
+		prompts:           prompts,
+		searchRateLimiter: searchRateLimiter,
 	}
 }
 
@@ -107,6 +120,16 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case "search":
+		// F10: cap search input length at 2 KB
+		if len(req.Message) > maxSearchInput {
+			req.Message = req.Message[:maxSearchInput]
+			slog.Warn("search input truncated", "user_id", userID, "original_len", len(req.Message), "capped_to", maxSearchInput)
+		}
+		// F2: rate-limit search branch (10/min/user)
+		if h.searchRateLimiter != nil && !h.searchRateLimiter.Allow(userID) {
+			writeError(w, http.StatusTooManyRequests, "search rate limit exceeded, try again in 1 minute")
+			return
+		}
 		result, err := h.searchService.Search(r.Context(), userID, req.Message, history, provider, req.Lang, req.ConversationID, req.Latitude, req.Longitude)
 		if err != nil {
 			handleLLMError(w, err)
@@ -120,6 +143,10 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		IncrVectorSearch(result.Branch)
 		if result.Branch == "vector" && result.TopScore > 0 {
 			ObserveVectorScore(result.TopScore)
+		}
+		// F4: increment embed_failures_total when embed failure caused ILIKE fallback
+		if result.Branch == "ilike_embed_failed" {
+			IncrEmbedFailures()
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"answer":          result.Answer,

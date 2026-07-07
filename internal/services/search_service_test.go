@@ -27,8 +27,8 @@ func TestNormalizeProfessionVariants(t *testing.T) {
 		{"cleaner", "cleaner"},
 		{"manitas", "handyman"},
 		{"handyman", "handyman"},
-		{"carpintero", "carpintero"},
-		{"carpenter", "carpintero"},
+		{"carpintero", "Carpenter"},
+		{"carpenter", "Carpenter"},
 		{"pintor", "painter"},
 		{"painter", "painter"},
 		{"jardinero", "landscaper"},
@@ -279,4 +279,39 @@ func TestBuildWorkerSummariesWithDistanceKm(t *testing.T) {
 	}
 	summaries := buildWorkerSummaries(workers, "need a plumber")
 	assert.Contains(t, summaries, "distance: 3.7 km")
+}
+
+// F5 parity test: normalizeProfession must return the same canonical English
+// values as core.normalizeProfessionForEmbedding. Both must agree on every
+// known key to prevent ILIKE mismatches between the embedding text and the
+// search query.
+func TestNormalizeProfessionParity(t *testing.T) {
+	// Map of raw profession input → expected canonical English output.
+	// Both normalizers MUST return these exact values.
+	expected := map[string]string{
+		"plomero":      "plumber",
+		"plumber":      "plumber",
+		"fontanero":    "plumber",
+		"electricista": "electrician",
+		"electrician":  "electrician",
+		"carpintero":   "Carpenter",
+		"carpenter":    "Carpenter",
+		"pintor":       "painter",
+		"painter":      "painter",
+		"pintura":      "painter",
+		"jardinero":    "landscaper",
+		"landscaper":   "landscaper",
+		"gardener":     "landscaper",
+		"limpieza":     "cleaner",
+		"limpiador":    "cleaner",
+		"cleaner":      "cleaner",
+		"cleaning":     "cleaner",
+		"manitas":      "handyman",
+		"handyman":     "handyman",
+		"handy man":    "handyman",
+	}
+	for raw, want := range expected {
+		got := normalizeProfession(raw)
+		assert.Equal(t, want, got, "normalizeProfession(%q) = %q, want %q", raw, got, want)
+	}
 }

@@ -52,8 +52,13 @@ var metrics = struct {
 	// VECTOR_SEARCH_PLAN §12.3 — vector search metrics. NO Prometheus
 	// client_golang import (Improvement #7): use the existing custom
 	// registry pattern.
-	vectorSearchTotal map[string]*counter   // key: status (vector|ilike|ilike_disabled_via_env|ilike_low_top_score)
+	vectorSearchTotal map[string]*counter   // key: status (vector|ilike|ilike_disabled_via_env|ilike_low_top_score|ilike_embed_failed)
 	vectorScore       map[string]*histogram // histogram of top_score from the vector branch
+
+	// F2/F4 — search rate limiting + embed failure metrics.
+	searchRateLimitedTotal map[string]*counter // key: user_id prefix
+	embedFailuresTotal     map[string]*counter // key: "embed"
+	helperBreakerState     map[string]*gauge   // key: state (closed|open|half_open)
 }{
 	httpRequestsTotal:      make(map[string]*counter),
 	httpRequestDuration:    make(map[string]*histogram),
@@ -68,8 +73,11 @@ var metrics = struct {
 	dmReceivedTotal:        make(map[string]*counter),
 	healthStatus:           make(map[string]*gauge),
 
-	vectorSearchTotal: make(map[string]*counter),
-	vectorScore:       make(map[string]*histogram),
+	vectorSearchTotal:      make(map[string]*counter),
+	vectorScore:            make(map[string]*histogram),
+	searchRateLimitedTotal: make(map[string]*counter),
+	embedFailuresTotal:     make(map[string]*counter),
+	helperBreakerState:     make(map[string]*gauge),
 }
 
 // defaultBuckets for latency histograms (seconds).
@@ -242,6 +250,28 @@ func ObserveVectorScore(score float64) {
 	defer metrics.Unlock()
 	h := getHistogram(metrics.vectorScore, "all")
 	observeValue(h, score)
+}
+
+// IncrSearchRateLimited increments the search_rate_limited_total counter (F2).
+func IncrSearchRateLimited(userID string) {
+	metrics.Lock()
+	defer metrics.Unlock()
+	getCounter(metrics.searchRateLimitedTotal, "user").value++
+}
+
+// IncrEmbedFailures increments the embed_failures_total counter (F4).
+func IncrEmbedFailures() {
+	metrics.Lock()
+	defer metrics.Unlock()
+	getCounter(metrics.embedFailuresTotal, "embed").value++
+}
+
+// SetHelperBreakerState sets the helper_breaker_state gauge (F3).
+func SetHelperBreakerState(state string) {
+	metrics.Lock()
+	defer metrics.Unlock()
+	g := getGauge(metrics.helperBreakerState, state)
+	g.value = 1
 }
 
 // RegisterMetricsRoutes registers GET /metrics on the provided mux.
@@ -493,7 +523,32 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 		histograms: metrics.vectorScore,
 	}))
 
-	// 15–17. reembed metrics live in internal/metrics — appended below.
+	// 15. search_rate_limited_total (F2)
+	write(renderFamilyToString(metricFamily{
+		name:       "search_rate_limited_total",
+		help:       "Total search requests rejected by per-user rate limiter.",
+		metricType: "counter",
+		counters:   metrics.searchRateLimitedTotal,
+	}))
+
+	// 16. embed_failures_total (F4)
+	write(renderFamilyToString(metricFamily{
+		name:       "embed_failures_total",
+		help:       "Total embed call failures (distinct from vector-query fallbacks).",
+		metricType: "counter",
+		counters:   metrics.embedFailuresTotal,
+	}))
+
+	// 17. helper_breaker_state (F3)
+	write(renderFamilyToString(metricFamily{
+		name:       "helper_breaker_state",
+		help:       "Helper circuit breaker state (0=closed, 1=open, 2=half_open).",
+		metricType: "gauge",
+		keys:       []string{"state"},
+		gauges:     metrics.helperBreakerState,
+	}))
+
+	// 18–20. reembed metrics live in internal/metrics — appended below.
 	write(metricspkg.Render())
 
 	w.Write([]byte(sb.String()))

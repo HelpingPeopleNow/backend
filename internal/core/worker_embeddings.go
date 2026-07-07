@@ -145,7 +145,7 @@ func normalizeProfessionForEmbedding(p string) string {
 		return "Handyman"
 	case "carpintero", "Carpintero", "carpenter", "Carpenter":
 		return "Carpenter"
-	case "pintor", "Pintor", "painter", "Painter":
+	case "pintor", "Pintor", "pintura", "Pintura", "painter", "Painter":
 		return "Painter"
 	case "jardinero", "Jardinero", "landscaper", "Landscaper", "gardener", "Gardener":
 		return "Landscaper"

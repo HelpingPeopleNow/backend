@@ -15,6 +15,13 @@ import (
 	"github.com/HelpingPeopleNow/backend/internal/ports"
 )
 
+// SearchService orchestrates the two-pass LLM workflow for search mode.
+//
+// Architecture (VECTOR_SEARCH_PLAN §8.6):
+//  1. Pass-1: LLM extracts search filters from user message
+//  2. Embed: embed the raw message for pgvector cosine similarity
+//  3. FindWorkers: hybrid pgvector + ILIKE query
+//  4. Pass-2: LLM presents results conversationally
 type SearchService struct {
 	llm      ports.LLMService
 	profiles ports.ProfileRepository
@@ -22,12 +29,13 @@ type SearchService struct {
 	prompts  ports.SystemPromptRepository
 
 	// VECTOR_SEARCH_PLAN P2 / third-pass review — search cache.
-	// Key: sha256(canonicalized searchParams JSON).
+	// Key: sha256(canonicalized filters JSON).
 	// Entry expires either:
 	//   - by age (TTL = 60s)
 	//   - by worker-list mutation (workerFloor < MAX(worker_profiles.updated_at))
 	// The floor mechanism avoids the marketplace failure mode where
 	// new workers are invisible for the entire TTL window.
+	// F8: bounded by maxSearchCacheEntries (lazy eviction of oldest).
 	searchCache    map[string]searchCacheEntry
 	searchCacheTTL time.Duration
 	searchCacheMu  sync.RWMutex
@@ -39,6 +47,8 @@ type SearchService struct {
 	floorCached   time.Time
 	floorCachedAt time.Time
 }
+
+const maxSearchCacheEntries = 200 // F8: bound cache size
 
 type searchCacheEntry struct {
 	result      *SearchResult
@@ -66,7 +76,7 @@ type SearchResult struct {
 	Answer         string
 	Workers        []core.WorkerProfile
 	TopScore       float64
-	Branch         string // "vector" | "ilike" | "ilike_disabled_via_env" | "ilike_low_top_score"
+	Branch         string // "vector" | "ilike" | "ilike_disabled_via_env" | "ilike_low_top_score" | "ilike_embed_failed"
 	ConversationID string
 }
 
@@ -110,6 +120,19 @@ func (s *SearchService) Search(
 		searchPrompt = fmt.Sprintf("The client is based in %s. Use this as the default city unless they specify a different one.\n\n%s", clientCity, searchPrompt)
 	}
 	searchPrompt = applyLanguage(searchPrompt, lang)
+
+	// F11: cheap pre-key check before Pass-1/Embed — hash just the raw
+	// message + city to short-circuit identical repeat queries.
+	preKeyBytes, _ := json.Marshal(struct{ Msg, City string }{message, clientCity})
+	preKey := sha256Hex(string(preKeyBytes))
+	s.searchCacheMu.RLock()
+	preEntry, preOk := s.searchCache[preKey]
+	s.searchCacheMu.RUnlock()
+	if preOk && time.Since(preEntry.cachedAt) < s.searchCacheTTL {
+		slog.Info("search: pre-key cache hit (skipped Pass-1+Embed)",
+			"key", preKey[:12], "branch", preEntry.result.Branch)
+		return preEntry.result, nil
+	}
 
 	pass1Resp, err := s.llm.Ask(ctx, searchPrompt, message, history, provider)
 	if err != nil {
@@ -167,6 +190,8 @@ func (s *SearchService) Search(
 	if embedErr == nil && len(qvec) > 0 {
 		filters.QueryVector = qvec
 	} else if embedErr != nil {
+		// F4: flag embed failure so FindWorkers returns ilike_embed_failed
+		filters.EmbedFailed = true
 		slog.Warn("search: Embed failed, falling back to ILIKE",
 			"error", embedErr)
 	}
@@ -239,6 +264,51 @@ func (s *SearchService) Search(
 	branch := findResult.Branch // fourth-pass review: post-fact, not intent.
 	topScore := findResult.TopScore
 
+	// F13: skip Pass-2 when no workers found — return a templated
+	// message instead of wasting an LLM completion on 0 results.
+	if len(workers) == 0 {
+		slog.Info("search: 0 workers found, skipping Pass-2", "branch", branch)
+		templatedAnswer := "Lo siento, no encontré trabajadores que coincidan con tu búsqueda en este momento. " +
+			"¿Puedo ayudarte con algo más?"
+		if lang == "en" {
+			templatedAnswer = "Sorry, I couldn't find any workers matching your search right now. " +
+				"Can I help you with anything else?"
+		}
+		// Still save the conversation so the conversation ID is returned.
+		convID := ""
+		if userID != "" {
+			meta := map[string]interface{}{
+				"search_params": searchParams,
+				"workers_found": 0,
+			}
+			id, err := s.chats.SaveMessages(ctx, userID, "client-find", message, templatedAnswer, conversationID, nil, meta, "")
+			if err != nil {
+				slog.Warn("search: save conversation failed (0-results path)", "error", err)
+			} else {
+				convID = id
+			}
+		}
+		// Cache 0-result response so repeat queries hit the cache.
+		cacheVal := SearchResult{
+			Answer:         templatedAnswer,
+			Workers:        workers,
+			TopScore:       topScore,
+			Branch:         branch,
+			ConversationID: "",
+		}
+		newFloor, _ := s.currentWorkerFloor(ctx)
+		s.searchCacheMu.Lock()
+		s.searchCache[preKey] = searchCacheEntry{result: &cacheVal, cachedAt: time.Now(), workerFloor: newFloor}
+		s.searchCacheMu.Unlock()
+		return &SearchResult{
+			Answer:         templatedAnswer,
+			Workers:        workers,
+			TopScore:       topScore,
+			Branch:         branch,
+			ConversationID: convID,
+		}, nil
+	}
+
 	// Pre-bound presentation prompt (cached lookup already done above).
 	presentationPrompt := sp.EffectiveFindTraderPresentation()
 	presentationPrompt = applyLanguage(presentationPrompt, lang)
@@ -287,7 +357,25 @@ func (s *SearchService) Search(
 
 	newFloor, _ := s.currentWorkerFloor(ctx)
 	s.searchCacheMu.Lock()
+	// F8: lazy eviction — if cache is at capacity, evict the oldest entry
+	if len(s.searchCache) >= maxSearchCacheEntries {
+		var oldestKey string
+		var oldestTime time.Time
+		for k, v := range s.searchCache {
+			if oldestKey == "" || v.cachedAt.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = v.cachedAt
+			}
+		}
+		if oldestKey != "" {
+			delete(s.searchCache, oldestKey)
+		}
+	}
 	s.searchCache[cacheKey] = searchCacheEntry{
+		result: &cacheVal, cachedAt: time.Now(), workerFloor: newFloor,
+	}
+	// F11: also store the pre-key (message+city) for future short-circuit
+	s.searchCache[preKey] = searchCacheEntry{
 		result: &cacheVal, cachedAt: time.Now(), workerFloor: newFloor,
 	}
 	s.searchCacheMu.Unlock()
@@ -381,8 +469,8 @@ func normalizeProfession(p string) string {
 	case "manitas", "handyman", "handy man":
 		return "handyman"
 	case "carpintero", "carpenter":
-		return "carpintero"
-	case "pintor", "painter", "painting":
+		return "Carpenter"
+	case "pintor", "pintura", "painter", "painting":
 		return "painter"
 	case "jardinero", "landscaper", "gardener":
 		return "landscaper"

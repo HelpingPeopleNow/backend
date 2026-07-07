@@ -28,4 +28,9 @@ type WorkerSearchFilters struct {
 	// because persisting or comparing mismatched-dim vectors is a
 	// silent-failure trap.
 	QueryVector []float32
+
+	// F4: EmbedFailed is set by SearchService when the Embed call fails.
+	// FindWorkers returns branch="ilike_embed_failed" instead of plain
+	// "ilike" so embedding outages are visible in metrics.
+	EmbedFailed bool
 }

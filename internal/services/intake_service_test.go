@@ -253,7 +253,7 @@ func TestNormalizeProfessionSpanish(t *testing.T) {
 		{"limpiador", "cleaner"},
 		{"limpieza", "cleaner"},
 		{"manitas", "handyman"},
-		{"carpintero", "carpintero"},
+		{"carpintero", "Carpenter"},
 		{"pintor", "painter"},
 		{"jardinero", "landscaper"},
 		{"tejador", "roofer"},

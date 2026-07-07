@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
@@ -227,6 +229,13 @@ func (r *GormProfileRepository) FindWorkers(ctx context.Context, filters core.Wo
 			return ports.FindResult{}, err
 		}
 		workers, branch, topScore = w, "ilike_disabled_via_env", 0
+	} else if filters.EmbedFailed {
+		// F4: embed failure — distinct branch so outage is visible in metrics
+		w, err := r.findWorkersILIKE(ctx, filters)
+		if err != nil {
+			return ports.FindResult{}, err
+		}
+		workers, branch, topScore = w, "ilike_embed_failed", 0
 	} else if len(filters.QueryVector) == 0 {
 		w, err := r.findWorkersILIKE(ctx, filters)
 		if err != nil {
@@ -246,6 +255,27 @@ func (r *GormProfileRepository) FindWorkers(ctx context.Context, filters core.Wo
 			workers, branch, topScore = w2, "ilike_fallback", 0
 		} else {
 			workers, branch, topScore = w, "vector", sc
+		}
+	}
+
+	// F7: wire VECTOR_SEARCH_MIN_TOP_SCORE — if vector score is below
+	// the threshold, fall back to ILIKE so weak matches don't surface
+	// as confident results.
+	if branch == "vector" && topScore > 0 {
+		minTopScore := 0.5
+		if v := os.Getenv("VECTOR_SEARCH_MIN_TOP_SCORE"); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+				minTopScore = f
+			}
+		}
+		if topScore < minTopScore {
+			slog.Info("repository: vector top_score below threshold, falling back to ILIKE",
+				"top_score", topScore, "min", minTopScore)
+			w2, err2 := r.findWorkersILIKE(ctx, filters)
+			if err2 != nil {
+				return ports.FindResult{}, err2
+			}
+			workers, branch, topScore = w2, "ilike_low_top_score", 0
 		}
 	}
 

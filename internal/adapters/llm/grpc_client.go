@@ -20,12 +20,19 @@ import (
 const expectedEmbeddingDim = 768
 
 type GRPCLLMService struct {
-	addr        string
-	healthURL   string
-	timeoutSecs int
-	mu          sync.Mutex
-	conn        *grpc.ClientConn
-	client      pb.HelperServiceClient
+	addr         string
+	healthURL    string
+	timeoutSecs  int
+	llmTimeout   time.Duration // F3: Pass-1/Pass-2 budget
+	embedTimeout time.Duration // F3: Embed budget
+	mu           sync.Mutex
+	conn         *grpc.ClientConn
+	client       pb.HelperServiceClient
+	// F3: circuit breaker
+	breakerMu       sync.Mutex
+	breakerFails    int
+	breakerState    int // 0=closed, 1=open, 2=half-open
+	breakerOpenedAt time.Time
 }
 
 func NewGRPCLLMService(addr, healthURL string) ports.LLMService {
@@ -35,10 +42,85 @@ func NewGRPCLLMService(addr, healthURL string) ports.LLMService {
 			timeout = v
 		}
 	}
+	// F3: independent timeouts for LLM and Embed
+	llmTimeout := 20 * time.Second
+	if t := os.Getenv("HELPER_LLM_TIMEOUT"); t != "" {
+		if v, err := strconv.Atoi(t); err == nil && v > 0 {
+			llmTimeout = time.Duration(v) * time.Second
+		}
+	}
+	embedTimeout := 8 * time.Second
+	if t := os.Getenv("HELPER_EMBED_TIMEOUT"); t != "" {
+		if v, err := strconv.Atoi(t); err == nil && v > 0 {
+			embedTimeout = time.Duration(v) * time.Second
+		}
+	}
 	return &GRPCLLMService{
-		addr:        addr,
-		healthURL:   healthURL,
-		timeoutSecs: timeout,
+		addr:         addr,
+		healthURL:    healthURL,
+		timeoutSecs:  timeout,
+		llmTimeout:   llmTimeout,
+		embedTimeout: embedTimeout,
+	}
+}
+
+// F3: Circuit breaker helpers. States: 0=closed (normal), 1=open (failing fast), 2=half-open (testing).
+const (
+	breakerClosed   = 0
+	breakerOpen     = 1
+	breakerHalfOpen = 2
+
+	breakerThreshold = 5 // consecutive failures to trip open
+	breakerCooldown  = 30 * time.Second
+)
+
+// breakerRecord records success or failure; returns true if call is allowed.
+func (s *GRPCLLMService) breakerAllow() bool {
+	s.breakerMu.Lock()
+	defer s.breakerMu.Unlock()
+	switch s.breakerState {
+	case breakerOpen:
+		if time.Since(s.breakerOpenedAt) > breakerCooldown {
+			s.breakerState = breakerHalfOpen
+			return true
+		}
+		return false
+	case breakerHalfOpen:
+		return true // allow one probe
+	default: // closed
+		return true
+	}
+}
+
+func (s *GRPCLLMService) breakerSuccess() {
+	s.breakerMu.Lock()
+	defer s.breakerMu.Unlock()
+	s.breakerFails = 0
+	s.breakerState = breakerClosed
+}
+
+func (s *GRPCLLMService) breakerFail() {
+	s.breakerMu.Lock()
+	defer s.breakerMu.Unlock()
+	s.breakerFails++
+	if s.breakerFails >= breakerThreshold {
+		s.breakerState = breakerOpen
+		s.breakerOpenedAt = time.Now()
+		slog.Warn("helper circuit breaker OPEN", "fails", s.breakerFails)
+	}
+}
+
+// BreakerState returns the current circuit breaker state as a string for metrics.
+func (s *GRPCLLMService) BreakerState() string {
+	s.breakerMu.Lock()
+	defer s.breakerMu.Unlock()
+	switch s.breakerState {
+	case breakerOpen:
+		return "open"
+	case breakerHalfOpen:
+		return "half_open"
+	default:
+		return "closed"
 	}
 }
 
@@ -73,7 +155,12 @@ func (s *GRPCLLMService) Ask(
 	history []ports.MessagePair,
 	provider string,
 ) (*ports.LLMResponse, error) {
+	// F3: circuit breaker — fail fast when helper is unhealthy
+	if !s.breakerAllow() {
+		return nil, fmt.Errorf("helper circuit breaker open — search degraded")
+	}
 	if err := s.ensureClient(); err != nil {
+		s.breakerFail()
 		return nil, err
 	}
 
@@ -82,7 +169,8 @@ func (s *GRPCLLMService) Ask(
 		protoHistory[i] = &pb.Message{Role: h.Role, Content: h.Content}
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, time.Duration(s.timeoutSecs)*time.Second)
+	// F3: use dedicated LLM timeout (default 20s)
+	callCtx, cancel := context.WithTimeout(ctx, s.llmTimeout)
 	defer cancel()
 
 	req := &pb.AskRequest{
@@ -95,12 +183,14 @@ func (s *GRPCLLMService) Ask(
 
 	resp, err := s.client.Ask(callCtx, req)
 	if err != nil {
+		s.breakerFail()
 		if strings.Contains(err.Error(), "429") || strings.Contains(strings.ToLower(err.Error()), "rate limit") {
 			return nil, fmt.Errorf("RATE_LIMIT: %w", err)
 		}
 		return nil, fmt.Errorf("gRPC ask: %w", err)
 	}
 
+	s.breakerSuccess()
 	return &ports.LLMResponse{
 		Answer: resp.GetAnswer(),
 		Role:   resp.GetDetectedRole(),
@@ -109,25 +199,33 @@ func (s *GRPCLLMService) Ask(
 
 // Embed forwards to the helper's Embed gRPC (VECTOR_SEARCH_PLAN §8.4).
 // Length-mismatch validation happens here so mismatched-dim vectors never
-// reach the database.
+// reach the database. F3: uses dedicated embed timeout (default 8s).
 func (s *GRPCLLMService) Embed(ctx context.Context, text string) ([]float32, error) {
+	if !s.breakerAllow() {
+		return nil, fmt.Errorf("helper circuit breaker open — embed degraded")
+	}
 	if err := s.ensureClient(); err != nil {
+		s.breakerFail()
 		return nil, err
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, time.Duration(s.timeoutSecs)*time.Second)
+	// F3: use dedicated embed timeout
+	callCtx, cancel := context.WithTimeout(ctx, s.embedTimeout)
 	defer cancel()
 
 	resp, err := s.client.Embed(callCtx, &pb.EmbedRequest{Text: text})
 	if err != nil {
+		s.breakerFail()
 		return nil, fmt.Errorf("gRPC embed: %w", err)
 	}
 	if resp == nil {
+		s.breakerFail()
 		return nil, fmt.Errorf("gRPC embed: nil response")
 	}
 	if got, want := len(resp.Embedding), expectedEmbeddingDim; got != want {
 		return nil, fmt.Errorf("embed dim mismatch: got %d, want %d (model=%s)", got, want, resp.GetModel())
 	}
+	s.breakerSuccess()
 	return resp.Embedding, nil
 }
 

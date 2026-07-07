@@ -37,7 +37,7 @@ func chatSetup() *ChatHandler {
 	prompts := &testingutil.MockPrompts{}
 	intakeSvc := services.NewIntakeService(mockLLM, profiles, chats, prompts)
 	searchSvc := services.NewSearchService(mockLLM, profiles, chats, prompts)
-	return NewChatHandler(intakeSvc, searchSvc, prompts)
+	return NewChatHandler(intakeSvc, searchSvc, prompts, nil)
 }
 
 func TestChatHandlerRejectsGet(t *testing.T) {
@@ -86,7 +86,7 @@ func TestChatHandlerClientIntake(t *testing.T) {
 	prompts := &testingutil.MockPrompts{}
 	intakeSvc := services.NewIntakeService(mockLLM, profiles, chats, prompts)
 	searchSvc := services.NewSearchService(mockLLM, profiles, chats, prompts)
-	h := NewChatHandler(intakeSvc, searchSvc, prompts)
+	h := NewChatHandler(intakeSvc, searchSvc, prompts, nil)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, authReq(http.MethodPost, "/api/v1/chat", `{"mode":"client_intake","message":"I'm Jane"}`))

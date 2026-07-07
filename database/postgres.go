@@ -112,6 +112,12 @@ END $$;
 		slog.Warn("migration: failed to create HNSW index on worker_embeddings", "error", err)
 	}
 
+	// F12: set HNSW ef_search for recall. Default is 40; bump to 64
+	// once corpus exceeds ~1k vectors. Harmless at current scale.
+	if err := db.Exec("SET hnsw.ef_search = 64").Error; err != nil {
+		slog.Warn("migration: failed to set hnsw.ef_search", "error", err)
+	}
+
 	// updated_at trigger — §6.4. Timestamps are timestamptz to align with
 	// worker_profiles.updated_at in the FindStaleWorkerIDs comparison
 	// (Plan showstopper #2 — int64 epoch vs timestamptz would break the
