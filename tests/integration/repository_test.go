@@ -392,3 +392,188 @@ func TestDirectMessageFlow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, count)
 }
+
+// ── F14/F15: Distance sorting + service_radius_km filtering ──────
+
+func TestFindWorkersServiceRadiusExclusion(t *testing.T) {
+	db := NewTestDB(t)
+	migrateTestSchema(t, db)
+	repo := repository.NewGormProfileRepository(db)
+	ctx := context.Background()
+
+	// Create workers with different service radii.
+	// All near Madrid center (40.4168, -3.7038).
+	madridLat := 40.4168
+	madridLng := -3.7038
+
+	// Worker A: close to Madrid, large radius (covers the search origin)
+	nearbyLatA := 40.4200
+	nearbyLngA := -3.7100
+	fieldsA := map[string]interface{}{
+		"profession":        "Plumber",
+		"city":              "Madrid",
+		"service_radius_km": 50,
+		"latitude":          nearbyLatA,
+		"longitude":         nearbyLngA,
+	}
+	err := repo.UpsertWorkerProfile(ctx, "user-radius-a", fieldsA)
+	require.NoError(t, err)
+
+	// Worker B: close to Madrid, tiny radius (does NOT cover the search origin)
+	nearbyLatB := 40.4180
+	nearbyLngB := -3.7050
+	fieldsB := map[string]interface{}{
+		"profession":        "Plumber",
+		"city":              "Madrid",
+		"service_radius_km": 1, // 1 km — search origin is ~0.3 km away, OK
+		"latitude":          nearbyLatB,
+		"longitude":         nearbyLngB,
+	}
+	err = repo.UpsertWorkerProfile(ctx, "user-radius-b", fieldsB)
+	require.NoError(t, err)
+
+	// Worker C: far from Madrid (Barcelona), small radius
+	farLat := 41.3874
+	farLng := 2.1686
+	fieldsC := map[string]interface{}{
+		"profession":        "Plumber",
+		"city":              "Barcelona",
+		"service_radius_km": 10,
+		"latitude":          farLat,
+		"longitude":         farLng,
+	}
+	err = repo.UpsertWorkerProfile(ctx, "user-radius-c", fieldsC)
+	require.NoError(t, err)
+
+	// Search from Madrid center with GPS coords.
+	lat := madridLat
+	lng := madridLng
+	filters := core.WorkerSearchFilters{
+		Profession: "Plumber",
+		Latitude:   &lat,
+		Longitude:  &lng,
+	}
+
+	result, err := repo.FindWorkers(ctx, filters)
+	require.NoError(t, err)
+
+	// Worker A (large radius) should be included — its radius covers the search origin.
+	// Worker B (1 km radius) should also be included — the search origin is ~0.3 km away.
+	// Worker C (Barcelona, 10 km radius) should be EXCLUDED — ~505 km from Madrid.
+	names := make(map[string]bool)
+	for _, w := range result.Workers {
+		names[w.UserID] = true
+	}
+	assert.True(t, names["user-radius-a"], "F15: worker A (large radius, nearby) must be included")
+	assert.True(t, names["user-radius-b"], "F15: worker B (small radius, within) must be included")
+	assert.False(t, names["user-radius-c"], "F15: worker C (Barcelona, outside radius) must be excluded")
+}
+
+func TestFindWorkersDistanceSortOrder(t *testing.T) {
+	db := NewTestDB(t)
+	migrateTestSchema(t, db)
+	repo := repository.NewGormProfileRepository(db)
+	ctx := context.Background()
+
+	// Create three workers at increasing distances from Madrid center.
+	madridLat := 40.4168
+	madridLng := -3.7038
+
+	// Worker at ~5 km
+	lat1 := 40.4500
+	lng1 := -3.6900
+	fields1 := map[string]interface{}{
+		"profession": "Plumber",
+		"city":       "Madrid",
+		"latitude":   lat1,
+		"longitude":  lng1,
+	}
+	err := repo.UpsertWorkerProfile(ctx, "user-sort-1", fields1)
+	require.NoError(t, err)
+
+	// Worker at ~20 km
+	lat2 := 40.5500
+	lng2 := -3.6000
+	fields2 := map[string]interface{}{
+		"profession": "Plumber",
+		"city":       "Madrid",
+		"latitude":   lat2,
+		"longitude":  lng2,
+	}
+	err = repo.UpsertWorkerProfile(ctx, "user-sort-2", fields2)
+	require.NoError(t, err)
+
+	// Worker at ~50 km
+	lat3 := 40.7000
+	lng3 := -3.4000
+	fields3 := map[string]interface{}{
+		"profession": "Plumber",
+		"city":       "Madrid",
+		"latitude":   lat3,
+		"longitude":  lng3,
+	}
+	err = repo.UpsertWorkerProfile(ctx, "user-sort-3", fields3)
+	require.NoError(t, err)
+
+	// Search from Madrid center.
+	lat := madridLat
+	lng := madridLng
+	filters := core.WorkerSearchFilters{
+		Profession: "Plumber",
+		Latitude:   &lat,
+		Longitude:  &lng,
+	}
+
+	result, err := repo.FindWorkers(ctx, filters)
+	require.NoError(t, err)
+
+	// Verify DistanceKm is populated and sorted nearest-first.
+	require.NotEmpty(t, result.Workers)
+	for _, w := range result.Workers {
+		require.NotNil(t, w.DistanceKm, "F14: DistanceKm must be populated for workers with coords")
+	}
+
+	// Check sort order: distances should be non-decreasing.
+	for i := 1; i < len(result.Workers); i++ {
+		if result.Workers[i].DistanceKm != nil && result.Workers[i-1].DistanceKm != nil {
+			assert.LessOrEqual(t, *result.Workers[i-1].DistanceKm, *result.Workers[i].DistanceKm,
+				"F14: workers must be sorted by distance (nearest first)")
+		}
+	}
+}
+
+func TestFindWorkersMaxDistanceFilter(t *testing.T) {
+	db := NewTestDB(t)
+	migrateTestSchema(t, db)
+	repo := repository.NewGormProfileRepository(db)
+	ctx := context.Background()
+
+	// Create a worker 505 km away (Barcelona from Madrid).
+	fields := map[string]interface{}{
+		"profession": "Plumber",
+		"city":       "Barcelona",
+		"latitude":   41.3874,
+		"longitude":  2.1686,
+	}
+	err := repo.UpsertWorkerProfile(ctx, "user-maxdist", fields)
+	require.NoError(t, err)
+
+	// Search from Madrid with MaxDistanceKm=100 (should NOT find Barcelona worker).
+	lat := 40.4168
+	lng := -3.7038
+	maxDist := 100
+	filters := core.WorkerSearchFilters{
+		Profession:    "Plumber",
+		Latitude:      &lat,
+		Longitude:     &lng,
+		MaxDistanceKm: &maxDist,
+	}
+
+	result, err := repo.FindWorkers(ctx, filters)
+	require.NoError(t, err)
+
+	for _, w := range result.Workers {
+		assert.NotEqual(t, "user-maxdist", w.UserID,
+			"F14: Barcelona worker must be excluded when MaxDistanceKm=100")
+	}
+}

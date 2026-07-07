@@ -171,7 +171,42 @@ func (s *SearchService) Search(
 			"error", embedErr)
 	}
 
-	cacheKey := sha256Hex(string(searchParams))
+	// F1/F16 fix: key on resolved filters (post city-default + GPS
+	// injection), not raw LLM searchParams. This prevents cross-city
+	// and cross-geo cache leaks where two users in different locations
+	// with the same query share a cache entry.
+	type cacheKeyParts struct {
+		Profession    string
+		City          string
+		Latitude      float64
+		Longitude     float64
+		MaxDistanceKm float64
+		Emergency     bool
+		FreeEstimate  bool
+		Insured       bool
+	}
+	var latVal, lngVal, maxDist float64
+	if filters.Latitude != nil {
+		latVal = *filters.Latitude
+	}
+	if filters.Longitude != nil {
+		lngVal = *filters.Longitude
+	}
+	if filters.MaxDistanceKm != nil {
+		maxDist = float64(*filters.MaxDistanceKm)
+	}
+	keyParts := cacheKeyParts{
+		Profession:    filters.Profession,
+		City:          filters.City,
+		Latitude:      latVal,
+		Longitude:     lngVal,
+		MaxDistanceKm: maxDist,
+		Emergency:     filters.EmergencyOnly,
+		FreeEstimate:  filters.FreeEstimateOnly,
+		Insured:       filters.InsuredOnly,
+	}
+	keyBytes, _ := json.Marshal(keyParts)
+	cacheKey := sha256Hex(string(keyBytes))
 	floor, _ := s.currentWorkerFloor(ctx)
 
 	s.searchCacheMu.RLock()

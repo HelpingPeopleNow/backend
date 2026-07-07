@@ -249,18 +249,54 @@ func (r *GormProfileRepository) FindWorkers(ctx context.Context, filters core.Wo
 		}
 	}
 
-	// Compute distance when GPS coordinates are provided — flows to
-	// FindTraderCard.DistanceKm for frontend display.
+	// ── F14/F15 fix: unified distance computation + filtering ──
+	//
+	// For ILIKE results: DistanceKm is already populated by the SQL
+	// Haversine expression (SELECT haversine(...) AS distance_km).
+	// For vector results: DistanceKm is NULL; compute it here.
 	if hasCoords {
 		lat, lng := *filters.Latitude, *filters.Longitude
 		for i := range workers {
-			if workers[i].Latitude != nil && workers[i].Longitude != nil {
+			if workers[i].DistanceKm == nil && workers[i].Latitude != nil && workers[i].Longitude != nil {
 				d := core.HaversineKm(lat, lng, *workers[i].Latitude, *workers[i].Longitude)
 				workers[i].DistanceKm = &d
 			}
 		}
-		// Re-sort by distance (nearest first) — workers from ILIKE/vector
-		// may not be distance-ordered yet.
+	}
+	// F15: honor worker-declared service_radius_km — exclude workers
+	// whose service area does not cover the client's GPS location.
+	// Applied before MaxDistanceKm so both constraints narrow the set.
+	if hasCoords {
+		lat, lng := *filters.Latitude, *filters.Longitude
+		filtered := workers[:0]
+		for _, w := range workers {
+			if w.Latitude != nil && w.Longitude != nil && w.ServiceRadiusKm > 0 {
+				dist := core.HaversineKm(lat, lng, *w.Latitude, *w.Longitude)
+				if dist > float64(w.ServiceRadiusKm) {
+					continue // worker's service area doesn't reach client
+				}
+			}
+			filtered = append(filtered, w)
+		}
+		workers = filtered
+	}
+	// F14: MaxDistanceKm filter — after service_radius_km narrowing.
+	if hasCoords && filters.MaxDistanceKm != nil && *filters.MaxDistanceKm > 0 {
+		maxD := float64(*filters.MaxDistanceKm)
+		filtered := workers[:0]
+		for _, w := range workers {
+			if w.DistanceKm != nil && *w.DistanceKm <= maxD {
+				filtered = append(filtered, w)
+			} else if w.DistanceKm == nil {
+				filtered = append(filtered, w) // keep unknown-distance workers
+			}
+		}
+		workers = filtered
+	}
+	// F14: sort by distance (nearest first) — vector branch needs this;
+	// ILIKE branch already ordered by distance_km in SQL but we re-sort
+	// to handle workers with nil coords at the tail.
+	if hasCoords {
 		sort.Slice(workers, func(i, j int) bool {
 			if workers[i].DistanceKm == nil {
 				return false
@@ -270,19 +306,6 @@ func (r *GormProfileRepository) FindWorkers(ctx context.Context, filters core.Wo
 			}
 			return *workers[i].DistanceKm < *workers[j].DistanceKm
 		})
-		// Apply MaxDistanceKm filter post-computation.
-		if filters.MaxDistanceKm != nil && *filters.MaxDistanceKm > 0 {
-			maxD := float64(*filters.MaxDistanceKm)
-			filtered := workers[:0]
-			for _, w := range workers {
-				if w.DistanceKm != nil && *w.DistanceKm <= maxD {
-					filtered = append(filtered, w)
-				} else if w.DistanceKm == nil {
-					filtered = append(filtered, w) // keep unknown-distance workers
-				}
-			}
-			workers = filtered
-		}
 	}
 
 	return ports.FindResult{Workers: workers, Branch: branch, TopScore: topScore}, nil
@@ -313,8 +336,10 @@ func (r *GormProfileRepository) findWorkersILIKE(ctx context.Context, filters co
 	}
 
 	if hasCoords {
-		// Haversine distance expression — computes km from the search origin.
-		// Used for both filtering (MaxDistanceKm) and ordering (nearest first).
+		// F14 fix: Haversine distance computed in SQL and used for ordering.
+		// MaxDistanceKm filter is NOT pushed to SQL here — workers without
+		// coords must still be included in results. Filtering happens in
+		// FindWorkers after both branches (ILIKE/vector) return.
 		haversineExpr := `
 			(6371 * acos(
 				cos(radians(?)) * cos(radians(latitude)) *
@@ -323,9 +348,6 @@ func (r *GormProfileRepository) findWorkersILIKE(ctx context.Context, filters co
 			))`
 		lat, lng := *filters.Latitude, *filters.Longitude
 		query = query.Select("*, "+haversineExpr+" AS distance_km", lat, lng, lat)
-		if filters.MaxDistanceKm != nil && *filters.MaxDistanceKm > 0 {
-			query = query.Where(haversineExpr+" <= ?", lat, lng, lat, float64(*filters.MaxDistanceKm))
-		}
 		query = query.Order("distance_km ASC")
 	} else if filters.City != "" {
 		query = query.Order(gormpkg.Expr("CASE WHEN LOWER(city) = LOWER(?) THEN 0 ELSE 1 END, created_at DESC", filters.City))
