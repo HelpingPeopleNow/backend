@@ -109,10 +109,10 @@ Risk Priority Number (RPN) = Severity × Likelihood × Detectability, each 1–5
 
 ### P1 — Next sprint (cost, cascading failure, info disclosure)
 
-- **P1-1 — Cap request body + rate-limit chat/search.** `http.MaxBytesReader` on chat body; reject `len(message) > 8000`; add a per-user token bucket to the chat handler (reuse `ratelimit.RateLimiter`). *(`chat_handler.go`, `main.go`)*
+- [SHIPPED] **P1-1 — Cap request body + rate-limit chat/search.** `http.MaxBytesReader` on chat body; reject `len(message) > 8000`; add a per-user token bucket to the chat handler (reuse `ratelimit.RateLimiter`). *(`chat_handler.go`, `main.go`)*
 - **P1-2 — Make the gRPC client fail fast.** Replace `grpc.DialContext(..., WithBlock())` (deprecated, blocks under mutex) with lazy `grpc.NewClient` + keepalive params; never hold `s.mu` across a network dial. *(`internal/adapters/llm/grpc_client.go`)*
 - **P1-3 — Stop leaking internal errors.** `/health` must not return `err.Error()` to unauthenticated callers; log details, return generic status. Same for admin/LLM 5xx bodies. *(`health_handler.go`, `response.go`, `admin_table.go`)*
-- **P1-4 — Bound the search cache.** Add size cap + opportunistic expiry eviction to `searchCache` (currently grows with distinct queries forever). *(`internal/services/search_service.go`)*
+- [SHIPPED] **P1-4 — Bound the search cache.** Add size cap + opportunistic expiry eviction to `searchCache` (currently grows with distinct queries forever). *(`internal/services/search_service.go`)*
 - **P1-5 — Per-user SSE connection cap.** Reject/replace beyond N (e.g. 5) concurrent streams per user to bound fd/goroutine/memory. *(`internal/adapters/realtime/sse_broker.go` + handler)*
 
 ### P2 — Hardening / defense-in-depth

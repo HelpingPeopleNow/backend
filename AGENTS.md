@@ -33,6 +33,20 @@ A second workflow `.github/workflows/vector-parity.yml` runs `helper/scripts/tes
 - **Reembed kill switch** — `IntakeService.SetReembedEnabled(bool)` toggles re-embedding at runtime. When disabled, `ReembedWorker` and `scheduleReembed` short-circuit immediately. Controlled via `POST /api/v1/admin/reembed` (admin-protected, `ReembedToggleHandler`). Env `REEMBED_ENABLED` sets the default at startup. The toggle and metrics live in `internal/metrics/` (not `handler/` or `services/`) to avoid a handler↔services import cycle.
 - **`internal/metrics/` package** — Standalone Prometheus helpers (gauge, counter, render) used by both `services/intake_service.go` and `adapters/handler/metrics_handler.go`. Houses reembed metrics: `reembed_enabled` (gauge), `reembed_skipped_total{reason}`, `reembed_completed_total`. The handler's `metricsHandler` appends `metrics.Render()` to the `/metrics` output.
 
+### Search hardening (audit F1–F16)
+
+- **Search rate limiting** — ChatHandler accepts a `SearchRateLimiter` (token-bucket, 10 req/min/user). Excess returns 429 with `retry_after` header (F1).
+- **Independent helper timeouts** — `HELPER_LLM_TIMEOUT` (default 20s) for Pass-1/Pass-2, `HELPER_EMBED_TIMEOUT` (default 8s) for Embed. Separate from the general `HELPER_TIMEOUT_SECONDS` dial timeout (F2).
+- **Circuit breaker on helper gRPC** — After 5 consecutive failures, state → `open` (returns error immediately). After 30s cooldown → `half-open` (allows one probe). Emits `helper_breaker_state` gauge (F3).
+- **Search input cap** — Messages over 2KB are truncated before Pass-1/Embed (F10).
+- **Embed failure branch** — If Embed fails, `filters.EmbedFailed` is set to true. FindWorkers returns `branch='ilike_embed_failed'` instead of silently falling back. Increments `embed_failures_total` counter.
+- **Search cache bounds** — Max 200 entries (`maxSearchCacheEntries`). Lazy eviction removes oldest entry when full.
+- **Pre-key cache layer** — Before Pass-1/Embed, a sha256 hash of `(message+city)` is checked against cache. Identical repeat queries skip both LLM calls entirely.
+- **VECTOR_SEARCH_MIN_TOP_SCORE** — Now wired at runtime. If vector top score falls below this threshold, falls back to ILIKE with `branch='ilike_low_top_score'`.
+- **hnsw.ef_search** — Set to 64 at migration time (default was 40). Tune up when corpus exceeds ~1k vectors.
+- **Templated 0-result message** — When FindWorkers returns 0 workers, Pass-2 is skipped entirely and a templated 'no workers found' message is returned in the user's language.
+- **Profession normalizer parity** — Both `normalizeProfession` (services) and `normalizeProfessionForEmbedding` (core) return identical canonical English values. `carpintero→Carpenter`, `pintura→painter`, etc. Parity test covers all known keys.
+
 ## Handlers
 
 | Handler | Path | Methods | Purpose |
@@ -66,7 +80,7 @@ Two-table schema: `direct_conversations` (unique per client+worker pair) + `dire
 - **pgvector extension** auto-installed by `database.Connect()` on startup. HNSW index `idx_worker_embeddings_hnsw` (m=16, ef_construction=64) auto-created with cosine distance.
 - **`worker_embeddings` table** is `core.WorkerEmbedding` (composite PK `user_id`+`field_name`, `embedding vector(768)`, `model`, `text_hash` SHA-256 hex, `timestamptz updated_at`).
 - **`Embed`/`EmbedBatch` gRPC** is the same one helper exposes (`internal/adapters/llm/grpc_client.go::GRPCLLMService.Embed`).
-- **Tunables** in env: `VECTOR_SEARCH_ENABLED` (kill switch, default `true`), `VECTOR_SEARCH_MIN_SCORE` (per-row gate, default `0.3`). `VECTOR_SEARCH_MIN_TOP_SCORE` is defined (default `0.5`) but **not yet wired at runtime** — the top-score gate was deferred from V1 because the existing per-row `VECTOR_SEARCH_MIN_SCORE` gate + ILIKE fallback on zero results already handle low-quality queries at current scale. Wire it when workers exceed ~1,000 and vague queries start returning 50 low-score results instead of falling back to ILIKE. (VECTOR_SEARCH_PLAN §N1, fourth-pass review Pitfall #4).
+- **Tunables** in env: `VECTOR_SEARCH_ENABLED` (kill switch, default `true`), `VECTOR_SEARCH_MIN_SCORE` (per-row gate, default `0.3`). `VECTOR_SEARCH_MIN_TOP_SCORE` is **wired** (default `0.5`). If the vector top-score falls below this threshold, `FindWorkers` falls back to ILIKE with `branch='ilike_low_top_score'` (F7).
 - **Branch selection** — `ProfileRepository.FindWorkers` returns `FindResult{Branch, Workers, TopScore}` where `Branch` is `"vector"` / `"ilike"` / `"ilike_disabled_via_env"` / `"ilike_fallback"`. Selection is post-fact (in the repo), not pre-fact (in the service), so the slog branch reflects what actually ran.
 - **Metrics** — `vector_search_total{branch=...}` counter and `vector_score` histogram (wired in `internal/adapters/handler/metrics_handler.go` and incremented from `ChatHandler`).
 - **Re-backfill** on schema change or after first enable: `docker exec helpingpeoplenow-helper env DB_HOST=helpingpeoplenow-postgres DB_USER=postgres DB_PASSWORD=postgres DB_NAME=helpingpeoplenow HELPER_GRPC_ADDR=localhost:50051 python3 /app/scripts/backfill_embeddings.py` (idempotent — skips rows whose `text_hash` matches existing).
@@ -103,4 +117,4 @@ GPS coordinates enable proximity-based worker search. Clients and workers can op
 
 Required at startup: `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `AUTH_SERVICE_URL`, `HELPER_GRPC_ADDR`, `HELPER_HEALTH_URL`.
 
-Optional: `PORT` (default `8081`), `HELPER_TIMEOUT_SECONDS` (default `60`, but docker-compose sets `600`), `DATABASE_URL` or `DB_HOST/PORT/USER/PASSWORD/NAME/SSLMODE`, `VECTOR_SEARCH_ENABLED` (default `true`), `VECTOR_SEARCH_MIN_SCORE` (default `0.3`). Note: `VECTOR_SEARCH_MIN_TOP_SCORE` is defined but not wired (see Vector search section).
+Optional: `PORT` (default `8081`), `HELPER_TIMEOUT_SECONDS` (default `60`, but docker-compose sets `600`), `HELPER_LLM_TIMEOUT` (default `20s`), `HELPER_EMBED_TIMEOUT` (default `8s`), `DATABASE_URL` or `DB_HOST/PORT/USER/PASSWORD/NAME/SSLMODE`, `VECTOR_SEARCH_ENABLED` (default `true`), `VECTOR_SEARCH_MIN_SCORE` (default `0.3`), `VECTOR_SEARCH_MIN_TOP_SCORE` (default `0.5`, wired — see Vector search section).
