@@ -33,6 +33,20 @@ A second workflow `.github/workflows/vector-parity.yml` runs `helper/scripts/tes
 - **Reembed kill switch** — `IntakeService.SetReembedEnabled(bool)` toggles re-embedding at runtime. When disabled, `ReembedWorker` and `scheduleReembed` short-circuit immediately. Controlled via `POST /api/v1/admin/reembed` (admin-protected, `ReembedToggleHandler`). Env `REEMBED_ENABLED` sets the default at startup. The toggle and metrics live in `internal/metrics/` (not `handler/` or `services/`) to avoid a handler↔services import cycle.
 - **`internal/metrics/` package** — Standalone Prometheus helpers (gauge, counter, render) used by both `services/intake_service.go` and `adapters/handler/metrics_handler.go`. Houses reembed metrics: `reembed_enabled` (gauge), `reembed_skipped_total{reason}`, `reembed_completed_total`. The handler's `metricsHandler` appends `metrics.Render()` to the `/metrics` output.
 
+### Readiness / shutdown (SPOF Phase 1–3 — see `infra/docs/FOLLOW_UP_SPOF.md`)
+
+The single-replica SPOF was remediated in three commits; each one ships a primitive the next consumes:
+
+- **`/readyz` endpoint (`internal/adapters/handler/readyz_handler.go`)** — `NewReadyzHandler(ReadyFlag())` returns 200 once `MarkReady()` flips the singleton `*atomic.Bool`, 503 while it's false. The handler is mounted in `buildMux` alongside `/health` (full readiness incl. helper) and `/livez` (process-only liveness for the container healthcheck). The three endpoints are **deliberately distinct**: `/health` is for dashboards (200/503 with details), `/livez` is for the docker healthcheck (container liveness, helper-degradation-immune), `/readyz` is solely the Traefik LB health-check target.
+- **`handler.ReadyFlag()`** is a package-level `*atomic.Bool` singleton (constructed lazily on first call). It's the **single source of truth** — `MarkReady()` and `MarkUnready()` are the only two ways it flips, with **explicitly distinct names** so a future caller can't pass a generic `bool` and accidentally flip the wrong way (the original audit-pass dual-semantics bug). Companion test: `TestReadyzFlipsBothWays` round-trips MarkReady → MarkUnready → MarkReady and asserts the `{ready:true|false}` JSON envelope + 200/503 status on every step.
+- **`main.go` `runShutdownSequence(ctx, startShutdown, cancelRoot, drainWait)`** — the SIGTERM/SIGINT handler body, extracted from the inline goroutine in `main()` so the regression test injects a `startShutdown func(ctx) error` recorder and asserts event order without a real `*http.Server` or a wall-clock 14s sleep in CI. Ordering invariant pinned by `TestShutdownSequenceDrainPhase`:
+  1. `cancelRoot()` — stop the staleness sweeper, parallelize its 65s bounded drain with the LB drain window (the SWEEPER runs IN PARALLEL with the LB drain, not before or after).
+  2. `handler.MarkUnready()` — flip `ReadyFlag()` to false → next Traefik LB health-check tick sees 5xx and drains.
+  3. `time.Sleep(drainWait)` — covers worst-case Traefik detection latency (10s interval + 3s timeout + 1s slack).
+  4. `server.Shutdown(30s)` — TCP listener close + wait for in-flight handlers.
+- **`shutdownDrainDur()`** reads the `SHUTDOWN_DRAIN_WAIT` env var (Go `time.ParseDuration` syntax, e.g. `14s`, `0s` for snappy local-dev rebuilds, invalid/negative falls back to 14s with a `slog.Warn`). The OPERATIONAL NOTE block in the helper warns: Docker's default `stop_grace_period` and Kubernetes' default `terminationGracePeriodSeconds` are **both below 14s** — `infra/{,docker-compose-dev.}yaml` backend service pins `stop_grace_period: 120s` (15s drain + 30s Shutdown + 65s sweeper + slack) so SIGKILL doesn't preempt the drain.
+- **`SHUTDOWN_DRAIN_WAIT`** is a NEW env var (added in `37d28f7`); defaults to `14s` if unset.
+
 ### Search hardening (audit F1–F16)
 
 - **Search rate limiting** — ChatHandler accepts a `SearchRateLimiter` (token-bucket, 10 req/min/user). Excess returns 429 with `retry_after` header (F1).
@@ -51,7 +65,9 @@ A second workflow `.github/workflows/vector-parity.yml` runs `helper/scripts/tes
 
 | Handler | Path | Methods | Purpose |
 |---------|------|---------|---------|
-| `HealthHandler` | `/health` | GET | Composite PG + helper gRPC health (no auth) |
+| `HealthHandler` | `/health` | GET | Composite PG + helper gRPC health (no auth) — used for dashboards / alerting; deliberately NOT used for the docker container healthcheck |
+| `HealthHandler` (Livez method) | `/livez` | GET | Process + PG liveness only — the docker container healthcheck target. The handler type is the same `*HealthHandler` as `/health`; the `/livez` route invokes the `Livez` method (helper-ignoring liveness) so a helper outage doesn't cascade to a full API outage. |
+| `ReadyzHandler` | `/readyz` | GET | Singleton `*atomic.Bool`-backed readiness (no auth) — flipped by `MarkReady()` once `main.buildMux` returns; flipped back by `MarkUnready()` from `main.runShutdownSequence` on SIGTERM. **Used by the Traefik LB health-check** (10s interval, 3s timeout) so a 503 drains the replica from the routing pool. See the Readiness / shutdown section below + `infra/docs/FOLLOW_UP_SPOF.md`. |
 | `MetricsHandler` | `/metrics` | GET | Homegrown Prometheus text |
 | `ChatHandler` | `/api/v1/chat` | POST | Unified chat endpoint (mode in body: worker_intake, client_intake, search) |
 | `WorkerHandler` | `/api/v1/worker/profile` | GET, DELETE | Worker profile read/reset |
@@ -110,11 +126,12 @@ GPS coordinates enable proximity-based worker search. Clients and workers can op
 - `user.role` column exists in DB but is no longer written by the backend.
 - `chatRequest` struct includes `Lang` string — `IntakeService.applyLanguage` (and `SearchService`) append a Spanish/English instruction to the system prompt based on the value.
 - `ApplyLanguage` runs in both passes of search: filter-fill (`FindTraderSearchPrompt`) AND results-presentation (`FindTraderPresentationPrompt`).
-- **Shutdown drain**: `main.go` registers the staleness sweeper on a `sync.WaitGroup` and drains it for up to 65s on SIGTERM (slightly above the 60s per-worker `ReembedWorker` deadline).
+- **Shutdown drain**: `main.go` registers the staleness sweeper on a `sync.WaitGroup` and drains it for up to 65s on SIGTERM (slightly above the 60s per-worker `ReembedWorker` deadline). On SIGTERM the inline signal goroutine now delegates to `runShutdownSequence(ctx, startShutdown, cancelRoot, drainWait)` (extracted for testability) which fires `cancelRoot()` → `MarkUnready()` → `time.Sleep(SHUTDOWN_DRAIN_WAIT)` (default 14s) → `server.Shutdown(30s)` in that order, so a Traefik LB health-check tick (10s interval, 3s timeout — see Phase 2 in `infra/docs/FOLLOW_UP_SPOF.md`) drains the replica before the accept listener closes.
+- **Readyz is wired**, `MarkUnready()` is the only flip back, `/readyz` is the Traefik LB health-check target (NOT `/livez` and NOT `/health`). See the readiness / shutdown section above for the full invariant.
 - **Helper version drift**: backend `HelmClient` doesn't pin a proto version, but helper's `proto/helper.proto` is the canonical source of truth.
 
 ## Env vars
 
 Required at startup: `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `AUTH_SERVICE_URL`, `HELPER_GRPC_ADDR`, `HELPER_HEALTH_URL`.
 
-Optional: `PORT` (default `8081`), `HELPER_TIMEOUT_SECONDS` (default `60`, but docker-compose sets `600`), `HELPER_LLM_TIMEOUT` (default `20s`), `HELPER_EMBED_TIMEOUT` (default `8s`), `DATABASE_URL` or `DB_HOST/PORT/USER/PASSWORD/NAME/SSLMODE`, `VECTOR_SEARCH_ENABLED` (default `true`), `VECTOR_SEARCH_MIN_SCORE` (default `0.3`), `VECTOR_SEARCH_MIN_TOP_SCORE` (default `0.5`, wired — see Vector search section).
+Optional: `PORT` (default `8081`), `HELPER_TIMEOUT_SECONDS` (default `60`, but docker-compose sets `600`), `HELPER_LLM_TIMEOUT` (default `20s`), `HELPER_EMBED_TIMEOUT` (default `8s`), `DATABASE_URL` or `DB_HOST/PORT/USER/PASSWORD/NAME/SSLMODE`, `VECTOR_SEARCH_ENABLED` (default `true`), `VECTOR_SEARCH_MIN_SCORE` (default `0.3`), `VECTOR_SEARCH_MIN_TOP_SCORE` (default `0.5`, wired — see Vector search section), `SHUTDOWN_DRAIN_WAIT` (default `14s`; Go duration format; `0s` allowed for snappy local-dev rebuilds; README/AGENTS for bigger values when Traefik config uses longer LB health-check intervals).
