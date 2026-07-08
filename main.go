@@ -318,22 +318,23 @@ func main() {
 	// chain calls inside the same ctx with the ID bound.
 	server := newServer(":"+port, middleware.RequestID(middleware.Logging(mux)))
 
-	// Signal handler — SIGTERM/SIGINT triggers a coordinated shutdown.
-	// cancelRoot() runs FIRST so the sweeper's inner pendingWG.Wait()
-	// (which can hold for up to 60s waiting on an in-flight ReembedWorker)
-	// starts draining in parallel with HTTP Shutdown. listen goroutine
-	// unblocks as soon as Shutdown starts.
+	// Signal handler — SIGTERM/SIGINT triggers the coordinated
+	// shutdown sequence (see runShutdownSequence below + the Phase 3
+	// entry in infra/docs/FOLLOW_UP_SPOF.md). The body is extracted
+	// to a package-level function so it can be unit-tested with an
+	// injected startShutdown recorder and a 50ms drainWait (no need
+	// for real wall-clock 14s sleep in CI).
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		sig := <-sigChan
 		slog.Info("shutdown signal received", "signal", sig.String())
-		cancelRoot() // signal sweeper FIRST so its drain can race with HTTP Shutdown
-		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancelShutdown()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			slog.Error("server shutdown error", "error", err)
-		}
+		runShutdownSequence(
+			context.Background(),
+			server.Shutdown,
+			cancelRoot,
+			shutdownDrainDur(),
+		)
 	}()
 
 	slog.Info("listening", "addr", ":"+port)
@@ -385,4 +386,93 @@ func newServer(addr string, handler http.Handler) *http.Server {
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
+}
+
+// shutdownDrainDur reads the SHUTDOWN_DRAIN_WAIT env var (Go duration
+// format, e.g. "14s") and returns the parsed duration, or 14s default
+// if unset / unparseable / negative.
+//
+// 14s matches the Phase 2 Traefik LB health-check worst-case ceiling:
+// 10s interval + 3s timeout + 1s slack. Operators can override via
+// env if their Traefik setup uses longer intervals, or drop it to
+// 0s in local dev for snappy rebuilds (mirrors the
+// maxSSEStreamDuration() pattern from direct_messaging_handler.go).
+//
+// OPERATIONAL NOTE: Docker's default stop_grace_period is 10s and
+// Kubernetes' default terminationGracePeriodSeconds is 30s — BOTH
+// below the 14s drain. The infra/docker-compose.yml backend service
+// MUST stay at stop_grace_period: 120s (15s drain + 30s Shutdown +
+// 65s sweeper + slack) so SIGKILL doesn't preempt the drain.
+func shutdownDrainDur() time.Duration {
+	const defaultDur = 14 * time.Second
+	raw := os.Getenv("SHUTDOWN_DRAIN_WAIT")
+	if raw == "" {
+		return defaultDur
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		return defaultDur
+	}
+	return d
+}
+
+// runShutdownSequence is the SIGTERM/SIGINT shutdown body, extracted
+// as a package-level function for testability. main()'s signal
+// goroutine delegates to it (sees above).
+//
+// Sequence (Phase 3 of the SPOF remediation — see
+// infra/docs/FOLLOW_UP_SPOF.md):
+//
+//  1. cancelRoot() — stop the staleness sweeper and start its 60s
+//     drain. Firing it BEFORE the LB drain parallelises the two waits
+//     so total shutdown is shorter than 14s + 30s + 65s serialised.
+//
+//  2. handler.MarkUnready() — flip /readyz to 503. Phase 2 Traefik LB
+//     health-check (10s interval, 3s timeout) sees the 5xx on the
+//     next tick and removes this replica from the routing pool. New
+//     requests route to siblings in multi-replica, or get a 502 in
+//     single-replica (acceptable during drain).
+//
+//  3. Sleep drainWait — covers the worst-case Traefik detection
+//     latency. Without this, startShutdown would tear down accept
+//     listeners in-flight, dropping the existing requests that
+//     Traefik hasn't yet (visibly) aborted.
+//
+//  4. startShutdown(ctx) — TCP-level listener close + wait for
+//     in-flight handlers to return (30s budget).
+//
+// startShutdown is injected as a function so the regression test can
+// substitute a recorder and assert the event order with a tiny
+// drainWait (~50ms in CI).
+func runShutdownSequence(
+	ctx context.Context,
+	startShutdown func(ctx context.Context) error,
+	cancelRoot func(),
+	drainWait time.Duration,
+) {
+	slog.Info("shutdown sequence: starting")
+
+	if cancelRoot != nil {
+		cancelRoot()
+		slog.Info("shutdown sequence: signaled staleness sweeper to drain")
+	}
+
+	handler.MarkUnready()
+	slog.Info("shutdown sequence: /readyz flipped to 503; awaiting Traefik LB health-check to drain",
+		"drain_wait", drainWait)
+
+	// Plain time.Sleep is intentional — the drain window is bounded by
+	// the orchestrator's SIGKILL grace (Docker stop_grace_period /
+	// Kubernetes terminationGracePeriodSeconds, both set to >=120s for
+	// the backend), not by ctx cancellation. Wiring ctx.Done() here
+	// would only shorten failsafe margins without any benefit.
+	time.Sleep(drainWait)
+	slog.Info("shutdown sequence: LB drain window elapsed")
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelShutdown()
+	if err := startShutdown(shutdownCtx); err != nil {
+		slog.Error("shutdown sequence: HTTP shutdown error", "error", err)
+	}
+	slog.Info("shutdown sequence: HTTP shutdown complete")
 }
