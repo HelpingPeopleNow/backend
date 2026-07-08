@@ -84,18 +84,18 @@ flowchart TB
 
 Risk Priority Number (RPN) = Severity × Likelihood × Detectability, each 1–5 (higher = worse).
 
-| # | Failure mode | Cause | Effect | Sev | Lik | Det | RPN | Fix |
-|---|---|---|---|---|---|---|---|---|
-| F1 | Listener exhaustion | No server timeouts; Slowloris/idle conns | Full outage, unauth | 5 | 4 | 4 | **80** | P0-2 |
-| F2 | Postgres conn exhaustion | Unbounded pool + slow LLM holding requests | Full outage | 5 | 4 | 3 | **60** | P0-3 |
-| F3 | Credential/data theft | CORS reflect-any-origin + credentials | Account/data compromise | 5 | 3 | 4 | **60** | P0-1 |
-| F4 | LLM cost blowout | No size cap / rate limit on chat+search | Runaway spend, OOM | 4 | 4 | 3 | **48** | P1-1 |
-| F5 | Cascading latency on helper degrade | Blocking gRPC dial under mutex | Every request stalls ≤5 s | 4 | 3 | 3 | **36** | P1-2 |
-| F6 | Memory growth → OOM | Unbounded search cache + SSE conns | Slow OOM crash | 3 | 3 | 3 | **27** | P1-4, P2-1 |
-| F7 | Info disclosure | `/health` & error bodies leak internal errors | Recon aid | 3 | 4 | 2 | **24** | P1-3 |
-| F8 | Auth bypass (theoretical) | DB-fallback skips cookie HMAC verification | Session forgery if token leaks | 4 | 1 | 4 | **16** | P2-3 |
-| F9 | Metrics scrape leak | `/metrics` unauthenticated | Recon (paths, volumes) | 2 | 3 | 2 | **12** | P2-2 |
-| F10 | Migration lock on boot | HNSW/ALTER not `CONCURRENTLY` | Slow cold start at scale | 2 | 2 | 3 | **12** | P3 |
+| # | Failure mode | Cause | Effect | Sev | Lik | Det | RPN | Fix | Fix Status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| F1 | Listener exhaustion | No server timeouts; Slowloris/idle conns | Full outage, unauth | 5 | 4 | 4 | **80** | P0-2 | **NOT FIXED** — `main.go:232-235` no `ReadHeaderTimeout`, `ReadTimeout`, `IdleTimeout` |
+| F2 | Postgres conn exhaustion | Unbounded pool + slow LLM holding requests | Full outage | 5 | 4 | 3 | **60** | P0-3 | **FIXED** — `postgres.go:48-53` pool bounds set |
+| F3 | Credential/data theft | CORS reflect-any-origin + credentials | Account/data compromise | 5 | 3 | 4 | **60** | P0-1 | **FIXED** — `cors.go:39-61` `ALLOWED_ORIGINS` env allow-list (commit `1b79d29`) |
+| F4 | LLM cost blowout | No size cap / rate limit on chat+search | Runaway spend, OOM | 4 | 4 | 3 | **48** | P1-1 | **PARTIALLY FIXED** — search rate limit + 2KB search cap exist; no general `MaxBytesReader` body cap, no intake rate limit |
+| F5 | Cascading latency on helper degrade | Blocking gRPC dial under mutex | Every request stalls ≤5 s | 4 | 3 | 3 | **36** | P1-2 | **NOT FIXED** — `grpc_client.go:138-141` still `DialContext`+`WithBlock` under mutex (circuit breaker added though) |
+| F6 | Memory growth → OOM | Unbounded search cache + SSE conns | Slow OOM crash | 3 | 3 | 3 | **27** | P1-4, P2-1 | **PARTIALLY FIXED** — search cache bounded to 200 entries; SSE connections still unlimited |
+| F7 | Info disclosure | `/health` & error bodies leak internal errors | Recon aid | 3 | 4 | 2 | **24** | P1-3 | **NOT FIXED** — `health_handler.go:47,51,57` `err.Error()` leaked in Details |
+| F8 | Auth bypass (theoretical) | DB-fallback skips cookie HMAC verification | Session forgery if token leaks | 4 | 1 | 4 | **16** | P2-3 | **NOT FIXED** — no HMAC signature validation in DB-fallback auth |
+| F9 | Metrics scrape leak | `/metrics` unauthenticated | Recon (paths, volumes) | 2 | 3 | 2 | **12** | P2-2 | **NOT FIXED** — `/metrics` exposed without auth |
+| F10 | Migration lock on boot | HNSW/ALTER not `CONCURRENTLY` | Slow cold start at scale | 2 | 2 | 3 | **12** | P3 | **NOT FIXED** — guarded by `IF NOT EXISTS` but not `CONCURRENTLY` |
 
 ---
 
@@ -103,17 +103,17 @@ Risk Priority Number (RPN) = Severity × Likelihood × Detectability, each 1–5
 
 ### P0 — Do before next traffic increase (outage / data-exfil)
 
-- **P0-1 — Lock down CORS to an allow-list.** Replace origin reflection with an env-driven allow-list (`ALLOWED_ORIGINS`). Only echo `Access-Control-Allow-Origin` + `Allow-Credentials` for matched origins. *(`internal/adapters/middleware/cors.go`)*
-- **P0-2 — Add `http.Server` timeouts.** Set `ReadHeaderTimeout`, `ReadTimeout`, `IdleTimeout`. **Do not** set `WriteTimeout` (would kill SSE); rely on SSE's own context. *(`main.go`)*
-- **P0-3 — Bound the DB connection pool.** `SetMaxOpenConns`, `SetMaxIdleConns`, `SetConnMaxLifetime`, `SetConnMaxIdleTime` right after `gorm.Open`. *(`database/postgres.go`)*
+- **[FIXED] P0-1 — Lock down CORS to an allow-list.** `cors.go:39-61` now uses `ALLOWED_ORIGINS` env-driven allow-list (commit `1b79d29`).
+- **P0-2 — Add `http.Server` timeouts.** **NOT FIXED** — `main.go:232-235` still has no `ReadHeaderTimeout`, `ReadTimeout`, or `IdleTimeout`. Only `Addr` and `Handler` are set.
+- **[FIXED] P0-3 — Bound the DB connection pool.** `postgres.go:48-53` now calls `SetMaxOpenConns(20)`, `SetMaxIdleConns(5)`, `SetConnMaxLifetime`, `SetConnMaxIdleTime`.
 
 ### P1 — Next sprint (cost, cascading failure, info disclosure)
 
-- [SHIPPED] **P1-1 — Cap request body + rate-limit chat/search.** `http.MaxBytesReader` on chat body; reject `len(message) > 8000`; add a per-user token bucket to the chat handler (reuse `ratelimit.RateLimiter`). *(`chat_handler.go`, `main.go`)*
-- **P1-2 — Make the gRPC client fail fast.** Replace `grpc.DialContext(..., WithBlock())` (deprecated, blocks under mutex) with lazy `grpc.NewClient` + keepalive params; never hold `s.mu` across a network dial. *(`internal/adapters/llm/grpc_client.go`)*
-- **P1-3 — Stop leaking internal errors.** `/health` must not return `err.Error()` to unauthenticated callers; log details, return generic status. Same for admin/LLM 5xx bodies. *(`health_handler.go`, `response.go`, `admin_table.go`)*
-- [SHIPPED] **P1-4 — Bound the search cache.** Add size cap + opportunistic expiry eviction to `searchCache` (currently grows with distinct queries forever). *(`internal/services/search_service.go`)*
-- **P1-5 — Per-user SSE connection cap.** Reject/replace beyond N (e.g. 5) concurrent streams per user to bound fd/goroutine/memory. *(`internal/adapters/realtime/sse_broker.go` + handler)*
+- **[PARTIALLY FIXED] P1-1 — Cap request body + rate-limit chat/search.** `chat_handler.go:124-131` — search rate limit (10/min/user) exists and search input is truncated at 2KB. However, no `http.MaxBytesReader` body cap and no intake mode rate limiting were added.
+- **P1-2 — Make the gRPC client fail fast.** **NOT FIXED** — `grpc_client.go:138-141` still uses deprecated `grpc.DialContext` + `WithBlock()` under mutex. Circuit breaker and independent timeouts were added as improvements though.
+- **P1-3 — Stop leaking internal errors.** **NOT FIXED** — `health_handler.go:47,51,57` still leaks `err.Error()` into response `Details` map.
+- **[FIXED] P1-4 — Bound the search cache.** `search_service.go:52` — `maxSearchCacheEntries=200` with lazy eviction.
+- **P1-5 — Per-user SSE connection cap.** **NOT FIXED** — `sse_broker.go:25-30` `Subscribe()` appends channels without any per-user cap.
 
 ### P2 — Hardening / defense-in-depth
 
