@@ -3,9 +3,11 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -13,6 +15,39 @@ import (
 	"github.com/HelpingPeopleNow/backend/internal/contextkeys"
 	"github.com/HelpingPeopleNow/backend/internal/core"
 	"github.com/HelpingPeopleNow/backend/internal/ports"
+)
+
+// maxSSEStreamDuration caps how long a single SSE /stream connection can
+// stay open (P2-6 audit). Without this, an abandoned stream (browser
+// tab navigation, mobile app backgrounded indefinitely) would keep its
+// chan open and a broker subscription forever.
+//
+// Default: 15 minutes — far longer than any legitimate user session,
+// short enough that abandoned streams get reaped in well under
+// maxSSESubsPerUser cap pressure. Override via SSE_MAX_STREAM_DURATION
+// env (Go duration format, e.g. "30m", "1h").
+func maxSSEStreamDuration() time.Duration {
+	if v := os.Getenv("SSE_MAX_STREAM_DURATION"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		slog.Warn("sse: invalid SSE_MAX_STREAM_DURATION, falling back to default", "value", v)
+	}
+	return 15 * time.Minute
+}
+
+// maxReportBodyBytes caps the report endpoint body so a 100 MB body
+// can't OOM the process. Reports are tiny in practice — capping at 8 KiB
+// is 64× generous while still terminating the connection early.
+// (P2-5 audit.) Other DM endpoints share this same conservative cap.
+const maxReportBodyBytes = 8 << 10
+
+// minReasonLength / maxReasonLength bound report reason strings.
+// (P2-5 audit.) Empty reasons defeat the moderation workflow; >1000
+// characters is abuse.
+const (
+	minReasonLength = 1
+	maxReasonLength = 1000
 )
 
 // DirectMessagingHandler handles all direct-messaging REST + SSE endpoints.
@@ -249,7 +284,11 @@ func (h *DirectMessagingHandler) sendMessage(
 	var req struct {
 		Body string `json:"body"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// P2-4 (audit): reject unknown JSON fields so a probe payload can't
+	// poke unknown struct fields past a permissive decoder.
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -434,6 +473,12 @@ func (h *DirectMessagingHandler) block(
 }
 
 // POST /api/v1/direct-messages/{convID}/report
+//
+// P2-5 audit fixes:
+//   - Cap body size at 8 KiB (http.MaxBytesReader → 413 on overflow).
+//   - DisallowUnknownFields + check Decode error → 400 on malformed JSON.
+//   - Validate reason length (1..1000 chars) → 400 if invalid.
+//   - Only persist/archive after all validation succeeds.
 func (h *DirectMessagingHandler) report(
 	w http.ResponseWriter, r *http.Request, userID, convID string,
 ) {
@@ -448,24 +493,52 @@ func (h *DirectMessagingHandler) report(
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxReportBodyBytes)
+
 	var req struct {
 		Reason string `json:"reason"`
 	}
-	json.NewDecoder(r.Body).Decode(&req)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
 
-	// Persist the report
+	// Trim whitespace before counting — a " " reason is just as empty.
+	reason := strings.TrimSpace(req.Reason)
+	reasonLen := len(reason)
+	if reasonLen < minReasonLength {
+		writeError(w, http.StatusBadRequest, "reason cannot be empty")
+		return
+	}
+	if reasonLen > maxReasonLength {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("reason must be %d characters or fewer", maxReasonLength))
+		return
+	}
+
+	// Persist the report. We only reach this point if validation passed.
 	report := &core.DirectMessageReport{
 		ConversationID: convID,
 		ReportedBy:     userID,
-		Reason:         req.Reason,
+		Reason:         reason,
 	}
 	if err := h.dm.CreateReport(r.Context(), report); err != nil {
 		slog.Error("dm: persist report", "conv_id", convID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
 	}
 
 	// Archive the conversation for the reporting user
 	if err := h.dm.ArchiveConversation(r.Context(), convID, userID); err != nil {
 		slog.Error("dm: report archive", "conv_id", convID, "error", err)
+		writeError(w, http.StatusInternalServerError, "database error")
+		return
 	}
 
 	conv, _ := h.dm.GetConversation(r.Context(), convID)
@@ -475,7 +548,7 @@ func (h *DirectMessagingHandler) report(
 			Payload: map[string]interface{}{
 				"conversation_id": convID,
 				"reported_by":     userID,
-				"reason":          req.Reason,
+				"reason":          reason,
 			},
 		}, userID)
 	}
@@ -483,7 +556,7 @@ func (h *DirectMessagingHandler) report(
 	slog.Warn("dm: conversation reported",
 		"conv_id", convID,
 		"reported_by", userID,
-		"reason", req.Reason,
+		"reason_len", reasonLen,
 	)
 
 	w.WriteHeader(http.StatusNoContent)
@@ -533,7 +606,17 @@ func (h *DirectMessagingHandler) streamSSE(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	ch, err := h.broker.Subscribe(ctx, userID)
+	// P2-6 audit: cap the maximum lifetime of a single SSE stream so
+	// abandoned streams (browser tab left open, mobile app backgrounded)
+	// don't keep broker subscriptions alive forever. We derive a child
+	// context with a deadline — when it fires, maxCtx.Done() unblocks the
+	// select below and the broker's cleanup goroutine (waiting on the
+	// same ctx.Done()) decrements b.subs[userID].
+	streamMax := maxSSEStreamDuration()
+	maxCtx, maxCancel := context.WithTimeout(ctx, streamMax)
+	defer maxCancel()
+
+	ch, err := h.broker.Subscribe(maxCtx, userID)
 	if err != nil {
 		slog.Error("sse: subscribe failed", "user_id", userID, "error", err)
 		writeError(w, http.StatusInternalServerError, "subscribe failed")
@@ -551,7 +634,7 @@ func (h *DirectMessagingHandler) streamSSE(w http.ResponseWriter, r *http.Reques
 	fmt.Fprintf(w, "event: open\ndata: {}\n\n")
 	flusher.Flush()
 
-	slog.Info("sse: connection opened", "user_id", userID)
+	slog.Info("sse: connection opened", "user_id", userID, "max_duration", streamMax)
 
 	heartbeat := time.NewTicker(25 * time.Second)
 	defer heartbeat.Stop()
@@ -560,6 +643,19 @@ func (h *DirectMessagingHandler) streamSSE(w http.ResponseWriter, r *http.Reques
 		select {
 		case <-ctx.Done():
 			slog.Info("sse: connection closed", "user_id", userID)
+			return
+
+		// P2-6: client disconnect already cancels `ctx` above; this arm
+		// only fires when the *deadline* expires. A frontend
+		// EventSource will auto-reconnect on disconnect so we don't
+		// send a final event before closing.
+		case <-maxCtx.Done():
+			if ctx.Err() != nil {
+				// Parent already cancelled — the earlier arm handles the
+				// log line; just return quietly.
+				return
+			}
+			slog.Info("sse: max stream duration reached, reaping", "user_id", userID, "max_duration", streamMax)
 			return
 
 		case <-heartbeat.C:

@@ -98,14 +98,21 @@ func TestNewGRPCLLMServiceZeroTimeoutFallsBack(t *testing.T) {
 	assert.Equal(t, 60, gsvc.timeoutSecs)
 }
 
-func TestEnsureClientDialFailure(t *testing.T) {
-	// Use an unreachable address so dial fails
-	svc := NewGRPCLLMService("localhost:1", "") // port 1 is unlikely to be open
+// TestEnsureClientLazyForUnreachable regression-tests P1-2: ensureClient
+// no longer returns an error for unreachable addresses. grpc.NewClient is
+// lazy by design (audit F5) so the network dial moves to first RPC time,
+// bounded by the per-call timeout in Ask/Embed. Previously this test
+// (TestEnsureClientDialFailure) asserted an error string "gRPC dial" which
+// reflected the deprecated DialContext+WithBlock path.
+func TestEnsureClientLazyForUnreachable(t *testing.T) {
+	// port 1 is unlikely to be open
+	svc := NewGRPCLLMService("localhost:1", "")
 	gsvc := svc.(*GRPCLLMService)
+	require.Nil(t, gsvc.client)
 
 	err := gsvc.ensureClient()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "gRPC dial")
+	require.NoError(t, err, "ensureClient must succeed for unreachable address (lazy dial)")
+	require.NotNil(t, gsvc.client, "client must be created even if dial will fail later")
 }
 
 func TestEnsureClientNilClientInitialized(t *testing.T) {
@@ -114,19 +121,24 @@ func TestEnsureClientNilClientInitialized(t *testing.T) {
 	assert.Nil(t, gsvc.client)
 }
 
+// TestAskEnsureClientFails checks the RPC-level failure path now that
+// ensureClient is lazy. The error happens at first Ask call, not at
+// ensureClient construction.
 func TestAskEnsureClientFails(t *testing.T) {
-	// Ask with unreachable address should fail at ensureClient
 	svc := NewGRPCLLMService("localhost:1", "")
-	_, err := svc.Ask(context.Background(), "sys", "msg", nil, "")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "gRPC dial")
+	// 2s deadline so RPC fails within test timeout, not the 20s default.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := svc.Ask(ctx, "sys", "msg", nil, "")
+	require.Error(t, err, "Ask should fail at RPC time when destination is unreachable")
 }
 
 func TestEmbedEnsureClientFails(t *testing.T) {
 	svc := NewGRPCLLMService("localhost:1", "")
-	_, err := svc.Embed(context.Background(), "text")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := svc.Embed(ctx, "text")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "gRPC dial")
 }
 
 // --- Circuit breaker tests (F3) ---
@@ -196,13 +208,16 @@ func TestBreakerHalfOpenAfterCooldown(t *testing.T) {
 	gsvc.breakerOpenedAt = time.Now().Add(-31 * time.Second)
 	gsvc.breakerMu.Unlock()
 
-	// Ask should now be allowed (half-open probe via breakerAllow) but will
-	// fail at gRPC dial, which calls breakerFail again (6th fail).
-	_, err := svc.Ask(context.Background(), "sys", "msg", nil, "")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "gRPC dial")
+	// Ask should now be allowed (half-open probe via breakerAllow) but
+	// will fail at RPC time against the unreachable destination, which
+	// calls breakerFail again (6th fail). P1-2 lifted the blocking dial
+	// from ensureClient; error text no longer contains "gRPC dial".
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := svc.Ask(ctx, "sys", "msg", nil, "")
+	require.Error(t, err, "Ask should fail at RPC time when helper is unreachable in half-open probe")
 
-	// After dial failure in half-open, breaker goes back to open.
+	// After RPC failure in half-open, breaker goes back to open.
 	gsvc.breakerMu.Lock()
 	fails := gsvc.breakerFails
 	gsvc.breakerMu.Unlock()

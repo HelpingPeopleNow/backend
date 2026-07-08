@@ -53,7 +53,13 @@ func (m *AdminMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		var sessionInfo map[string]interface{}
-		if err := json.NewDecoder(authResp.Body).Decode(&sessionInfo); err != nil {
+		// P2-4 (audit): DisallowUnknownFields has no effect on a map target
+		// (maps accept any key by default) — added for documentation
+		// consistency. The map shape is read defensively below (userObj /
+		// is_admin are type-asserted with `, _ ok`).
+		adminDec := json.NewDecoder(authResp.Body)
+		adminDec.DisallowUnknownFields()
+		if err := adminDec.Decode(&sessionInfo); err != nil {
 			slog.Error("admin: decode failed", "error", err)
 			http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
 			return

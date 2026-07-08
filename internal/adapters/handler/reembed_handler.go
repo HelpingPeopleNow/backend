@@ -62,7 +62,10 @@ func (h *ReembedToggleHandler) setState(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		Enabled bool `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// P2-4 (audit): reject unknown JSON fields.
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON body"})
 		return

@@ -42,19 +42,19 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Details:    make(map[string]string),
 	}
 
+	// P1-3 (audit F7): scrub raw error strings from the response body so
+	// /health doesn't leak internal error detail to unauthenticated probes.
+	// The underlying error is still logged via slog for operators.
 	if sqlDB, err := h.db.DB(); err != nil {
 		resp.Postgres = "down"
-		resp.Details["postgres_err"] = err.Error()
 		slog.Error("health: postgres unavailable", "error", err)
 	} else if err := sqlDB.PingContext(ctx); err != nil {
 		resp.Postgres = "down"
-		resp.Details["postgres_err"] = err.Error()
 		slog.Error("health: postgres ping failed", "error", err)
 	}
 
 	if err := h.llm.Health(ctx); err != nil {
 		resp.GRPCHelper = "down"
-		resp.Details["grpc_helper_err"] = err.Error()
 		slog.Error("health: helper gRPC degraded", "error", err)
 	}
 

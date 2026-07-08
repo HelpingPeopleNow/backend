@@ -52,8 +52,13 @@ func buildDeps(db *gorm.DB) appDeps {
 		Intake:      services.NewIntakeService(llmSvc, profileRepo, chatRepo, promptRepo),
 		Search:      services.NewSearchService(llmSvc, profileRepo, chatRepo, promptRepo),
 		Seed:        services.NewSeedService(promptRepo),
-		Auth:        middleware.NewAuthMiddleware(os.Getenv("AUTH_SERVICE_URL"), db),
-		Admin:       middleware.NewAdminMiddleware(os.Getenv("AUTH_SERVICE_URL")),
+		// P2-3 (audit / F8): the third arg is BETTER_AUTH_SECRET. The
+		// DB-fallback path verifies the cookie HMAC against this secret
+		// before honoring the session token — without it, a cookie whose
+		// signature has been stripped still resolves (the pre-audit
+		// behaviour). Production MUST set BETTER_AUTH_SECRET.
+		Auth:  middleware.NewAuthMiddleware(os.Getenv("AUTH_SERVICE_URL"), db, os.Getenv("BETTER_AUTH_SECRET")),
+		Admin: middleware.NewAdminMiddleware(os.Getenv("AUTH_SERVICE_URL")),
 	}
 }
 
@@ -88,8 +93,66 @@ func buildMux(d appDeps) *http.ServeMux {
 	mux.Handle("/api/v1/workers/public/latest", http.HandlerFunc(publicProfileHandler.LatestProfiles))
 	mux.Handle("/api/v1/workers/public/", http.HandlerFunc(publicProfileHandler.ServeHTTP))
 
-	handler.RegisterMetricsRoutes(mux)
+	// P2-2 (audit / F9): protect /metrics behind METRICS_TOKEN. An empty
+	// token falls back to unauthenticated with a logged warning so an
+	// operator notices. Production must set METRICS_TOKEN.
+	//
+	// P2-1 (audit / F6): wireGaugeScrapeSources registers the dynamic
+	// gauges (db_pool_in_use, db_pool_max, search_cache_size,
+	// sse_active_connections) so /metrics returns up-to-the-moment
+	// values from external state.
+	handler.RegisterMetricsRoutes(mux, os.Getenv("METRICS_TOKEN"))
+	wireGaugeScrapeSources(d.DB, d.Search, broker)
 	return mux
+}
+
+// wireGaugeScrapeSources registers the dynamic gauges driven by external
+// state (P2-1 audit / F6). Each callback is a quick getter — it runs at
+// every /metrics scrape with no long-lived mutex held by the metrics
+// package.
+func wireGaugeScrapeSources(db *gorm.DB, search *services.SearchService, broker ports.Broker) {
+	// db_pool_in_use — current saturation gauge.
+	handler.RegisterGaugeScrapeSource(
+		"db_pool_in_use",
+		"Active (*sql.DB).InUse connections — saturation gauge.",
+		nil, nil,
+		func() float64 {
+			sqlDB, err := db.DB()
+			if err != nil {
+				return 0
+			}
+			return float64(sqlDB.Stats().InUse)
+		},
+	)
+	// db_pool_max — companion to in_use so saturation alerts can compute
+	// the in_use / max ratio (matches the §5 commented DBPoolSaturation
+	// alert expression).
+	handler.RegisterGaugeScrapeSource(
+		"db_pool_max",
+		"Configured (*sql.DB).MaxOpenConnections.",
+		nil, nil,
+		func() float64 {
+			sqlDB, err := db.DB()
+			if err != nil {
+				return 0
+			}
+			return float64(sqlDB.Stats().MaxOpenConnections)
+		},
+	)
+	// search_cache_size
+	handler.RegisterGaugeScrapeSource(
+		"search_cache_size",
+		"Current entries in the in-process search cache.",
+		nil, nil,
+		func() float64 { return float64(search.SearchCacheSize()) },
+	)
+	// sse_active_connections
+	handler.RegisterGaugeScrapeSource(
+		"sse_active_connections",
+		"Current in-process SSE subscribers across all users.",
+		nil, nil,
+		func() float64 { return float64(broker.ActiveConnections()) },
+	)
 }
 
 // runStalenessSweeper (VECTOR_SEARCH_PLAN §8.10 / Improvement #11).
@@ -179,9 +242,16 @@ func runStalenessSweeper(
 }
 
 func main() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	})))
+	// P3-4 (audit): wrap the slog default handler with a ContextHandler so
+	// every log line emitted via slog.Default() automatically carries the
+	// per-request correlation ID (P3-4 cross-service tracing). Tests that
+	// need io.Discard replace slog.Default themselves and lose the
+	// injection — that's fine because tests don't have request IDs.
+	slog.SetDefault(slog.New(middleware.NewContextHandler(
+		slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelInfo,
+		}),
+	)))
 
 	requireEnv("DB_HOST")
 	requireEnv("DB_USER")
@@ -229,10 +299,13 @@ func main() {
 		runStalenessSweeper(rootCtx, deps.Intake, deps.ProfileRepo, 10*time.Minute)
 	}()
 
-	server := &http.Server{
-		Addr:    ":" + port,
-		Handler: middleware.Logging(mux),
-	}
+	// P3-4 (audit): insert RequestID as the OUTERMOST middleware so
+	// (a) the Logging middleware's "request started"/"request completed"
+	//     lines carry the request_id attribute, AND
+	// (b) the response always surfaces X-Request-ID back to the client.
+	// The order RequestID → Logging → mux keeps all downstream handler
+	// chain calls inside the same ctx with the ID bound.
+	server := newServer(":"+port, middleware.RequestID(middleware.Logging(mux)))
 
 	// Signal handler — SIGTERM/SIGINT triggers a coordinated shutdown.
 	// cancelRoot() runs FIRST so the sweeper's inner pendingWG.Wait()
@@ -284,4 +357,21 @@ func requireEnv(key string) string {
 		os.Exit(1)
 	}
 	return v
+}
+
+// newServer constructs the production *http.Server with slowloris /
+// idle-connection hardening (P0-2 audit, F1). Extracted so the timeout
+// configuration can be unit-tested in main_test.go.
+//
+// No WriteTimeout: the SSE /stream endpoint holds the response open
+// indefinitely and manages its own lifecycle via request context + a
+// 25s heartbeat (with a 15-minute max-stream-duration cap, P2-6).
+func newServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 }

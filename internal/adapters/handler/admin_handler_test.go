@@ -1,6 +1,7 @@
 package handler
 
 import (
+	_ "embed"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -133,4 +134,55 @@ func TestAdminHandlerScanRowMultipleByteCols(t *testing.T) {
 	assert.Equal(t, "42", row["id"])
 	assert.Equal(t, "Alice", row["name"])
 	assert.Equal(t, "alice@test.com", row["email"])
+}
+
+// TestAdminHandlerScrubsErrorsInSource is a static-source guard for the
+// P1-3 (audit F7) error-scrubbing fix in admin_table.go. Rather than
+// spinning up a Postgres fixture to drive the listRows/updateRow/deleteRow
+// 500 paths (which need a real Dialector — gorm v1.25's Statement.QuoteTo
+// panics on a Dialector-less *gorm.DB), this asserts that the response-
+// body strings the audit demands really do appear in the source file and
+// that the pre-audit "fmt.Sprintf-formatted" leak patterns really do not
+// appear. Combined with the runtime TestHandleLLMErrorGeneric and
+// TestHealthScrubsErrorsFromBody (sister paths), this is sufficient to
+// fail a regression if someone re-introduces the leak pattern.
+//
+// TODO(audit-P3): replace with a real Dialector-backed integration test
+// in tests/integration once a fixtures setup exists.
+//
+// //go:embed is resolved at compile time relative to the test source
+// file, so this guard is cwd-immune (vscode-go, Bazel, delve all behave
+// the same as `go test ./...`).
+//
+//go:embed admin_table.go
+var adminTableSrc string
+
+func TestAdminHandlerScrubsErrorsInSource(t *testing.T) {
+	// Sanity: file must not be empty. Without this, a refactor that strips
+	// the file down could vacuously pass mustContain and mustNotContain.
+	require.Greater(t, len(adminTableSrc), 200,
+		"P1-3 source guard: embedded admin_table.go is suspiciously short "+
+			"(%d bytes) — the audit's scrubbing clauses are likely missing",
+		len(adminTableSrc))
+	src := adminTableSrc
+
+	mustContain := []string{
+		`"internal query failed"`,
+		`"internal update failed"`,
+		`"internal delete failed"`,
+	}
+	mustNotContain := []string{
+		`fmt.Sprintf("query failed: %s"`,
+		`fmt.Sprintf("update failed: %s"`,
+		`fmt.Sprintf("delete failed: %s"`,
+	}
+
+	for _, want := range mustContain {
+		assert.Contains(t, src, want,
+			"P1-3 source guard: admin_table.go must contain %q", want)
+	}
+	for _, bad := range mustNotContain {
+		assert.NotContains(t, src, bad,
+			"P1-3 source guard: admin_table.go must NOT contain the leak pattern %q", bad)
+	}
 }

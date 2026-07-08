@@ -81,7 +81,12 @@ func (h *SystemPromptHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 
 		var req updateSystemReq
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		// P2-4 (audit): reject unknown fields. The system prompts admin
+		// UI sends exactly one field (`content`); anything else is a
+		// probe or client bug and we surface it as 400.
+		dec := json.NewDecoder(r.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}

@@ -3,6 +3,7 @@ package testingutil
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
@@ -213,32 +214,83 @@ func (m *MockPrompts) Update(_ context.Context, _, _ string) (*core.SystemPrompt
 
 // ── Broker fake (Strategy A) ────────────────────────────────────────
 // MockBroker records Publish calls and delivers to subscribers.
+// ActiveConnections tracks the live subscriber count and is decremented
+// when the request context is cancelled (mirrors real *sseBroker cleanup
+// goroutine — required for P2-1 gauge source tests).
 type MockBroker struct {
+	mu              sync.Mutex
 	PublishedUserID string
 	PublishedEvent  ports.Event
-	Subscribers     map[string][]chan ports.Event
+	Subscribers     map[string][]*mockSubscription
+}
+
+// mockSubscription holds the per-subscriber state so the cleanup
+// goroutine can decrement ActiveConnections on ctx cancel.
+type mockSubscription struct {
+	channel chan ports.Event
 }
 
 func NewMockBroker() *MockBroker {
-	return &MockBroker{Subscribers: make(map[string][]chan ports.Event)}
+	return &MockBroker{Subscribers: make(map[string][]*mockSubscription)}
 }
 
-func (m *MockBroker) Subscribe(_ context.Context, userID string) (<-chan ports.Event, error) {
+func (m *MockBroker) Subscribe(ctx context.Context, userID string) (<-chan ports.Event, error) {
 	ch := make(chan ports.Event, 32)
-	m.Subscribers[userID] = append(m.Subscribers[userID], ch)
+	sub := &mockSubscription{channel: ch}
+	m.mu.Lock()
+	m.Subscribers[userID] = append(m.Subscribers[userID], sub)
+	m.mu.Unlock()
+
+	// Cleanup goroutine: remove our subscription from the broker
+	// when ctx fires, then close the channel. Mirrors real *sseBroker.
+	go func() {
+		<-ctx.Done()
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		subs := m.Subscribers[userID]
+		for i, s := range subs {
+			if s == sub {
+				m.Subscribers[userID] = append(subs[:i], subs[i+1:]...)
+				break
+			}
+		}
+		if len(m.Subscribers[userID]) == 0 {
+			delete(m.Subscribers, userID)
+		}
+		close(ch)
+	}()
+
 	return ch, nil
 }
 
 func (m *MockBroker) Publish(userID string, event ports.Event) error {
+	m.mu.Lock()
 	m.PublishedUserID = userID
 	m.PublishedEvent = event
-	for _, ch := range m.Subscribers[userID] {
+	subs := make([]*mockSubscription, len(m.Subscribers[userID]))
+	copy(subs, m.Subscribers[userID])
+	m.mu.Unlock()
+
+	for _, sub := range subs {
 		select {
-		case ch <- event:
+		case sub.channel <- event:
 		default:
 		}
 	}
 	return nil
+}
+
+// ActiveConnections satisfies ports.Broker (P2-1 gauge scrape source).
+// Mocks the SSE subscriber total across users, decremented by the
+// cleanup goroutine spawned in Subscribe().
+func (m *MockBroker) ActiveConnections() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, subs := range m.Subscribers {
+		n += len(subs)
+	}
+	return n
 }
 
 // ── DirectMessageRepository fake (Strategy A) ───────────────────────

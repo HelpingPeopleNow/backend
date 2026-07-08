@@ -20,6 +20,9 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
+// handleLLMError translates an LLM/helper error into a client response
+// (P1-3 audit, F7). The raw error is kept out of the response body so we
+// don't leak internal detail; operators see the full error in slog.
 func handleLLMError(w http.ResponseWriter, err error) {
 	errStr := err.Error()
 	if strings.Contains(errStr, "RATE_LIMIT") || strings.Contains(errStr, "429") || strings.Contains(strings.ToLower(errStr), "rate limit") {
@@ -28,7 +31,7 @@ func handleLLMError(w http.ResponseWriter, err error) {
 		})
 		return
 	}
-	writeError(w, http.StatusServiceUnavailable, "helper service error: "+errStr)
+	writeError(w, http.StatusServiceUnavailable, "helper service temporarily unavailable")
 	slog.Error("handler: llm error", "error", err)
 }
 

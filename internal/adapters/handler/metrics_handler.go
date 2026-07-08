@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"crypto/subtle"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"sort"
@@ -32,6 +34,20 @@ type histogram struct {
 	sum     float64
 }
 
+// gaugeScrapeSource is a callback-style "pull" gauge source. The metrics
+// handler invokes Source() at scrape time and writes the returned value
+// into the underlying gauge. This lets the /metrics endpoint surface
+// up-to-the-moment values from external state (search cache size, SSE
+// subscriber count, DB pool in-use) without those producers having to
+// know about Prometheus conventions. (P2-1 audit / F6 observability gap.)
+type gaugeScrapeSource struct {
+	name        string
+	help        string
+	labelValues []string
+	labelNames  []string
+	source      func() float64
+}
+
 // metrics holds all application metrics. All fields are guarded by mu.
 var metrics = struct {
 	sync.RWMutex
@@ -59,6 +75,17 @@ var metrics = struct {
 	searchRateLimitedTotal map[string]*counter // key: user_id prefix
 	embedFailuresTotal     map[string]*counter // key: "embed"
 	helperBreakerState     map[string]*gauge   // key: state (closed|open|half_open)
+
+	// gaugeScrapeSources — registered callbacks that refresh gauge
+	// values on each /metrics scrape. The text-format renderer walks
+	// this slice and writes the returned value into the named gauge.
+	// (P2-1 audit.)
+	gaugeScrapeSources []*gaugeScrapeSource
+
+	// Live-refresh gauges whose value is set by the scrape-source
+	// callback. Stored separately from the static health gauges so
+	// renderFamily() can distinguish them if needed.
+	dynamicGauges map[string]*gauge // key: source.Name()
 }{
 	httpRequestsTotal:      make(map[string]*counter),
 	httpRequestDuration:    make(map[string]*histogram),
@@ -78,6 +105,9 @@ var metrics = struct {
 	searchRateLimitedTotal: make(map[string]*counter),
 	embedFailuresTotal:     make(map[string]*counter),
 	helperBreakerState:     make(map[string]*gauge),
+
+	gaugeScrapeSources: nil,
+	dynamicGauges:      make(map[string]*gauge),
 }
 
 // defaultBuckets for latency histograms (seconds).
@@ -126,6 +156,49 @@ func observeValue(h *histogram, v float64) {
 			h.buckets[bound]++
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// P2-1 — Gauge scrape-source registration
+// ---------------------------------------------------------------------------
+
+// RegisterGaugeScrapeSource registers a callback that produces the live
+// value for a named gauge at every /metrics scrape. Composition-root
+// code (main.go) calls this with closures over SearchService, Broker,
+// and *sql.DB so each /metrics request sees up-to-the-moment values.
+//
+// Returns silently if a source with the same name is already registered
+// (allows safe restart with overlapping registration order).
+func RegisterGaugeScrapeSource(name, help string, labelNames []string, labelValues []string, source func() float64) {
+	metrics.Lock()
+	defer metrics.Unlock()
+	for _, existing := range metrics.gaugeScrapeSources {
+		if existing.name == name && sameLabels(existing.labelValues, labelValues) {
+			return
+		}
+	}
+	metrics.gaugeScrapeSources = append(metrics.gaugeScrapeSources, &gaugeScrapeSource{
+		name:        name,
+		help:        help,
+		labelNames:  labelNames,
+		labelValues: labelValues,
+		source:      source,
+	})
+	// Pre-create the gauge so the first scrape after registration has a
+	// stable zero rather than being absent.
+	metrics.dynamicGauges[name] = &gauge{}
+}
+
+func sameLabels(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -274,9 +347,42 @@ func SetHelperBreakerState(state string) {
 	g.value = 1
 }
 
+// ---------------------------------------------------------------------------
+// /metrics route registration (P2-2 — bearer-token gate)
+// ---------------------------------------------------------------------------
+
 // RegisterMetricsRoutes registers GET /metrics on the provided mux.
-func RegisterMetricsRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /metrics", metricsHandler)
+//
+// token — if non-empty, /metrics requires `Authorization: Bearer <token>`
+// with a constant-time byte comparison. The expected token is read from
+// the METRICS_TOKEN env at composition time (production must set it).
+//
+// token == "" preserves the legacy "unauthenticated metrics endpoint"
+// behaviour but logs a loud warning so an operator notices. The audit
+// notes that unauthenticated /metrics is recon-friendly (F9).
+func RegisterMetricsRoutes(mux *http.ServeMux, token string) {
+	if token == "" {
+		slog.Warn("metrics: registered WITHOUT bearer-token auth — set METRICS_TOKEN to lock down (F9 / P2-2 audit)")
+	} else {
+		slog.Info("metrics: registered with bearer-token auth (F9 / P2-2)")
+	}
+	expected := []byte(token)
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		if len(expected) > 0 {
+			auth := r.Header.Get("Authorization")
+			const prefix = "Bearer "
+			if !strings.HasPrefix(auth, prefix) {
+				http.Error(w, "missing bearer token", http.StatusUnauthorized)
+				return
+			}
+			got := []byte(auth[len(prefix):])
+			if subtle.ConstantTimeCompare(got, expected) != 1 {
+				http.Error(w, "invalid bearer token", http.StatusUnauthorized)
+				return
+			}
+		}
+		metricsHandler(w, r)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +496,13 @@ func formatFloat(f float64) string {
 }
 
 func metricsHandler(w http.ResponseWriter, r *http.Request) {
+	// P2-1: refresh dynamic gauges BEFORE snapshotting the registry for
+	// rendering. Each registered source callback runs with no mutex held
+	// — that's safe because the callbacks should be cheap getters
+	// (SearchService.SearchCacheSize, Broker.ActiveConnections,
+	// *sql.DB.Stats().InUse).
+	refreshDynamicGauges()
+
 	metrics.RLock()
 	defer metrics.RUnlock()
 
@@ -548,10 +661,104 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 		gauges:     metrics.helperBreakerState,
 	}))
 
-	// 18–20. reembed metrics live in internal/metrics — appended below.
+	// 18+ — dynamic gauges (P2-1): one HELP/TYPE block per registered scrape source.
+	write(renderDynamicGauges())
+
+	// 21+ — reembed metrics live in internal/metrics — appended below.
 	write(metricspkg.Render())
 
 	w.Write([]byte(sb.String()))
+}
+
+// refreshDynamicGauges invokes every registered gauge scrape source and
+// writes the returned value into the corresponding dynamic gauge. Runs
+// without holding any long-lived mutex; each source callback is expected
+// to be a quick getter.
+func refreshDynamicGauges() {
+	metrics.RLock()
+	sources := make([]*gaugeScrapeSource, len(metrics.gaugeScrapeSources))
+	copy(sources, metrics.gaugeScrapeSources)
+	metrics.RUnlock()
+
+	for _, src := range sources {
+		if src == nil || src.source == nil {
+			continue
+		}
+		v := src.source()
+		metrics.Lock()
+		g, ok := metrics.dynamicGauges[src.name]
+		if !ok {
+			g = &gauge{}
+			metrics.dynamicGauges[src.name] = g
+		}
+		g.value = v
+		metrics.Unlock()
+	}
+}
+
+// renderDynamicGauges writes one HELP/TYPE block per registered gauge
+// source plus a single series line. Ordered by source name for stable
+// scraper output.
+func renderDynamicGauges() string {
+	metrics.RLock()
+	defer metrics.RUnlock()
+
+	if len(metrics.dynamicGauges) == 0 {
+		return ""
+	}
+
+	// Group gauges by source name (no labels in our current usage, but
+	// the renderFamily helper expects a map[string]*gauge keyed on the
+	// full label string).
+	type fam struct {
+		name, help string
+		gauges     map[string]*gauge
+	}
+	bySource := map[string]*fam{}
+	for _, src := range metrics.gaugeScrapeSources {
+		g, ok := metrics.dynamicGauges[src.name]
+		if !ok {
+			continue
+		}
+		if _, exists := bySource[src.name]; !exists {
+			bySource[src.name] = &fam{
+				name:   src.name,
+				help:   src.help,
+				gauges: make(map[string]*gauge),
+			}
+		}
+		// key the gauge map by a stable label-string for the
+		// renderFamily helper. Empty string renders as no-label form.
+		key := strings.Join(src.labelValues, "|")
+		bySource[src.name].gauges[key] = g
+	}
+
+	names := make([]string, 0, len(bySource))
+	for n := range bySource {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	var sb strings.Builder
+	for _, name := range names {
+		f := bySource[name]
+		// Find the source again so we can pass label names through.
+		var labelNames []string
+		for _, src := range metrics.gaugeScrapeSources {
+			if src.name == name {
+				labelNames = src.labelNames
+				break
+			}
+		}
+		sb.WriteString(renderFamilyToString(metricFamily{
+			name:       f.name,
+			help:       f.help,
+			metricType: "gauge",
+			keys:       labelNames,
+			gauges:     f.gauges,
+		}))
+	}
+	return sb.String()
 }
 
 // renderFamilyToString is a thin wrapper that renders to a string.

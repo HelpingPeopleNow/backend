@@ -8,6 +8,13 @@ import (
 	"github.com/HelpingPeopleNow/backend/internal/ports"
 )
 
+// maxSSESubsPerUser caps the number of in-process SSE subscriptions per
+// user (P1-5 audit, F6). A handful of browser tabs/devices per user is
+// reasonable; an unbounded count lets a single misbehaving client OOM
+// the process by opening tabs in a loop. Enforced under b.mu so a
+// concurrent subscribe/unsubscribe cannot race past the cap.
+const maxSSESubsPerUser = 10
+
 // sseBroker is an in-process pub/sub broker for SSE events.
 // Each user can have multiple subscribers (multiple browser tabs/devices).
 type sseBroker struct {
@@ -22,10 +29,23 @@ func NewSSEBroker() ports.Broker {
 	}
 }
 
-func (b *sseBroker) Subscribe(ctx context.Context, userID string) (<-chan ports.Event, error) {
-	ch := make(chan ports.Event, 32) // buffered to avoid blocking on slow consumers
+// ErrSSETooManySubscribers is returned when a user exceeds the per-user
+// subscription cap.
+var ErrSSETooManySubscribers = &sseCapError{}
 
+type sseCapError struct{}
+
+func (e *sseCapError) Error() string {
+	return "sse subscription cap exceeded for user"
+}
+
+func (b *sseBroker) Subscribe(ctx context.Context, userID string) (<-chan ports.Event, error) {
 	b.mu.Lock()
+	if len(b.subs[userID]) >= maxSSESubsPerUser {
+		b.mu.Unlock()
+		return nil, ErrSSETooManySubscribers
+	}
+	ch := make(chan ports.Event, 32) // buffered to avoid blocking on slow consumers
 	b.subs[userID] = append(b.subs[userID], ch)
 	b.mu.Unlock()
 
@@ -68,4 +88,17 @@ func (b *sseBroker) Publish(userID string, event ports.Event) error {
 		}
 	}
 	return nil
+}
+
+// ActiveConnections returns the total number of in-process SSE
+// subscribers across all users (P2-1 audit / F6 observability).
+// Used as the source callback for the `sse_active_connections` gauge.
+func (b *sseBroker) ActiveConnections() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	n := 0
+	for _, chans := range b.subs {
+		n += len(chans)
+	}
+	return n
 }

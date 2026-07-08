@@ -99,12 +99,18 @@ END $$;
 	}
 
 	// HNSW index (Pitfall #5 Phase A equivalent): cosine distance, m=16,
-	// ef_construction=64. §6.3 defaults. CONCURRENTLY would be safer on
-	// large populations, but startup runs are small (we ship ~6 workers);
-	// if HNSW creation later blocks a hot start, switch to CONCURRENTLY
-	// in a separate migration that runs at idle.
+	// ef_construction=64. §6.3 defaults.
+	//
+	// P3-3 (audit F10): previously this CREATE INDEX took an
+	// ACCESS EXCLUSIVE lock on worker_embeddings on every startup. We
+	// now use CONCURRENTLY — Postgres builds the index without blocking
+	// concurrent SELECTs / INSERTs. CONCURRENTLY cannot run inside an
+	// explicit transaction; GORM's db.Exec runs in autocommit mode so
+	// this is fine. The IF NOT EXISTS guard still short-circuits to
+	// no-op once the index exists (post-PG 9.5 the existence check is
+	// non-transactional too).
 	if err := db.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_worker_embeddings_hnsw
+		CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_worker_embeddings_hnsw
 			ON worker_embeddings
 			USING hnsw (embedding vector_cosine_ops)
 			WITH (m = 16, ef_construction = 64)

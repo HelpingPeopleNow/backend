@@ -28,6 +28,9 @@ func TestHandleLLMErrorRateLimit(t *testing.T) {
 	}
 }
 
+// TestHandleLLMErrorGeneric regression-tests P1-3 (audit F7): the raw
+// error message must NOT leak into the response body. Operators still see
+// the full error via slog.
 func TestHandleLLMErrorGeneric(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handleLLMError(rec, errors.New("something broke"))
@@ -35,8 +38,11 @@ func TestHandleLLMErrorGeneric(t *testing.T) {
 
 	var resp map[string]string
 	json.NewDecoder(rec.Body).Decode(&resp)
-	assert.Contains(t, resp["error"], "helper service error")
-	assert.Contains(t, resp["error"], "something broke")
+	assert.Equal(t, "helper service temporarily unavailable", resp["error"],
+		"P1-3 audit: response body must hold a static message, not raw err.Error()")
+	assert.NotContains(t, resp["error"], "something broke",
+		"P1-3 audit: raw error detail must NOT appear in response body")
+	assert.NotContains(t, rec.Body.String(), "something broke")
 }
 
 func TestParseIntParamValid(t *testing.T) {

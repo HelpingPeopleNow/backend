@@ -11,6 +11,11 @@ type Broker interface {
 
 	// Publish broadcasts an event to all subscribers of the given userID.
 	Publish(userID string, event Event) error
+
+	// ActiveConnections returns the total number of in-process
+	// subscribers across all users. Surfaced as the
+	// `sse_active_connections` gauge (P2-1 audit / F6).
+	ActiveConnections() int
 }
 
 // Event is a real-time event delivered via SSE.

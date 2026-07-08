@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -51,7 +50,7 @@ func (h *AdminHandler) listRows(w http.ResponseWriter, r *http.Request, meta ent
 	rows, err := q.Rows()
 	if err != nil {
 		slog.Error("admin: list query failed", "entity", meta.Table, "error", err)
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %s", err.Error()))
+		writeError(w, http.StatusInternalServerError, "internal query failed")
 		return
 	}
 	defer rows.Close()
@@ -135,7 +134,7 @@ func (h *AdminHandler) updateRow(w http.ResponseWriter, r *http.Request, meta en
 	result := h.db.Table(meta.Table).Where("id = ?", id).Updates(filtered)
 	if result.Error != nil {
 		slog.Error("admin: update failed", "entity", meta.Table, "id", id, "error", result.Error)
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("update failed: %s", result.Error.Error()))
+		writeError(w, http.StatusInternalServerError, "internal update failed")
 		return
 	}
 
@@ -155,7 +154,7 @@ func (h *AdminHandler) deleteRow(w http.ResponseWriter, meta entityMeta, id stri
 
 	if result.Error != nil {
 		slog.Error("admin: delete failed", "entity", meta.Table, "id", id, "error", result.Error)
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("delete failed: %s", result.Error.Error()))
+		writeError(w, http.StatusInternalServerError, "internal delete failed")
 		return
 	}
 

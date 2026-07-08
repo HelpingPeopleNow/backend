@@ -11,11 +11,19 @@ import (
 	"sync"
 	"time"
 
+	"github.com/HelpingPeopleNow/backend/internal/contextkeys"
 	"github.com/HelpingPeopleNow/backend/internal/ports"
 	pb "github.com/HelpingPeopleNow/backend/proto/helper"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/metadata"
 )
+
+// grpcRequestIDMetadataKey is the header used to propagate the per-request
+// correlation ID across the gRPC boundary so the helper service can log its
+// side under the same identifier (P3-4 audit cross-service tracing).
+const grpcRequestIDMetadataKey = "x-request-id"
 
 const expectedEmbeddingDim = 768
 
@@ -124,6 +132,12 @@ func (s *GRPCLLMService) BreakerState() string {
 	}
 }
 
+// ensureClient creates a lazy, NON-blocking gRPC client (P1-2 audit, F5).
+// The previous DialContext+WithBlock dial held s.mu for up to 5s while the
+// network dial completed, so a degraded helper serialised every request
+// behind this lock. grpc.NewClient returns immediately and connects on
+// first RPC; the per-call context timeouts in Ask/Embed bound
+// connection-establishment latency instead.
 func (s *GRPCLLMService) ensureClient() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -131,20 +145,20 @@ func (s *GRPCLLMService) ensureClient() error {
 		return nil
 	}
 
-	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	slog.Info("llm: dialing helper gRPC", "addr", s.addr)
-	conn, err := grpc.DialContext(dialCtx, s.addr,
+	slog.Info("llm: creating helper gRPC client", "addr", s.addr)
+	conn, err := grpc.NewClient(s.addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                30 * time.Second,
+			Timeout:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
 	)
 	if err != nil {
-		return fmt.Errorf("gRPC dial %s: %w", s.addr, err)
+		return fmt.Errorf("gRPC new client %s: %w", s.addr, err)
 	}
 	s.conn = conn
 	s.client = pb.NewHelperServiceClient(conn)
-	slog.Info("llm: helper gRPC connected", "addr", s.addr)
 	return nil
 }
 
@@ -172,6 +186,9 @@ func (s *GRPCLLMService) Ask(
 	// F3: use dedicated LLM timeout (default 20s)
 	callCtx, cancel := context.WithTimeout(ctx, s.llmTimeout)
 	defer cancel()
+	// P3-4 (audit): attach the per-request ID to the outgoing call so the
+	// helper service can correlate its logs with this backend's logs.
+	callCtx = attachOutgoingRequestID(callCtx)
 
 	req := &pb.AskRequest{
 		Question:          userMessage,
@@ -212,6 +229,8 @@ func (s *GRPCLLMService) Embed(ctx context.Context, text string) ([]float32, err
 	// F3: use dedicated embed timeout
 	callCtx, cancel := context.WithTimeout(ctx, s.embedTimeout)
 	defer cancel()
+	// P3-4 (audit): propagate per-request ID to the helper.
+	callCtx = attachOutgoingRequestID(callCtx)
 
 	resp, err := s.client.Embed(callCtx, &pb.EmbedRequest{Text: text})
 	if err != nil {
@@ -251,4 +270,17 @@ func (s *GRPCLLMService) Health(ctx context.Context) error {
 		return fmt.Errorf("helper health returned %s", http.StatusText(resp.StatusCode))
 	}
 	return nil
+}
+
+// attachOutgoingRequestID returns a derived context that carries the
+// per-request correlation ID as gRPC metadata on the outbound call. Logs
+// on the helper side can then grep for the same ID across both services.
+// (P3-4 audit cross-service tracing.)
+func attachOutgoingRequestID(ctx context.Context) context.Context {
+	id := contextkeys.GetRequestID(ctx)
+	if id == "" {
+		return ctx
+	}
+	md := metadata.Pairs(grpcRequestIDMetadataKey, id)
+	return metadata.NewOutgoingContext(ctx, md)
 }

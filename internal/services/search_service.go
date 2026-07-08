@@ -408,6 +408,15 @@ func (s *SearchService) Search(
 	return result, nil
 }
 
+// SearchCacheSize returns the current size of the search-cache. Surfaced
+// as the `search_cache_size` gauge so /metrics can alert when the cache
+// is near its 200-entry cap (P2-1 audit / F6 observability).
+func (s *SearchService) SearchCacheSize() int {
+	s.searchCacheMu.RLock()
+	defer s.searchCacheMu.RUnlock()
+	return len(s.searchCache)
+}
+
 // currentWorkerFloor returns MAX(worker_profiles.updated_at), but
 // memoizes the result for 1s so rapid refinement doesn't hammer Postgres.
 // P2 (third-pass review) requires the floor mechanism for cache
