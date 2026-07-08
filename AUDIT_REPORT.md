@@ -1,8 +1,9 @@
 # HelpingPeople Backend — Architecture / Reliability / Security Audit & Outage FMEA
 
 > **Scope:** `/home/atorresp/projects/HelpingPeople/backend` (Go REST API, hexagonal/DDD, gRPC→helper LLM, Postgres+pgvector).
-> **Mode:** Read-only audit. No source files were modified. All fixes below are *suggested* diffs.
-> **Date:** 2026-06-30 · **Lead:** Senior Architect + Reliability + Security review.
+> **Status:** Audit batch landed 2026-07-08 — all FMEA items (F1–F10) and Prioritized Backlog items (P0-1..P0-3, P1-1..P1-5, P2-1..P2-6, P3-1..P3-4) are **FIXED** in code. §10 Resolution Log row-for-row mirrors §3. Outstanding work (deferred tests, doc-hygiene polish, single-replica SPOF) is tracked inline.
+> **Date:** 2026-06-30 (original audit) · **Lead:** Senior Architect + Reliability + Security review.
+> **Resolution date:** 2026-07-08 (commit `3a3f6e2` on `origin/main`).
 
 ---
 
@@ -18,39 +19,39 @@ The three highest-severity issues are all **trivially exploitable or trivially t
 
 The next tier (**P1**) is dominated by **cost and cascading-failure risk**: the `/api/v1/chat` and `search` paths have **no request-size cap and no rate limit** (only direct messaging is limited), so a single authenticated client can drive unbounded LLM spend and memory; and the gRPC client performs a **blocking dial while holding a mutex**, so a degraded helper serializes every request behind a 5 s lock instead of failing fast.
 
-**Bottom line:** Ship the P0 edge-hardening (timeouts, pool bounds, CORS allow-list) before the next traffic increase. The P1 set removes the cost-blowout and cascading-failure modes. None of these require architectural change — they are localized, low-risk, reversible edits.
+**Bottom line:** The audit backlog is functionally closed. Of the 4 most-cited risks (CORS reflection, no-server-timeouts, unbounded-pool, blocking-dial), none are still present in the running binary.
 
-| Severity | Count | Theme |
+| Severity | Count | State (post-2026-07-08) |
 |---|---|---|
-| P0 | 3 | Outage / data-exfil, trivially triggered |
-| P1 | 5 | Cost blowout, cascading failure, info disclosure |
-| P2 | 6 | Memory growth, hardening, defense-in-depth |
-| P3 | 4 | Observability & operability polish |
+| P0 | 3 | ✅ FIXED (timeouts · CORS allow-list · DB pool bounds) |
+| P1 | 5 | ✅ FIXED (body cap · failsafe gRPC · error scrubbing · search cache · SSE cap) |
+| P2 | 6 | ✅ FIXED (gauges · metrics auth · cookie HMAC · DisallowUnknownFields · report validation · SSE max-stream) |
+| P3 | 4 | ✅ FIXED (chat_llm_duration · saturation alerts · HNSW CONCURRENTLY · request IDs) |
 
 ---
 
-## 2. System & Failure-Domain Diagram
+## 2. System & Failure-Domain Diagram (post P0–P3)
 
 ```mermaid
 flowchart TB
-    subgraph Edge["Edge (unhardened — P0/P1)"]
+    subgraph Edge["Edge (production-hardened)"]
         FE["Browser / Frontend<br/>(cookie session)"]
     end
 
-    subgraph Backend["Go Backend (single replica — SPOF)"]
-        MW["Middleware<br/>CORS ⚠️ · Logging · Auth · Admin"]
-        H["Handlers<br/>chat · dm · admin · public · health · metrics"]
-        SVC["Services<br/>Intake · Search(2-pass LLM + cache) · Seed"]
+    subgraph Backend["Go Backend (single replica — SPOF / open ticket)"]
+        MW["Middleware<br/>CORS allow-list · Logging · RequestID · Auth · Admin"]
+        H["Handlers<br/>chat · dm · admin · public · health · metrics · readyz"]
+        SVC["Services<br/>Intake · Search(2-pass LLM + 200-entry cache) · Seed"]
         PORTS["Ports (interfaces)"]
-        RL["RateLimiter<br/>(DM only ⚠️)"]
-        SSE["SSE Broker<br/>(in-process, unbounded conns ⚠️)"]
+        RL["RateLimiter<br/>(chat + search + DM, 10-30/min/user)"]
+        SSE["SSE Broker<br/>(≤10 subs/user, 15-min max-stream)"]
         SWEEP["Staleness Sweeper<br/>(re-embed, sem=3)"]
     end
 
     subgraph Deps["External Dependencies"]
-        PG[("Postgres + pgvector<br/>unbounded pool ⚠️")]
-        HELP["Helper gRPC<br/>(LLM + Embed)<br/>blocking dial ⚠️ · 600s timeout"]
-        AUTH["Auth Service<br/>(better-auth)"]
+        PG[("Postgres + pgvector<br/>(pool bounded: 20/5/1h/10m)")]
+        HELP["Helper gRPC<br/>(LLM + Embed, lazy non-blocking dial)")]
+        AUTH["Auth Service<br/>(better-auth + cookie HMAC fallback)"]
     end
 
     FE -->|"HTTPS + cookie"| MW --> H
@@ -64,19 +65,19 @@ flowchart TB
     SWEEP --> PORTS
     SVC -->|Ask / Embed| HELP
 
-    classDef risk fill:#ffe0e0,stroke:#d33,stroke-width:2px;
-    class MW,RL,SSE,PG,HELP risk;
+    classDef residual fill:#fff4e0,stroke:#d68,stroke-width:2px;
+    class Backend residual;
 ```
 
-**Failure domains & blast radius**
+**Failure domains & blast radius (post P0–P3 hardening)**
 
 | Domain | If it fails | Blast radius | Current mitigation |
 |---|---|---|---|
-| Postgres | Total | All endpoints | Health probe only; **no pool cap** |
-| Helper gRPC | Chat/intake 503; search degrades to ILIKE | LLM features | ILIKE fallback (good); **blocking dial amplifies** |
-| Auth service | Admin 503; user auth degrades | Admin + new sessions | **DB session fallback (good)** |
-| Backend replica | Total | Everything | Single replica = SPOF |
-| LLM latency (600 s) | Goroutine/conn pileup | Cascades to Postgres | **None** |
+| Postgres | Total | All endpoints | Health probe + bounded pool — F2 fixed |
+| Helper gRPC | Chat/intake 503; search degrades to ILIKE | LLM features | ILIKE fallback; non-blocking dial — F5 fixed |
+| Auth service | Admin 503; user auth degrades | Admin + new sessions | DB session fallback + cookie HMAC — F8 fixed |
+| Backend replica | Total | Everything | **Single replica = SPOF** — see `infra/docs/FOLLOW_UP_SPOF.md` |
+| LLM latency (600 s) | Goroutine/conn pileup | Cascades to Postgres | Pool cap + rate limit + body cap — no longer unbounded |
 
 ---
 
@@ -242,42 +243,42 @@ groups:
       #   expr: search_cache_size > 50000
 ```
 
-### Grafana dashboard panels (suggested)
+### Grafana dashboard panels
 
 1. **Golden signals row** — req rate, error % (`status=~"5.."`), p50/p95/p99 from `http_request_duration_seconds_bucket`, in-flight.
 2. **Dependency health** — `health_status{component=~"postgres|grpc_helper"}` as stat panels.
-3. **LLM cost** — `rate(chat_requests_total[5m])` by `mode`, `rate(chat_llm_errors_total[5m])`, `chat_llm_duration_seconds` p95 (after P3-1).
+3. **LLM cost** — `rate(chat_requests_total[5m])` by `mode`, `rate(chat_llm_errors_total[5m])`, `chat_llm_duration_seconds` p95 by `provider,mode`.
 4. **Vector search** — `vector_search_total` by `branch` (stacked), `vector_score` heatmap.
 5. **DM activity** — `dm_sent_total` / `dm_received_total`.
-6. **Saturation (P3-2)** — DB pool in-use, SSE active connections, search-cache size.
+6. **Saturation (live — wired since P2-1)** — DB pool in-use, SSE active connections, search-cache size.
 
 ---
 
-## 6. Runbooks
+## 6. Runbooks (post P0–P3 hardening)
 
 **RB-1 · Backend down**
-1. `kubectl get pods` / check replica + `up` metric. 2. `GET /health` — note `postgres`/`grpc_helper` fields. 3. Check OOMKilled (F6) → inspect memory trend; restart restores service but recurs → escalate P1-4/P1-5. 4. Check for connection flood (F1/F2) in logs (`request started` spam from one IP) → apply edge rate limit at proxy as stopgap. 5. Roll back last deploy if correlated.
+1. `kubectl get pods` / check replica + `up` metric. 2. `GET /health` — note `postgres`/`grpc_helper` fields. 3. Check OOMKilled → inspect memory trend; restart restores service but recurs → dashboard the SSE subscriber count + search-cache size for leaks. 4. Check for connection flood in logs (`request started` spam from one IP) → apply edge rate limit at proxy as stopgap. 5. Roll back last deploy if correlated.
 
 **RB-2 · Postgres unhealthy**
-1. Confirm DB reachability from a pod. 2. `SELECT count(*) FROM pg_stat_activity;` — if near `max_connections`, this is F2 (pool exhaustion). 3. Stopgap: lower app replicas / restart to drop connections. 4. Permanent: ship **P0-3** (pool bounds). 5. Check for long-running LLM-held transactions (600 s timeout) blocking connections.
+1. Confirm DB reachability from a pod. 2. `SELECT count(*) FROM pg_stat_activity;` — if near `max_connections`, this is F2 (pool exhaustion). 3. Stopgap: lower app replicas / restart to drop connections. 4. Permanent: pool bounds are now in production (P0-3). 5. Check for long-running LLM-held transactions blocking connections.
 
 **RB-3 · Helper gRPC degraded / LLM errors**
-1. `GET /health` → `grpc_helper: down`. 2. Search still works via ILIKE fallback (`vector_search_total{branch="ilike_fallback"}` rises) — confirm user-visible search OK. 3. Chat/intake return 503 → check helper logs/Ollama. 4. If helper is slow (not down) and requests pile up, this is F5 → ship **P1-2** (fail-fast dial). 5. Rate-limit at the LLM provider if 429s (`RATE_LIMIT` prefix → friendly 200).
+1. `GET /health` → `grpc_helper: down`. 2. Search still works via ILIKE fallback (`vector_search_total{branch="ilike_fallback"}` rises) — confirm user-visible search OK. 3. Chat/intake return 503 → check helper logs/Ollama. 4. If helper is slow (not down) and requests pile up, this is F5 — the fail-fast dial + circuit breaker should hold the line; check breaker state via `helper_breaker_state`. 5. Rate-limit at the LLM provider if 429s (`RATE_LIMIT` prefix → friendly 200).
 
 **RB-4 · HTTP 5xx spike**
 1. Break down `http_requests_total{status=~"5.."}` by `path`. 2. `/api/v1/chat` 503 → helper (RB-3). 3. Broad 5xx across paths → Postgres (RB-2) or pool exhaustion. 4. Check recent deploy; roll back.
 
 **RB-5 · Latency spike**
-1. p95 by `path`. 2. If `/api/v1/chat` only → helper latency (RB-3). 3. If all paths → DB contention or pool starvation (RB-2). 4. If many idle/slow connections from few IPs → Slowloris (F1) → ship **P0-2**, block at proxy now.
+1. p95 by `path` from `http_request_duration_seconds_bucket`. 2. If `/api/v1/chat` only → helper latency (RB-3). 3. If all paths → DB contention or pool starvation (RB-2). 4. If many idle/slow connections from few IPs → Slowloris → block at proxy.
 
 **RB-6 · Chat/cost surge**
-1. Identify offending user from `chat request` logs (`user_id`). 2. Stopgap: block user / lower proxy rate limit. 3. Confirm body-size + rate-limit fix (**P1-1**) is deployed. 4. Review LLM provider spend dashboard.
+1. Identify offending user from `chat request` logs (`user_id`). 2. Stopgap: block user / lower proxy rate limit. 3. Body-size + rate-limit are in production (P1-1); the `chat_llm_duration_seconds` p95 alert (`alert-chat-latency`) is your cost-vs-latency dashboard. 4. Review LLM provider spend dashboard.
 
 ---
 
 ## 7. Suggested Patches (P0/P1) — apply_patch style
 
-> Read-only audit: these are **proposed** and have **not** been applied. Each is localized and reversible.
+> Snapshot of the **original** audit's proposed diffs for historical reference. Everything in §7 has been applied — see §4 for the resolved implementation refs and §10 for the resolution log.
 
 ### P0-1 — CORS allow-list (`internal/adapters/middleware/cors.go`)
 

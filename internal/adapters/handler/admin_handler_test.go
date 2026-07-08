@@ -137,18 +137,14 @@ func TestAdminHandlerScanRowMultipleByteCols(t *testing.T) {
 }
 
 // TestAdminHandlerScrubsErrorsInSource is a static-source guard for the
-// P1-3 (audit F7) error-scrubbing fix in admin_table.go. Rather than
-// spinning up a Postgres fixture to drive the listRows/updateRow/deleteRow
-// 500 paths (which need a real Dialector — gorm v1.25's Statement.QuoteTo
-// panics on a Dialector-less *gorm.DB), this asserts that the response-
-// body strings the audit demands really do appear in the source file and
-// that the pre-audit "fmt.Sprintf-formatted" leak patterns really do not
-// appear. Combined with the runtime TestHandleLLMErrorGeneric and
-// TestHealthScrubsErrorsFromBody (sister paths), this is sufficient to
-// fail a regression if someone re-introduces the leak pattern.
-//
-// TODO(audit-P3): replace with a real Dialector-backed integration test
-// in tests/integration once a fixtures setup exists.
+// P1-3 (audit F7) error-scrubbing fix in admin_table.go. Combined with
+// the runtime counterparts in admin_runtime_test.go
+// (TestAdminListRowsScrubsRuntimeError, TestAdminUpdateRowsScrubsRuntimeError,
+// TestAdminDeleteRowsScrubsRuntimeError) and TestHandleLLMErrorGeneric +
+// TestHealthScrubsErrorsFromBody, this is sufficient to fail a regression
+// if someone re-introduces the leak pattern. The source guard is kept
+// (not deleted in favour of the runtime tests) because it catches code-
+// shape regressions earlier in the dev cycle (no DB driver needed).
 //
 // //go:embed is resolved at compile time relative to the test source
 // file, so this guard is cwd-immune (vscode-go, Bazel, delve all behave

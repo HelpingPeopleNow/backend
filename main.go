@@ -67,6 +67,7 @@ func buildMux(d appDeps) *http.ServeMux {
 
 	mux.Handle("/health", handler.NewHealthHandler(d.DB, d.LLM))
 	mux.Handle("/livez", handler.NewHealthHandler(d.DB, d.LLM))
+	mux.Handle("/readyz", handler.NewReadyzHandler(handler.ReadyFlag()))
 
 	broker := realtime.NewSSEBroker()
 	dmRateLimiter := ratelimit.NewRateLimiter(30, time.Minute)
@@ -283,6 +284,16 @@ func main() {
 	}
 
 	mux := buildMux(deps)
+
+	// P0-follow-up: /readyz gate. Flip on the readiness flag once the
+	// startup critical path is complete (DB connected, system prompts
+	// seeded, mux wired). The staleness sweeper is housekeeping and
+	// starts a few lines further down — readiness does NOT block on it.
+	// Traefik uses /readyz as the health-check in the multi-replica
+	// deploy that resolves the single-replica SPOF (see
+	// infra/docs/FOLLOW_UP_SPOF.md Phase 2). Until the flag is true the
+	// load-balancer should treat this replica as drained.
+	handler.MarkReady()
 
 	// VECTOR_SEARCH_PLAN §8.10 / Improvement #11: kick off the staleness
 	// sweeper with a cancellable context, registered on rootWG so the

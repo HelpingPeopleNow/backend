@@ -180,8 +180,8 @@ func TestResolveViaAuthServiceSucceedsDirectly(t *testing.T) {
 // ── P2-3 (audit / F8) — DB-fallback Cookie HMAC Verification ──────────────
 
 // These tests directly exercise verifySessionHMAC with deterministic
-// inputs. resolveViaDB itself can't be tested without a real *gorm.DB
-// fixture (P2-3 audit's TODO in admin_handler_test.go notwithstanding),
+// inputs. resolveViaDB itself can't be tested without a real *gorm.DB	// fixture (audit-P3 in-flight; superseded by the runtime integration test
+// in admin_handler_test.go at the time the audit closed),
 // so we cover the matching logic here.
 
 func TestVerifySessionHMACAcceptsHexSignature(t *testing.T) {
