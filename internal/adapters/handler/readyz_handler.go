@@ -67,3 +67,20 @@ func (h *ReadyzHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func MarkReady() {
 	readyFlag.Store(true)
 }
+
+// MarkUnready flips the package-level readyFlag to false. Companion to
+// MarkReady — models the "draining" path: a graceful shutdown (SIGTERM
+// pre-Shutdown flip so Traefik drains before in-flight requests die),
+// a dependency flap the operator wants to surface, or a unit-test
+// fixture. The next /readyz response goes 503; the Traefik load-
+// balancer health-check (path:/readyz, interval:10s, timeout:3s in
+// infra/traefik-dev-dynamic.yaml + the dev/prod compose labels) sees
+// the 5xx and removes the replica from the pool until 200 returns.
+//
+// Phase 3 of the SPOF remediation (multi-replica deploy see
+// infra/docs/FOLLOW_UP_SPOF.md) will wire this into the SIGTERM
+// handler so a rolling restart drains cleanly. Until then, the
+// companion is reachable from tests + future SIGTERM wiring.
+func MarkUnready() {
+	readyFlag.Store(false)
+}
