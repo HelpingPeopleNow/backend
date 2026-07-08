@@ -25,7 +25,7 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
 1. **Worker profile intake chat** — receives `POST /api/v1/chat` with `mode: "worker_intake"`, uses the `worker_profile_prompt` system prompt designed to gather worker profile fields conversationally, appends a language instruction to the system prompt based on the `lang` parameter, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the worker profile via map-based upsert; accepts optional `latitude` and `longitude` in the request body to persist the worker's GPS coordinates
 2. **Client profile intake chat** — receives `POST /api/v1/chat` with `mode: "client_intake"`, uses the `client_profile_prompt` system prompt designed to gather client profile fields conversationally, appends a language instruction to the system prompt based on the `lang` parameter, returns the answer + parsed `detected_fields` in JSON; the backend auto-merges fields into the client profile via map-based upsert; accepts optional `latitude` and `longitude` in the request body to persist the client's GPS coordinates
 3. **System prompt management** — admin can read/update the worker profile prompt (`worker_profile_prompt`), the client profile prompt (`client_profile_prompt`), and the LLM provider (`llm_provider`) via REST endpoints
-4. **LLM provider runtime switch** — admin can toggle between `opencode0` (big-pickle), `opencode1`, `opencode2` (external), `ollama` (local), and `mistral` (cloud) without restarting the container; empty = uses the helper's auto fallback chain (Mistral → OpenCode 0 → OpenCode 1 → OpenCode 2 → Ollama)
+4. **LLM provider runtime switch** — admin can toggle between `opencode0` (big-pickle), `opencode1`, `opencode2` (external), `ollama` (local), and `mistral` (cloud) without restarting the container; empty = uses the helper's auto fallback chain (OpenCode 0 → OpenCode 1 → OpenCode 2 → Mistral → Ollama, cheap-first R5)
 5. **Conversation persistence** — all chat messages (worker, client) are saved to the database and can be loaded on page reload via the conversations API
 6. **Search/find professionals** — receives `POST /api/v1/chat` with `mode: "search"`, uses two-pass LLM (filter-fill then presentation) to match clients with workers, returns recommended worker cards with `distance_km` (Haversine) when GPS coordinates are provided in the request
 7. **Profile reset** — worker and client profiles can be cleared via `DELETE /api/v1/worker/profile` and `DELETE /api/v1/client/profile`
@@ -349,7 +349,7 @@ curl -X PUT http://localhost:8081/api/v1/system-prompts/provider \
   -H "Content-Type: application/json" \
   -d '{"content":"ollama"}'
 
-# Reset to auto fallback chain (Mistral → OpenCode → Ollama)
+# Reset to auto fallback chain (OpenCode 0 → OpenCode 1 → OpenCode 2 → Mistral → Ollama, cheap-first R5)
 curl -X PUT http://localhost:8081/api/v1/system-prompts/provider \
   -H "Content-Type: application/json" \
   -d '{"content":""}'
