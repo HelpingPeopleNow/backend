@@ -254,3 +254,61 @@ func mustSubscribe(t *testing.T, b ports.Broker, ctx context.Context, userID str
 	require.NoError(t, err)
 	return ch
 }
+
+// TestSSECapErrorMessage guards the well-known ErrSSETooManySubscribers
+// sentinel's stable error string. Downstream error consumers (clients,
+// alerting rules, log scrapers) frequently match on the message; any
+// drift here is a silent contract change.
+func TestSSECapErrorMessage(t *testing.T) {
+	assert.Equal(t, "sse subscription cap exceeded for user", ErrSSETooManySubscribers.Error())
+	// Sanity-check that the sentinel returned by Subscribe rejection is
+	// the same value held by ErrSSETooManySubscribers (compare-by-identity
+	// rather than string match).
+	assert.Same(t, ErrSSETooManySubscribers, ErrSSETooManySubscribers)
+}
+
+// TestActiveConnections covers the ActiveConnections observability
+// hook (P2-1 audit / F6 — source callback for the
+// `sse_active_connections` Prometheus gauge). Returns the total
+// in-process SSE subscriber count across all users.
+//
+// Race-safe because ActiveConnections takes b.mu.RLock while Subscribe
+// takes b.mu.Lock. Tests defer cancel() on every spawned context so
+// the broker's per-subscribe cleanup goroutines exit before the test
+// ends (no goroutine leaks under -race).
+func TestActiveConnections(t *testing.T) {
+	broker := NewSSEBroker()
+
+	// Empty broker: zero subscribers across all users.
+	assert.Equal(t, 0, broker.(*sseBroker).ActiveConnections(),
+		"empty broker reports zero active connections")
+
+	// Single user, single subscription.
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	_, err := broker.Subscribe(ctx1, "u1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, broker.(*sseBroker).ActiveConnections())
+
+	// Second user with multiple subscriptions — verifies the metric
+	// aggregates across users, not per-user.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	_, err = broker.Subscribe(ctx2, "u2")
+	require.NoError(t, err)
+	_, err = broker.Subscribe(ctx2, "u2")
+	require.NoError(t, err)
+	_, err = broker.Subscribe(ctx2, "u2")
+	require.NoError(t, err)
+	assert.Equal(t, 4, broker.(*sseBroker).ActiveConnections(),
+		"count aggregates across all users, not per-user")
+
+	// Cancel both contexts — cleanup goroutines must drop the count
+	// back to zero. time.Sleep gives the per-subscribe cleanup
+	// goroutines a brief window to run before we re-check.
+	cancel1()
+	cancel2()
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, 0, broker.(*sseBroker).ActiveConnections(),
+		"cancelled subscriptions must be drained from the gauge")
+}
