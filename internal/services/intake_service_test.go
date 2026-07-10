@@ -246,18 +246,18 @@ func TestScheduleReembedDifferentUsers(t *testing.T) {
 
 func TestNormalizeProfessionSpanish(t *testing.T) {
 	tests := []struct{ input, want string }{
-		{"electricista", "electrician"},
-		{"Electricista", "electrician"},
-		{"FONTANERO", "plumber"},
-		{"plomero", "plumber"},
-		{"limpiador", "cleaner"},
-		{"limpieza", "cleaner"},
-		{"manitas", "handyman"},
+		{"electricista", "Electrician"},
+		{"Electricista", "Electrician"},
+		{"FONTANERO", "Plumber"},
+		{"plomero", "Plumber"},
+		{"limpiador", "Cleaner"},
+		{"limpieza", "Cleaner"},
+		{"manitas", "Handyman"},
 		{"carpintero", "Carpenter"},
-		{"pintor", "painter"},
-		{"jardinero", "landscaper"},
-		{"tejador", "roofer"},
-		{"aire acondicionado", "hvac technician"},
+		{"pintor", "Painter"},
+		{"jardinero", "Landscaper"},
+		{"tejador", "Roofer"},
+		{"aire acondicionado", "HVAC Technician"},
 		{"unknown profession", "unknown profession"},
 	}
 	for _, tc := range tests {
@@ -271,7 +271,7 @@ func TestNormalizeProfessionSpanish(t *testing.T) {
 
 func TestSearchFiltersFromJSONPartialFields(t *testing.T) {
 	f := searchFiltersFromJSON([]byte(`{"profession":"plumber"}`))
-	assert.Equal(t, "plumber", f.Profession)
+	assert.Equal(t, "Plumber", f.Profession)
 	assert.Equal(t, "", f.City)
 	assert.False(t, f.EmergencyOnly)
 }

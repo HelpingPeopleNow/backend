@@ -88,7 +88,7 @@ func (w WorkerProfile) FormattedRate() string {
 
 func (w *WorkerProfile) MergeFields(fields map[string]interface{}) {
 	if v, ok := rawString(fields, "profession"); ok {
-		w.Profession = normalizeProfessionForEmbedding(v)
+		w.Profession = NormalizeProfessionForEmbedding(v)
 	}
 	if v, ok := rawString(fields, "business_name"); ok {
 		w.BusinessName = v

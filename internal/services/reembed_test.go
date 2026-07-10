@@ -16,7 +16,7 @@ import (
 func TestSearchFiltersFromJSONAllFields(t *testing.T) {
 	input := []byte(`{"profession":"plumber","city":"Madrid","emergency":true,"free_estimate":true,"insured":true}`)
 	f := searchFiltersFromJSON(input)
-	assert.Equal(t, "plumber", f.Profession)
+	assert.Equal(t, "Plumber", f.Profession)
 	assert.Equal(t, "Madrid", f.City)
 	assert.True(t, f.EmergencyOnly)
 	assert.True(t, f.FreeEstimateOnly)
@@ -26,7 +26,7 @@ func TestSearchFiltersFromJSONAllFields(t *testing.T) {
 func TestSearchFiltersFromJSONSpanishProfession(t *testing.T) {
 	input := []byte(`{"profession":"electricista","city":"Barcelona"}`)
 	f := searchFiltersFromJSON(input)
-	assert.Equal(t, "electrician", f.Profession) // normalized
+	assert.Equal(t, "Electrician", f.Profession) // normalized
 }
 
 // ── Search with empty prompt ─────────────────────────────────────────

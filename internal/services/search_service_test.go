@@ -20,25 +20,25 @@ func TestNormalizeProfessionVariants(t *testing.T) {
 	tests := []struct {
 		input, expected string
 	}{
-		{"electricista", "electrician"},
-		{"Electricista", "electrician"},
-		{"electrician", "electrician"},
-		{"fontanero", "plumber"},
-		{"plomero", "plumber"},
-		{"plumber", "plumber"},
-		{"limpieza", "cleaner"},
-		{"cleaner", "cleaner"},
-		{"manitas", "handyman"},
-		{"handyman", "handyman"},
+		{"electricista", "Electrician"},
+		{"Electricista", "Electrician"},
+		{"electrician", "Electrician"},
+		{"fontanero", "Plumber"},
+		{"plomero", "Plumber"},
+		{"plumber", "Plumber"},
+		{"limpieza", "Cleaner"},
+		{"cleaner", "Cleaner"},
+		{"manitas", "Handyman"},
+		{"handyman", "Handyman"},
 		{"carpintero", "Carpenter"},
 		{"carpenter", "Carpenter"},
-		{"pintor", "painter"},
-		{"painter", "painter"},
-		{"jardinero", "landscaper"},
-		{"landscaper", "landscaper"},
-		{"tejador", "roofer"},
-		{"roofer", "roofer"},
-		{"hvac", "hvac technician"},
+		{"pintor", "Painter"},
+		{"painter", "Painter"},
+		{"jardinero", "Landscaper"},
+		{"landscaper", "Landscaper"},
+		{"tejador", "Roofer"},
+		{"roofer", "Roofer"},
+		{"hvac", "HVAC Technician"},
 		{"unknown_trade", "unknown_trade"},
 	}
 	for _, tc := range tests {
@@ -100,7 +100,7 @@ func TestBuildWorkerSummariesWithDetails(t *testing.T) {
 
 func TestSearchFiltersFromJSON(t *testing.T) {
 	filters := searchFiltersFromJSON([]byte(`{"profession":"plumber","city":"Madrid"}`))
-	assert.Equal(t, "plumber", filters.Profession)
+	assert.Equal(t, "Plumber", filters.Profession)
 	assert.Equal(t, "Madrid", filters.City)
 }
 
@@ -290,32 +290,58 @@ func TestBuildWorkerSummariesWithDistanceKm(t *testing.T) {
 // search query.
 func TestNormalizeProfessionParity(t *testing.T) {
 	// Map of raw profession input → expected canonical English output.
-	// Both normalizers MUST return these exact values.
+	// Both normalizers MUST return these exact values (Title Case).
 	expected := map[string]string{
-		"plomero":      "plumber",
-		"plumber":      "plumber",
-		"fontanero":    "plumber",
-		"electricista": "electrician",
-		"electrician":  "electrician",
+		"plomero":      "Plumber",
+		"plumber":      "Plumber",
+		"fontanero":    "Plumber",
+		"electricista": "Electrician",
+		"electrician":  "Electrician",
 		"carpintero":   "Carpenter",
 		"carpenter":    "Carpenter",
-		"pintor":       "painter",
-		"painter":      "painter",
-		"pintura":      "painter",
-		"jardinero":    "landscaper",
-		"landscaper":   "landscaper",
-		"gardener":     "landscaper",
-		"limpieza":     "cleaner",
-		"limpiador":    "cleaner",
-		"cleaner":      "cleaner",
-		"cleaning":     "cleaner",
-		"manitas":      "handyman",
-		"handyman":     "handyman",
-		"handy man":    "handyman",
+		"pintor":       "Painter",
+		"painter":      "Painter",
+		"pintura":      "Painter",
+		"jardinero":    "Landscaper",
+		"landscaper":   "Landscaper",
+		"gardener":     "Landscaper",
+		"limpieza":     "Cleaner",
+		"limpiador":    "Cleaner",
+		"cleaner":      "Cleaner",
+		"cleaning":     "Cleaner",
+		"manitas":      "Handyman",
+		"handyman":     "Handyman",
+		"handy man":    "Handyman",
+		"tejador":      "Roofer",
+		"roofer":       "Roofer",
+		"hvac":         "HVAC Technician",
 	}
 	for raw, want := range expected {
 		got := normalizeProfession(raw)
 		assert.Equal(t, want, got, "normalizeProfession(%q) = %q, want %q", raw, got, want)
+	}
+}
+
+// F5 stricter regression: both normalizers (services + core) must return
+// IDENTICAL strings — not just semantically equivalent values. This catches
+// casing drift (e.g. "plumber" vs "Plumber") that a semantic-only test misses.
+func TestNormalizeProfessionCasingParityWithEmbedding(t *testing.T) {
+	inputs := []string{
+		"plomero", "plumber", "fontanero",
+		"electricista", "electrician",
+		"carpintero", "carpenter",
+		"pintor", "painter", "pintura",
+		"jardinero", "landscaper", "gardener",
+		"limpieza", "limpiador", "cleaner",
+		"manitas", "handyman",
+		"tejador", "roofer",
+		"hvac",
+	}
+	for _, raw := range inputs {
+		searchVal := normalizeProfession(raw)
+		embedVal := core.NormalizeProfessionForEmbedding(raw)
+		assert.Equal(t, embedVal, searchVal,
+			"casing mismatch for %q: search=%q, embedding=%q", raw, searchVal, embedVal)
 	}
 }
 

@@ -141,7 +141,7 @@ func TestNormalizeProfessionForEmbedding(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
-			assert.Equal(t, tc.expected, normalizeProfessionForEmbedding(tc.input))
+			assert.Equal(t, tc.expected, NormalizeProfessionForEmbedding(tc.input))
 		})
 	}
 }

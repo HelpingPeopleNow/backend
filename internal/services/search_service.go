@@ -478,23 +478,23 @@ func searchFiltersFromJSON(raw []byte) core.WorkerSearchFilters {
 func normalizeProfession(p string) string {
 	switch strings.ToLower(strings.TrimSpace(p)) {
 	case "electricista", "electrician", "electric":
-		return "electrician"
+		return "Electrician"
 	case "fontanero", "plomero", "plumber":
-		return "plumber"
+		return "Plumber"
 	case "limpiador", "limpieza", "limpiadora", "cleaner", "cleaning":
-		return "cleaner"
+		return "Cleaner"
 	case "manitas", "handyman", "handy man":
-		return "handyman"
+		return "Handyman"
 	case "carpintero", "carpenter":
 		return "Carpenter"
 	case "pintor", "pintura", "painter", "painting":
-		return "painter"
+		return "Painter"
 	case "jardinero", "landscaper", "gardener":
-		return "landscaper"
+		return "Landscaper"
 	case "tejador", "techo", "roofer", "roofing":
-		return "roofer"
+		return "Roofer"
 	case "clima", "aire acondicionado", "hvac", "hvac technician":
-		return "hvac technician"
+		return "HVAC Technician"
 	default:
 		return p
 	}

@@ -82,14 +82,14 @@ func joinJSONArray(jsonStr string) string {
 
 // BuildFieldTexts maps a WorkerProfile to the field name → embedding text
 // map consumed by reembedWorker. Idea E (fourth-pass review) applies
-// normalizeProfessionForEmbedding() so the most-searched field has exact
+// NormalizeProfessionForEmbedding() so the most-searched field has exact
 // cosine == 1.0 for "electricista" ↔ "Electrician" pairs. Empty fields
 // are excluded entirely (no row produced).
 func BuildFieldTexts(wp *WorkerProfile) map[string]string {
 	fields := map[string]string{}
 
 	if p := wp.Profession; p != "" {
-		normalized := normalizeProfessionForEmbedding(p)
+		normalized := NormalizeProfessionForEmbedding(p)
 		fields["profession"] = normalized
 		// P5/N7 (third-pass review): keep raw as profession_raw at lower
 		// weight so unrecognized professions still rank in vector space.
@@ -129,17 +129,18 @@ var FieldWeights = map[string]float64{
 	"business_name":  0.3,
 }
 
-// normalizeProfessionForEmbedding mirrors search_service.go's
+// NormalizeProfessionForEmbedding mirrors search_service.go's
 // normalizeProfession but lives in core (services → core, not the other
 // way around).  Keep this in sync with search_service.go::normalizeProfession.
 // If you add a profession there, mirror it here.
-func normalizeProfessionForEmbedding(p string) string {
+// Exported so the services parity test can verify casing consistency.
+func NormalizeProfessionForEmbedding(p string) string {
 	switch p {
 	case "electricista", "Electricista", "electrician", "Electrician":
 		return "Electrician"
 	case "fontanero", "Fontanero", "plomero", "Plomero", "plumber", "Plumber":
 		return "Plumber"
-	case "limpieza", "Limpieza", "cleaner", "Cleaner", "cleaning", "Cleaning":
+	case "limpieza", "Limpieza", "limpiador", "Limpiador", "limpiadora", "Limpiadora", "cleaner", "Cleaner", "cleaning", "Cleaning":
 		return "Cleaner"
 	case "manitas", "Manitas", "handyman", "Handyman":
 		return "Handyman"
@@ -149,7 +150,7 @@ func normalizeProfessionForEmbedding(p string) string {
 		return "Painter"
 	case "jardinero", "Jardinero", "landscaper", "Landscaper", "gardener", "Gardener":
 		return "Landscaper"
-	case "tejado", "Tejado", "roofer", "Roofer":
+	case "tejado", "Tejado", "tejador", "Tejador", "techo", "Techo", "roofer", "Roofer":
 		return "Roofer"
 	case "clima", "Clima", "hvac", "HVAC":
 		return "HVAC Technician"
