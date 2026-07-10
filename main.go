@@ -65,8 +65,9 @@ func buildDeps(db *gorm.DB) appDeps {
 func buildMux(d appDeps) *http.ServeMux {
 	mux := http.NewServeMux()
 
-	mux.Handle("/health", handler.NewHealthHandler(d.DB, d.LLM))
-	mux.Handle("/livez", handler.NewHealthHandler(d.DB, d.LLM))
+	healthHandler := handler.NewHealthHandler(d.DB, d.LLM)
+	mux.Handle("/health", healthHandler)
+	mux.Handle("/livez", http.HandlerFunc(healthHandler.Livez))
 	mux.Handle("/readyz", handler.NewReadyzHandler(handler.ReadyFlag()))
 
 	broker := realtime.NewSSEBroker()

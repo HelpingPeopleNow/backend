@@ -3,14 +3,14 @@ package handler
 import (
 	"crypto/subtle"
 	"fmt"
+	metricspkg "github.com/HelpingPeopleNow/backend/internal/metrics"
 	"log/slog"
 	"math"
 	"net/http"
 	"sort"
 	"strings"
 	"sync"
-
-	metricspkg "github.com/HelpingPeopleNow/backend/internal/metrics"
+	"sync/atomic"
 )
 
 // ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ var metrics = struct {
 	conversationsTotal     map[string]*counter // key: operation
 	dmSentTotal            map[string]*counter // key: role (client|worker) or "contact"
 	dmReceivedTotal        map[string]*counter // key: role
-	healthStatus           map[string]*gauge   // key: component
+	healthStatus           map[string]*gauge   // key: component (DEPRECATED: use atomicHealthStatus)
 
 	// VECTOR_SEARCH_PLAN §12.3 — vector search metrics. NO Prometheus
 	// client_golang import (Improvement #7): use the existing custom
@@ -108,6 +108,15 @@ var metrics = struct {
 
 	gaugeScrapeSources: nil,
 	dynamicGauges:      make(map[string]*gauge),
+}
+
+// atomicHealthStatus uses atomics instead of the metrics RWMutex to avoid
+// the reader-writer convoy that caused the 2026-07-10 deadlock (goroutine
+// dump: SetHealthStatus held metrics.Lock while Prometheus scrapes queued
+// behind it, starving ALL HTTP handlers including /readyz and /livez).
+var atomicHealthStatus = map[string]*atomic.Int64{
+	"postgres":    {},
+	"grpc_helper": {},
 }
 
 // defaultBuckets for latency histograms (seconds).
@@ -291,7 +300,18 @@ func IncrDMReceived(role string) {
 }
 
 // SetHealthStatus sets the health_status gauge (1 = healthy, 0 = unhealthy).
+// Uses atomic store to avoid acquiring the metrics RWMutex, which caused
+// a reader-writer convoy deadlock on 2026-07-10 (see atomicHealthStatus doc).
 func SetHealthStatus(component string, healthy bool) {
+	if a, ok := atomicHealthStatus[component]; ok {
+		if healthy {
+			a.Store(1)
+		} else {
+			a.Store(0)
+		}
+		return
+	}
+	// Fallback for unknown components (should not happen in production).
 	metrics.Lock()
 	defer metrics.Unlock()
 	g := getGauge(metrics.healthStatus, component)
@@ -610,14 +630,23 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 		counters:   metrics.dmReceivedTotal,
 	}))
 
-	// 12. health_status
-	write(renderFamilyToString(metricFamily{
-		name:       "health_status",
-		help:       "Health status of components (1=healthy, 0=unhealthy).",
-		metricType: "gauge",
-		keys:       []string{"component"},
-		gauges:     metrics.healthStatus,
-	}))
+	// 12. health_status — read from atomics (no mutex needed)
+	{
+		var sb2 strings.Builder
+		sb2.WriteString("# HELP health_status Health status of components (1=healthy, 0=unhealthy).\n")
+		sb2.WriteString("# TYPE health_status gauge\n")
+		// Sort keys for deterministic output.
+		keys := make([]string, 0, len(atomicHealthStatus))
+		for k := range atomicHealthStatus {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			v := atomicHealthStatus[k].Load()
+			sb2.WriteString(fmt.Sprintf("health_status{component=%q} %d\n", k, v))
+		}
+		write(sb2.String())
+	}
 
 	// 13. vector_search_total (VECTOR_SEARCH_PLAN §12.3 / Idea C / N1)
 	write(renderFamilyToString(metricFamily{
