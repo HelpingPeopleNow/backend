@@ -479,6 +479,14 @@ All handlers use Go's `log/slog` with structured key-value pairs:
 | `DB_NAME` | `helpingpeoplenow` | DB name |
 | `DB_SSLMODE` | `disable` | SSL mode |
 | `SHUTDOWN_DRAIN_WAIT` | `14s` | Go duration. Window between `MarkUnready()` (flip /readyz→503) and `server.Shutdown(30s)` on SIGTERM. Must exceed the Traefik LB health-check interval+timeout (currently 10s+3s=13s) so the LB has time to drain the replica. `0s` allowed for snappy local-dev rebuilds; invalid/negative falls back to 14s with a `slog.Warn`. The infra compose backend service MUST continue to set `stop_grace_period: 120s` so Docker does not SIGKILL the process mid-drain (≥ 14s + 30s + 65s sweeper drain = 109s worst-case + 11s slack). See `infra/docs/FOLLOW_UP_SPOF.md` §Phase 3 for full derivation. |
+| `BETTER_AUTH_SECRET` | — (strongly recommended) | HMAC secret used to verify the Better Auth session token in the DB-fallback path. Without it, a stripped-signature cookie can still resolve (P2-3 / F8). |
+| `METRICS_TOKEN` | — (strongly recommended) | Bearer token required to scrape `/metrics`. Empty value logs a warning and leaves `/metrics` unauthenticated (P2-2 / F9). |
+| `REEMBED_ENABLED` | `true` | Runtime kill switch for the vector-search re-embedding pipeline. `false` pauses new re-embeds (existing vectors still serve search). |
+| `HELPER_LLM_TIMEOUT` | `20s` | Per-request timeout for Pass-1/Pass-2 LLM calls to the helper. |
+| `HELPER_EMBED_TIMEOUT` | `8s` | Per-request timeout for embedding calls to the helper. |
+| `VECTOR_SEARCH_ENABLED` | `true` | Global kill switch for vector search. `false` forces ILIKE-only search. |
+| `VECTOR_SEARCH_MIN_SCORE` | `0.3` | Per-row minimum cosine similarity for vector search results. |
+| `VECTOR_SEARCH_MIN_TOP_SCORE` | `0.5` | If the top vector score is below this threshold, fall back to ILIKE with `branch="ilike_low_top_score"`. |
 
 ---
 
