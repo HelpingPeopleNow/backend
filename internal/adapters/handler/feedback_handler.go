@@ -54,10 +54,12 @@ func (h *FeedbackHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Message == "" || len(req.Message) > maxFeedbackMessageLength {
+		slog.Warn("feedback: bad request", "error", "message must be 1–2000 chars", "len", len(req.Message))
 		writeError(w, http.StatusBadRequest, "message must be 1–2000 chars")
 		return
 	}
 	if req.PageURL == "" || len(req.PageURL) > 2048 {
+		slog.Warn("feedback: bad request", "error", "page_url must be 1–2048 chars", "len", len(req.PageURL))
 		writeError(w, http.StatusBadRequest, "page_url must be 1–2048 chars")
 		return
 	}
@@ -65,6 +67,7 @@ func (h *FeedbackHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		req.Category = "general"
 	}
 	if !core.ValidCategories[req.Category] {
+		slog.Warn("feedback: bad request", "error", "invalid category", "category", req.Category)
 		writeError(w, http.StatusBadRequest, "invalid category")
 		return
 	}
@@ -88,6 +91,7 @@ func (h *FeedbackHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save feedback")
 		return
 	}
+	slog.Info("feedback: submit ok", "user_id", userID, "category", req.Category, "id", fb.ID)
 
 	// Fire-and-forget Telegram notification. Non-blocking: if it
 	// fails, the feedback is still saved.
