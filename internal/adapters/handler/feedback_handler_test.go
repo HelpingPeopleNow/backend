@@ -3,9 +3,13 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/HelpingPeopleNow/backend/internal/contextkeys"
 	"github.com/HelpingPeopleNow/backend/internal/core"
@@ -34,11 +38,15 @@ func (m *mockFeedbackRepo) CountByStatus() (map[string]int64, error)  { return n
 
 // mockNotifier is a no-op Notifier for handler tests.
 type mockNotifier struct {
-	called bool
+	sendFunc func(*core.Feedback) error
+	called   bool
 }
 
 func (n *mockNotifier) SendFeedbackAlert(fb *core.Feedback) error {
 	n.called = true
+	if n.sendFunc != nil {
+		return n.sendFunc(fb)
+	}
 	return nil
 }
 
@@ -246,5 +254,92 @@ func TestFeedbackHandler_Submit_NilNotifier(t *testing.T) {
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusCreated)
+	}
+}
+
+func TestFeedbackHandler_Submit_CreateRepoError(t *testing.T) {
+	h := NewFeedbackHandler(&mockFeedbackRepo{createErr: errors.New("db timeout")}, nil)
+
+	body, _ := json.Marshal(feedbackRequest{Message: "test", PageURL: "/chat", Category: "general"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(contextkeys.SetUserID(req.Context(), "user-1"))
+	w := httptest.NewRecorder()
+
+	h.Submit(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestFeedbackHandler_Submit_BodyTooLarge(t *testing.T) {
+	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil)
+	longMsg := make([]byte, 5000)
+	for i := range longMsg {
+		longMsg[i] = 'a'
+	}
+	body, _ := json.Marshal(feedbackRequest{Message: string(longMsg), PageURL: "/chat", Category: "bug"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(contextkeys.SetUserID(req.Context(), "user-1"))
+	w := httptest.NewRecorder()
+
+	h.Submit(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusRequestEntityTooLarge)
+	}
+}
+
+func TestFeedbackHandler_Submit_MalformedJSON(t *testing.T) {
+	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", strings.NewReader(`{bad json`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(contextkeys.SetUserID(req.Context(), "user-1"))
+	w := httptest.NewRecorder()
+
+	h.Submit(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestFeedbackHandler_Submit_NotifierFiresInGoroutine(t *testing.T) {
+	var fired atomic.Bool
+	notifier := &mockNotifier{
+		sendFunc: func(_ *core.Feedback) error {
+			fired.Store(true)
+			return nil
+		},
+	}
+	h := NewFeedbackHandler(&mockFeedbackRepo{}, notifier)
+
+	body, _ := json.Marshal(feedbackRequest{Message: "hello", PageURL: "/chat", Category: "general"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(contextkeys.SetUserID(req.Context(), "user-1"))
+	w := httptest.NewRecorder()
+
+	h.Submit(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusCreated)
+	}
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 50 && !fired.Load(); i++ {
+			time.Sleep(10 * time.Millisecond)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("notifier goroutine did not fire within 2s")
+	}
+	if !fired.Load() {
+		t.Fatal("expected notifier to be called")
 	}
 }

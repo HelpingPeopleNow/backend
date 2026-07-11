@@ -23,6 +23,7 @@ func migrateTestSchema(t *testing.T, db *gorm.DB) {
 		&core.SystemPrompt{},
 		&core.DirectConversation{},
 		&core.DirectMessage{},
+		&core.Feedback{},
 	)
 	require.NoError(t, err, "AutoMigrate failed")
 }

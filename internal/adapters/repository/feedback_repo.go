@@ -2,6 +2,8 @@ package repository
 
 import (
 	"github.com/HelpingPeopleNow/backend/internal/core"
+	"log/slog"
+
 	"gorm.io/gorm"
 )
 
@@ -15,7 +17,11 @@ func NewGormFeedbackRepository(db *gorm.DB) *GormFeedbackRepository {
 }
 
 func (r *GormFeedbackRepository) Create(fb *core.Feedback) error {
-	return r.db.Create(fb).Error
+	if err := r.db.Create(fb).Error; err != nil {
+		slog.Error("feedback_repo: create failed", "error", err)
+		return err
+	}
+	return nil
 }
 
 func (r *GormFeedbackRepository) List(status string, limit, offset int) ([]core.Feedback, int64, error) {
@@ -27,10 +33,14 @@ func (r *GormFeedbackRepository) List(status string, limit, offset int) ([]core.
 		q = q.Where("status = ?", status)
 	}
 	if err := q.Count(&total).Error; err != nil {
+		slog.Error("feedback_repo: list count failed", "error", err)
 		return nil, 0, err
 	}
 
 	err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&fbs).Error
+	if err != nil {
+		slog.Error("feedback_repo: list find failed", "error", err)
+	}
 	return fbs, total, err
 }
 
@@ -39,7 +49,11 @@ func (r *GormFeedbackRepository) UpdateStatus(id, status, adminNote string) erro
 	if adminNote != "" {
 		updates["admin_note"] = adminNote
 	}
-	return r.db.Model(&core.Feedback{}).Where("id = ?", id).Updates(updates).Error
+	if err := r.db.Model(&core.Feedback{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+		slog.Error("feedback_repo: update status failed", "error", err, "id", id, "status", status)
+		return err
+	}
+	return nil
 }
 
 func (r *GormFeedbackRepository) CountByStatus() (map[string]int64, error) {
@@ -53,6 +67,7 @@ func (r *GormFeedbackRepository) CountByStatus() (map[string]int64, error) {
 		Group("status").
 		Scan(&rows).Error
 	if err != nil {
+		slog.Error("feedback_repo: count by status failed", "error", err)
 		return nil, err
 	}
 	result := make(map[string]int64, len(rows))
