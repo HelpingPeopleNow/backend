@@ -36,6 +36,11 @@ func maxSSEStreamDuration() time.Duration {
 	return 15 * time.Minute
 }
 
+// captchaConfigured reports whether all three CAPTCHA env vars are set.
+func captchaConfigured() bool {
+	return os.Getenv("CAP_SERVER_URL") != "" && os.Getenv("CAP_SITE_KEY") != "" && os.Getenv("CAP_SECRET_KEY") != ""
+}
+
 // verifyCapToken validates a Cap CAPTCHA token against the Cap server.
 // Returns true if the token is valid, or if CAPTCHA is not configured (fail-open).
 // Returns false only when CAPTCHA is configured and the token is invalid.
@@ -202,7 +207,12 @@ func (h *DirectMessagingHandler) getOrCreateContact(
 	}
 
 	// CAPTCHA verification (capToken passed as query param since this is a GET)
-	if capToken := r.URL.Query().Get("capToken"); capToken != "" {
+	capToken := r.URL.Query().Get("capToken")
+	if captchaConfigured() {
+		if capToken == "" {
+			writeError(w, http.StatusForbidden, "captcha token required")
+			return
+		}
 		if !verifyCapToken(capToken) {
 			writeError(w, http.StatusForbidden, "captcha verification failed")
 			return
