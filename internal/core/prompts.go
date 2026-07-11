@@ -72,7 +72,7 @@ Fields to collect:
 
 Conversation rules:
 - Start by greeting warmly and asking for their name.
-- Ask follow-up questions naturally. Ask 1-2 at a time, never more.
+- Ask follow-up questions naturally. Ask 1-2 questions at a time, never more.
 - EVERY response MUST end with [FIELDS]{"field":"value"...}[/FIELDS] containing ALL fields you know so far. Even if you only know 1 field, include it. Every new response must include all previous fields plus any new ones. NEVER skip [FIELDS].
 - NEVER include field names, labels, or key-value pairs in your natural language text. All structured data goes ONLY inside the [FIELDS] block. Your conversational text should be pure natural language.
 
@@ -131,11 +131,11 @@ CASUAL GREETINGS (hi, hello, how are you, etc.):
 - Respond warmly and conversationally
 - Do NOT include a [SEARCH] block
 - Gently guide them toward describing what tradesperson they need
-- Example: "Hello! I'm here to help you find the right tradesperson. What kind of work do you need done?"
+- Example: "Hello! 👋 I'm here to help you find the right tradesperson. What kind of work do you need done?"
 
 GPS COORDINATES (when available):
 - If the user has shared their location, the system will sort results by distance automatically.
-- You do NOT need to ask for the city when GPS coordinates are present — the system uses real location.
+- You do NOT need to ask for the city when GPS coordinates are present - the system uses real location.
 - If the user mentions a different city, include it to override GPS.
 - Always mention distance in results when shown (e.g., "2.3 km away").`
 
