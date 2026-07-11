@@ -36,6 +36,40 @@ func maxSSEStreamDuration() time.Duration {
 	return 15 * time.Minute
 }
 
+// verifyCapToken validates a Cap CAPTCHA token against the Cap server.
+// Returns true if the token is valid, or if CAPTCHA is not configured (fail-open).
+// Returns false only when CAPTCHA is configured and the token is invalid.
+func verifyCapToken(token string) bool {
+	serverURL := os.Getenv("CAP_SERVER_URL")
+	siteKey := os.Getenv("CAP_SITE_KEY")
+	secretKey := os.Getenv("CAP_SECRET_KEY")
+	if serverURL == "" || siteKey == "" || secretKey == "" {
+		return true // Fail-open if not configured
+	}
+	body := fmt.Sprintf(`{"secret":"%s","response":"%s"}`, secretKey, token)
+	resp, err := http.Post(
+		fmt.Sprintf("%s/%s/siteverify", serverURL, siteKey),
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		slog.Error("captcha: siteverify request failed", "error", err)
+		return false
+	}
+	defer resp.Body.Close()
+	var result struct {
+		Success bool `json:"success"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		slog.Error("captcha: decode failed", "error", err)
+		return false
+	}
+	if !result.Success {
+		slog.Warn("captcha: verification failed")
+	}
+	return result.Success
+}
+
 // maxReportBodyBytes caps the report endpoint body so a 100 MB body
 // can't OOM the process. Reports are tiny in practice — capping at 8 KiB
 // is 64× generous while still terminating the connection early.
@@ -165,6 +199,14 @@ func (h *DirectMessagingHandler) getOrCreateContact(
 	if wp.UserID == userID {
 		writeError(w, http.StatusBadRequest, "cannot_message_self")
 		return
+	}
+
+	// CAPTCHA verification (capToken passed as query param since this is a GET)
+	if capToken := r.URL.Query().Get("capToken"); capToken != "" {
+		if !verifyCapToken(capToken) {
+			writeError(w, http.StatusForbidden, "captcha verification failed")
+			return
+		}
 	}
 
 	conv, created, err := h.dm.GetOrCreateConversation(r.Context(), userID, wp.UserID)
