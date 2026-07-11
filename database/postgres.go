@@ -58,6 +58,16 @@ func Connect() (*gorm.DB, error) {
 		slog.Warn("migration: pgvector extension not available (vector search disabled)", "error", err)
 	}
 
+	// Feedback migration: user_id must be text to match Better Auth user IDs
+	// (not UUIDs). Safe because the table is currently empty.
+	if err := db.Exec(`
+		ALTER TABLE feedback
+			ALTER COLUMN user_id TYPE text,
+			ALTER COLUMN user_id DROP DEFAULT
+	`).Error; err != nil {
+		slog.Warn("migration: failed to alter feedback.user_id to text", "error", err)
+	}
+
 	// Domain models.
 	if err := db.AutoMigrate(
 		&core.SystemPrompt{},

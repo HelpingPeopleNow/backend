@@ -18,7 +18,7 @@ var ValidStatuses = map[string]bool{
 // Feedback represents a user-submitted feedback entry.
 type Feedback struct {
 	ID        string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	UserID    string    `gorm:"type:uuid;not null;index:idx_feedback_user_id" json:"user_id"`
+	UserID    string    `gorm:"type:text;not null;index:idx_feedback_user_id" json:"user_id"`
 	PageURL   string    `gorm:"type:text;not null" json:"page_url"`
 	Message   string    `gorm:"type:text;not null" json:"message"`
 	Category  string    `gorm:"type:text;not null;default:'general'" json:"category"`
