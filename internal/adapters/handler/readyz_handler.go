@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log/slog"
 	"net/http"
 	"sync/atomic"
 )
@@ -66,6 +67,7 @@ func (h *ReadyzHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // the singleton, which is what /readyz observes.
 func MarkReady() {
 	readyFlag.Store(true)
+	slog.Info("readyz: marked ready")
 }
 
 // MarkUnready flips the package-level readyFlag to false. Companion to
@@ -83,4 +85,5 @@ func MarkReady() {
 // companion is reachable from tests + future SIGTERM wiring.
 func MarkUnready() {
 	readyFlag.Store(false)
+	slog.Warn("readyz: marked unready")
 }

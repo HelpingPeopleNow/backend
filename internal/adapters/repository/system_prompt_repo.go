@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
@@ -34,6 +35,7 @@ func (r *GormSystemPromptRepository) Get(ctx context.Context) (*core.SystemPromp
 		return r.cache, nil
 	}
 
+	slog.Debug("system-prompt: cache miss, loading from DB")
 	var sp core.SystemPrompt
 	if err := r.db.WithContext(ctx).First(&sp).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -69,5 +71,6 @@ func (r *GormSystemPromptRepository) Update(ctx context.Context, column string, 
 		return nil, err
 	}
 	r.cache = &refreshed
+	slog.Info("system-prompt: updated", "column", column)
 	return r.cache, nil
 }

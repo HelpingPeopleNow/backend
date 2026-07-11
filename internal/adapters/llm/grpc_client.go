@@ -200,6 +200,7 @@ func (s *GRPCLLMService) Ask(
 
 	resp, err := s.client.Ask(callCtx, req)
 	if err != nil {
+		slog.Error("gRPC ask failed", "error", err)
 		s.breakerFail()
 		if strings.Contains(err.Error(), "429") || strings.Contains(strings.ToLower(err.Error()), "rate limit") {
 			return nil, fmt.Errorf("RATE_LIMIT: %w", err)
@@ -234,6 +235,7 @@ func (s *GRPCLLMService) Embed(ctx context.Context, text string) ([]float32, err
 
 	resp, err := s.client.Embed(callCtx, &pb.EmbedRequest{Text: text})
 	if err != nil {
+		slog.Error("gRPC embed failed", "error", err)
 		s.breakerFail()
 		return nil, fmt.Errorf("gRPC embed: %w", err)
 	}
@@ -242,6 +244,7 @@ func (s *GRPCLLMService) Embed(ctx context.Context, text string) ([]float32, err
 		return nil, fmt.Errorf("gRPC embed: nil response")
 	}
 	if got, want := len(resp.Embedding), expectedEmbeddingDim; got != want {
+		slog.Error("gRPC embed dim mismatch", "got", got, "want", want, "model", resp.GetModel())
 		return nil, fmt.Errorf("embed dim mismatch: got %d, want %d (model=%s)", got, want, resp.GetModel())
 	}
 	s.breakerSuccess()

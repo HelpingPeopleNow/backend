@@ -2,6 +2,7 @@ package services
 
 import (
 	"encoding/json"
+	"log/slog"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
 )
@@ -12,6 +13,8 @@ func jsonUnmarshal(data []byte, v interface{}) error {
 
 func workerCerts(w core.WorkerProfile) []string {
 	var certs []string
-	_ = json.Unmarshal([]byte(w.Certifications), &certs)
+	if err := json.Unmarshal([]byte(w.Certifications), &certs); err != nil {
+		slog.Warn("workerCerts: unmarshal failed", "error", err)
+	}
 	return certs
 }

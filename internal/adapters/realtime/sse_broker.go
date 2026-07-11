@@ -42,11 +42,13 @@ func (e *sseCapError) Error() string {
 func (b *sseBroker) Subscribe(ctx context.Context, userID string) (<-chan ports.Event, error) {
 	b.mu.Lock()
 	if len(b.subs[userID]) >= maxSSESubsPerUser {
+		slog.Warn("sse: subscription cap exceeded", "user_id", userID, "current", len(b.subs[userID]))
 		b.mu.Unlock()
 		return nil, ErrSSETooManySubscribers
 	}
 	ch := make(chan ports.Event, 32) // buffered to avoid blocking on slow consumers
 	b.subs[userID] = append(b.subs[userID], ch)
+	slog.Info("sse: subscribe", "user_id", userID, "total_subs", len(b.subs[userID]))
 	b.mu.Unlock()
 
 	// Cleanup when context is done
@@ -57,6 +59,7 @@ func (b *sseBroker) Subscribe(ctx context.Context, userID string) (<-chan ports.
 		for i, c := range subs {
 			if c == ch {
 				b.subs[userID] = append(subs[:i], subs[i+1:]...)
+				slog.Info("sse: unsubscribe", "user_id", userID)
 				break
 			}
 		}

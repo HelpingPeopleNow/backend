@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	metricspkg "github.com/HelpingPeopleNow/backend/internal/metrics"
@@ -47,6 +48,7 @@ func (h *ReembedToggleHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	case http.MethodPost:
 		h.setState(w, r)
 	default:
+		slog.Warn("admin: reembed method not allowed", "method", r.Method)
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed"})
 	}
@@ -71,6 +73,7 @@ func (h *ReembedToggleHandler) setState(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	h.intake.SetReembedEnabled(req.Enabled)
+	slog.Info("admin: reembed toggle", "enabled", req.Enabled)
 	metricspkg.SetReembedEnabled(req.Enabled)
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(reembedState{Enabled: req.Enabled})
