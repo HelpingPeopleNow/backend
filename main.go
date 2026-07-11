@@ -14,6 +14,7 @@ import (
 	"github.com/HelpingPeopleNow/backend/internal/adapters/handler"
 	"github.com/HelpingPeopleNow/backend/internal/adapters/llm"
 	"github.com/HelpingPeopleNow/backend/internal/adapters/middleware"
+	"github.com/HelpingPeopleNow/backend/internal/adapters/notification"
 	"github.com/HelpingPeopleNow/backend/internal/adapters/ratelimit"
 	"github.com/HelpingPeopleNow/backend/internal/adapters/realtime"
 	"github.com/HelpingPeopleNow/backend/internal/adapters/repository"
@@ -23,17 +24,19 @@ import (
 )
 
 type appDeps struct {
-	DB          *gorm.DB
-	ChatRepo    ports.ChatRepository
-	ProfileRepo ports.ProfileRepository
-	PromptRepo  ports.SystemPromptRepository
-	DMRepo      ports.DirectMessageRepository
-	LLM         ports.LLMService
-	Intake      *services.IntakeService
-	Search      *services.SearchService
-	Seed        *services.SeedService
-	Auth        *middleware.AuthMiddleware
-	Admin       *middleware.AdminMiddleware
+	DB           *gorm.DB
+	ChatRepo     ports.ChatRepository
+	ProfileRepo  ports.ProfileRepository
+	PromptRepo   ports.SystemPromptRepository
+	DMRepo       ports.DirectMessageRepository
+	FeedbackRepo ports.FeedbackRepository
+	Notifier     ports.Notifier
+	LLM          ports.LLMService
+	Intake       *services.IntakeService
+	Search       *services.SearchService
+	Seed         *services.SeedService
+	Auth         *middleware.AuthMiddleware
+	Admin        *middleware.AdminMiddleware
 }
 
 func buildDeps(db *gorm.DB) appDeps {
@@ -41,17 +44,21 @@ func buildDeps(db *gorm.DB) appDeps {
 	profileRepo := repository.NewGormProfileRepository(db)
 	promptRepo := repository.NewGormSystemPromptRepository(db)
 	llmSvc := llm.NewGRPCLLMService(os.Getenv("HELPER_GRPC_ADDR"), os.Getenv("HELPER_HEALTH_URL"))
+	feedbackRepo := repository.NewGormFeedbackRepository(db)
+	notifier := notification.NewTelegramNotifier(os.Getenv("TELEGRAM_BOT_TOKEN"), os.Getenv("TELEGRAM_CHAT_ID"))
 
 	return appDeps{
-		DB:          db,
-		ChatRepo:    chatRepo,
-		ProfileRepo: profileRepo,
-		PromptRepo:  promptRepo,
-		DMRepo:      repository.NewGormDirectMessageRepository(db),
-		LLM:         llmSvc,
-		Intake:      services.NewIntakeService(llmSvc, profileRepo, chatRepo, promptRepo),
-		Search:      services.NewSearchService(llmSvc, profileRepo, chatRepo, promptRepo),
-		Seed:        services.NewSeedService(promptRepo),
+		DB:           db,
+		ChatRepo:     chatRepo,
+		ProfileRepo:  profileRepo,
+		PromptRepo:   promptRepo,
+		DMRepo:       repository.NewGormDirectMessageRepository(db),
+		FeedbackRepo: feedbackRepo,
+		Notifier:     notifier,
+		LLM:          llmSvc,
+		Intake:       services.NewIntakeService(llmSvc, profileRepo, chatRepo, promptRepo),
+		Search:       services.NewSearchService(llmSvc, profileRepo, chatRepo, promptRepo),
+		Seed:         services.NewSeedService(promptRepo),
 		// P2-3 (audit / F8): the third arg is BETTER_AUTH_SECRET. The
 		// DB-fallback path verifies the cookie HMAC against this secret
 		// before honoring the session token — without it, a cookie whose
@@ -73,6 +80,7 @@ func buildMux(d appDeps) *http.ServeMux {
 	broker := realtime.NewSSEBroker()
 	dmRateLimiter := ratelimit.NewRateLimiter(30, time.Minute)
 	searchRateLimiter := ratelimit.NewRateLimiter(10, time.Minute)
+	feedbackRateLimiter := ratelimit.NewRateLimiter(5, time.Minute)
 	dmHandler := handler.NewDirectMessagingHandler(d.DMRepo, d.ProfileRepo, broker, dmRateLimiter)
 	mux.Handle("/api/v1/chat", middleware.CORS(d.Auth.Wrap(handler.NewChatHandler(d.Intake, d.Search, d.PromptRepo, searchRateLimiter))))
 	mux.Handle("/api/v1/worker/profile", middleware.CORS(d.Auth.Wrap(handler.NewWorkerHandler(d.ProfileRepo))))
@@ -89,6 +97,11 @@ func buildMux(d appDeps) *http.ServeMux {
 
 	mux.Handle("/api/v1/admin/", middleware.CORS(d.Auth.Wrap(d.Admin.Wrap(handler.NewAdminHandler(d.DB)))))
 	mux.Handle("/api/v1/admin/reembed", middleware.CORS(d.Auth.Wrap(d.Admin.Wrap(handler.NewReembedToggleHandler(d.Intake)))))
+
+	// Feedback — user submission (any authenticated user), admin CRUD via /api/v1/admin/feedback.
+	feedbackHandler := handler.NewFeedbackHandler(d.FeedbackRepo, d.Notifier)
+	_ = feedbackRateLimiter // reserved for POST /api/v1/feedback rate limiting
+	mux.Handle("/api/v1/feedback", middleware.CORS(d.Auth.Wrap(http.HandlerFunc(feedbackHandler.Submit))))
 
 	// Public profiles — no auth middleware.
 	publicProfileHandler := handler.NewPublicProfileHandler(d.ProfileRepo)

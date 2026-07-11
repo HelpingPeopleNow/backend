@@ -69,6 +69,7 @@ func Connect() (*gorm.DB, error) {
 		&core.DirectMessage{},
 		&core.DirectMessageReport{},
 		&core.WorkerEmbedding{},
+		&core.Feedback{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to migrate: %w", err)
 	}

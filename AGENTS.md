@@ -78,6 +78,7 @@ The single-replica SPOF was remediated in three commits; each one ships a primit
 | `AdminHandler` | `/api/v1/admin/{entity}/{id?}` | GET, PUT, DELETE | Generic admin CRUD over 5 entity slugs (`users`, `worker-profiles`, `client-profiles`, `conversations`, `messages`) |
 | `ReembedToggleHandler` | `/api/v1/admin/reembed` | POST | Runtime kill switch for the re-embedding pipeline (admin-protected). Body: `{"enabled": true/false}`. |
 | `PublicProfileHandler` | `/api/v1/workers/public/latest`, `/api/v1/workers/public/{slug}` | GET | Public worker profiles — no auth required. Latest returns paginated list (default limit 6), slug returns single profile by URL-friendly slug. Returns `WorkerPublicDTO` (private fields stripped). |
+| `FeedbackHandler` | `/api/v1/feedback` | POST | User-submitted feedback (any authenticated user). Validates message (1–2000 chars), page_url (1–2048 chars), category (bug/idea/complaint/general). Saves to `feedback` table with status `open`. Sends async Telegram notification via `Notifier`. Admin CRUD goes through `/api/v1/admin/` generic entity endpoint (`feedback` entity). |
 
 ## Direct Messaging
 
@@ -101,8 +102,16 @@ Two-table schema: `direct_conversations` (unique per client+worker pair) + `dire
 - **Metrics** — `vector_search_total{branch=...}` counter and `vector_score` histogram (wired in `internal/adapters/handler/metrics_handler.go` and incremented from `ChatHandler`).
 - **Re-backfill** on schema change or after first enable: `docker exec helpingpeoplenow-helper env DB_HOST=helpingpeoplenow-postgres DB_USER=postgres DB_PASSWORD=postgres DB_NAME=helpingpeoplenow HELPER_GRPC_ADDR=localhost:50051 python3 /app/scripts/backfill_embeddings.py` (idempotent — skips rows whose `text_hash` matches existing).
 
-## GPS Geolocation
+## Feedback system
+User-submitted feedback with in-app widget + Telegram notifications + admin dashboard.
+- **`Feedback` model** — UUID PK, `user_id` (UUID), `page_url` (text), `message` (text 1–2000), `category` (bug/idea/complaint/general), `status` (open/in_progress/resolved/dismissed), `admin_note` (text nullable), `created_at`/`updated_at` timestamps. Auto-migrated via `database/postgres.go`.
+- **`FeedbackRepository`** — `internal/ports/feedback_repository.go` interface. GORM implementation in `internal/adapters/repository/feedback_repo.go`. Methods: `Create`, `List(status, limit, offset)`, `UpdateStatus(id, status, adminNote)`, `CountByStatus()`.
+- **`Notifier` interface** — `internal/ports/notifier.go`. Single method: `SendFeedbackAlert(fb *core.Feedback) error`. Implementation: `internal/adapters/notification/telegram.go` (Telegram Bot API, 1 msg/sec global rate limit).
+- **Admin entity** — `"feedback"` added to `AdminHandler` entities map → `GET /api/v1/admin/feedback` returns paginated list, `PUT /api/v1/admin/feedback?id=&status=&admin_note=` updates status/note.
+- **Env vars** — `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (required for notifications). If unset, feedback is still saved but notifications are skipped.
+- **Frontend** — `FeedbackWidget` (bottom-right FAB, all pages except admin), `FeedbackPopover` (form), `FeedbackAdminPage` (`/admin/feedback`). See frontend AGENTS.md for details.
 
+## GPS Geolocation
 GPS coordinates enable proximity-based worker search. Clients and workers can optionally provide latitude/longitude, which are used to compute real-world distances and sort search results nearest-first.
 
 - **Profile latitude/longitude fields** — `WorkerProfile` and `ClientProfile` both have `Latitude` and `Longitude` fields (nullable `*float64`). These persist the user's last-known location.
@@ -133,5 +142,7 @@ GPS coordinates enable proximity-based worker search. Clients and workers can op
 ## Env vars
 
 Required at startup: `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `AUTH_SERVICE_URL`, `HELPER_GRPC_ADDR`, `HELPER_HEALTH_URL`.
+
+Optional: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (feedback notifications — if unset, feedback is saved but alerts are skipped), `REEMBED_ENABLED` (default true).
 
 Optional: `PORT` (default `8081`), `HELPER_TIMEOUT_SECONDS` (default `60`, but docker-compose sets `600`), `HELPER_LLM_TIMEOUT` (default `20s`), `HELPER_EMBED_TIMEOUT` (default `8s`), `DATABASE_URL` or `DB_HOST/PORT/USER/PASSWORD/NAME/SSLMODE`, `VECTOR_SEARCH_ENABLED` (default `true`), `VECTOR_SEARCH_MIN_SCORE` (default `0.3`), `VECTOR_SEARCH_MIN_TOP_SCORE` (default `0.5`, wired — see Vector search section), `SHUTDOWN_DRAIN_WAIT` (default `14s`; Go duration format; `0s` allowed for snappy local-dev rebuilds; README/AGENTS for bigger values when Traefik config uses longer LB health-check intervals).

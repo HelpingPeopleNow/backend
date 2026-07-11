@@ -47,6 +47,10 @@ var entities = map[string]entityMeta{
 		Table:   "direct_message_reports",
 		Columns: []string{"id", "conversation_id", "reported_by", "reason", "created_at"},
 	},
+	"feedback": {
+		Table:   "feedback",
+		Columns: []string{"id", "user_id", "page_url", "message", "category", "status", "admin_note", "created_at", "updated_at"},
+	},
 }
 
 type AdminHandler struct {
