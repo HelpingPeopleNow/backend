@@ -5,66 +5,91 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
 )
 
-func TestTelegramNotifier_SendFeedbackAlert_Success(t *testing.T) {
-	var receivedBody map[string]interface{}
-
+func TestSendFeedbackAlert_Success(t *testing.T) {
+	var received map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &receivedBody)
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &received)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"ok":true}`))
 	}))
 	defer srv.Close()
 
-	// Override the API URL by using a custom client that redirects to test server.
-	// Since the notifier hardcodes api.telegram.org, we test with empty token/chatID
-	// to verify the "not configured" path, and test the rate limiter separately.
-	n := NewTelegramNotifier("", "")
-	err := n.SendFeedbackAlert(&core.Feedback{Message: "test"})
-	if err == nil {
-		t.Error("expected error when not configured")
-	}
-
-	// Verify rate limiter works.
-	n2 := NewTelegramNotifier("token", "123")
-	n2.client = srv.Client()
-	// Override the Post URL by making a custom implementation.
-	// Actually, we can't override the URL easily without refactoring.
-	// Test rate limiting instead.
-	n2.mu.Lock()
-	n2.lastSent = time.Now()
-	n2.mu.Unlock()
-
-	err = n2.SendFeedbackAlert(&core.Feedback{Message: "test"})
+	n := NewTelegramNotifierWithClient("token123", "chat456", srv.URL, srv.Client())
+	err := n.SendFeedbackAlert(&core.Feedback{
+		UserID:   "user-1",
+		PageURL:  "https://helpingpeople.cloud",
+		Category: "bug",
+		Message:  "button is broken",
+	})
 	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+		t.Fatalf("expected nil error on success, got: %v", err)
+	}
+	if received["chat_id"] != "chat456" {
+		t.Errorf("expected chat_id chat456, got %v", received["chat_id"])
+	}
+	if !strings.Contains(received["text"].(string), "button is broken") {
+		t.Errorf("expected message text to contain feedback, got %v", received["text"])
 	}
 }
 
-func TestTelegramNotifier_NotConfigured(t *testing.T) {
-	n := NewTelegramNotifier("", "")
+func TestSendFeedbackAlert_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	n := NewTelegramNotifierWithClient("token123", "chat456", srv.URL, srv.Client())
 	err := n.SendFeedbackAlert(&core.Feedback{Message: "test"})
 	if err == nil {
-		t.Error("expected error when bot token is empty")
+		t.Fatal("expected error on non-OK HTTP status")
 	}
-
-	n2 := NewTelegramNotifier("token", "")
-	err = n2.SendFeedbackAlert(&core.Feedback{Message: "test"})
-	if err == nil {
-		t.Error("expected error when chat ID is empty")
+	if !strings.Contains(err.Error(), "telegram API returned 502") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
 
-func TestTelegramNotifier_RateLimit(t *testing.T) {
-	n := NewTelegramNotifier("token", "123")
-	// Simulate a recent send.
+func TestSendFeedbackAlert_NetworkError(t *testing.T) {
+	// Point to a non-existent server.
+	client := &http.Client{Timeout: 100 * time.Millisecond}
+	n := NewTelegramNotifierWithClient("token123", "chat456", "http://127.0.0.1:1", client)
+	err := n.SendFeedbackAlert(&core.Feedback{Message: "test"})
+	if err == nil {
+		t.Fatal("expected error on network failure")
+	}
+}
+
+func TestSendFeedbackAlert_NotConfigured_EmptyToken(t *testing.T) {
+	n := NewTelegramNotifierWithClient("", "chat456", "http://example.com", nil)
+	err := n.SendFeedbackAlert(&core.Feedback{Message: "test"})
+	if err == nil {
+		t.Fatal("expected error when bot token is empty")
+	}
+}
+
+func TestSendFeedbackAlert_NotConfigured_EmptyChatID(t *testing.T) {
+	n := NewTelegramNotifierWithClient("token123", "", "http://example.com", nil)
+	err := n.SendFeedbackAlert(&core.Feedback{Message: "test"})
+	if err == nil {
+		t.Fatal("expected error when chat ID is empty")
+	}
+}
+
+func TestSendFeedbackAlert_RateLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("expected no HTTP request when rate limited")
+	}))
+	defer srv.Close()
+
+	n := NewTelegramNotifierWithClient("token123", "chat456", srv.URL, srv.Client())
 	n.mu.Lock()
 	n.lastSent = time.Now()
 	n.mu.Unlock()
@@ -76,21 +101,36 @@ func TestTelegramNotifier_RateLimit(t *testing.T) {
 	}
 }
 
-func TestTelegramNotifier_CategoryEmoji(t *testing.T) {
-	n := NewTelegramNotifier("token", "123")
+func TestSendFeedbackAlert_CategoryEmoji(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
 
-	// Verify the emoji mapping exists for all valid categories.
-	categories := map[string]string{
-		"bug": "🐛", "idea": "💡", "complaint": "😤", "general": "💬",
+	n := NewTelegramNotifierWithClient("token123", "chat456", srv.URL, srv.Client())
+
+	tests := []struct {
+		category string
+		want     string
+	}{
+		{"bug", "🐛"},
+		{"idea", "💡"},
+		{"complaint", "😤"},
+		{"general", "💬"},
+		{"unknown", "💬"},
 	}
-	for cat, expectedEmoji := range categories {
-		categoryEmoji := map[string]string{
-			"bug": "🐛", "idea": "💡", "complaint": "😤", "general": "💬",
-		}
-		got := categoryEmoji[cat]
-		if got != expectedEmoji {
-			t.Errorf("emoji for %q = %q, want %q", cat, got, expectedEmoji)
+
+	for _, tt := range tests {
+		// Reset rate limit by advancing lastSent well into the past.
+		n.mu.Lock()
+		n.lastSent = time.Now().Add(-2 * time.Second)
+		n.mu.Unlock()
+
+		err := n.SendFeedbackAlert(&core.Feedback{Category: tt.category, Message: "msg"})
+		if err != nil {
+			t.Errorf("category %q: unexpected error: %v", tt.category, err)
 		}
 	}
-	_ = n // unused beyond construction
 }

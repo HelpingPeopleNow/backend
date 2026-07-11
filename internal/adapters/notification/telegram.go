@@ -17,16 +17,39 @@ import (
 type TelegramNotifier struct {
 	botToken string
 	chatID   string
+	baseURL  string
 	client   *http.Client
 	mu       sync.Mutex
 	lastSent time.Time
 }
 
+const defaultTelegramBaseURL = "https://api.telegram.org"
+
+// NewTelegramNotifier creates a TelegramNotifier with sane defaults.
+// Pass empty strings to disable notifications (returns error on Send).
 func NewTelegramNotifier(botToken, chatID string) *TelegramNotifier {
 	return &TelegramNotifier{
 		botToken: botToken,
 		chatID:   chatID,
+		baseURL:  defaultTelegramBaseURL,
 		client:   &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+// NewTelegramNotifierWithClient is a test constructor that lets tests inject
+// a custom HTTP client (e.g. to redirect requests to httptest.NewServer).
+func NewTelegramNotifierWithClient(botToken, chatID, baseURL string, client *http.Client) *TelegramNotifier {
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	if baseURL == "" {
+		baseURL = defaultTelegramBaseURL
+	}
+	return &TelegramNotifier{
+		botToken: botToken,
+		chatID:   chatID,
+		baseURL:  baseURL,
+		client:   client,
 	}
 }
 
@@ -68,7 +91,7 @@ func (n *TelegramNotifier) SendFeedbackAlert(fb *core.Feedback) error {
 	})
 
 	resp, err := n.client.Post(
-		fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", n.botToken),
+		fmt.Sprintf("%s/bot%s/sendMessage", n.baseURL, n.botToken),
 		"application/json",
 		bytes.NewReader(body),
 	)
