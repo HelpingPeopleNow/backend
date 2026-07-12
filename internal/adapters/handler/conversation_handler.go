@@ -75,6 +75,7 @@ func (h *ConversationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *ConversationHandler) list(w http.ResponseWriter, r *http.Request, userID string) {
+	slog.Info("conv-handler: list", "user_id", userID, "type", r.URL.Query().Get("type"))
 	convType := r.URL.Query().Get("type")
 	limit := parseIntParam(r, "limit", 20)
 	offset := parseIntParam(r, "offset", 0)
@@ -109,6 +110,7 @@ func (h *ConversationHandler) list(w http.ResponseWriter, r *http.Request, userI
 }
 
 func (h *ConversationHandler) getOne(w http.ResponseWriter, r *http.Request, userID, convID string) {
+	slog.Info("conv-handler: getOne", "user_id", userID, "conv_id", convID)
 	conv, err := h.chats.GetConversation(r.Context(), userID, convID)
 	if err != nil {
 		slog.Error("conv-handler: getOne failed", "convID", convID, "error", err)

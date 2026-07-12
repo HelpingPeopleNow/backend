@@ -22,6 +22,7 @@ func NewPublicProfileHandler(profiles ports.ProfileRepository) *PublicProfileHan
 // ServeHTTP handles GET /api/v1/workers/public/{slug}.
 // Slug is extracted via strings.TrimPrefix — no chi dependency.
 func (h *PublicProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	slog.Info("public-profile: request", "method", r.Method, "path", r.URL.Path)
 	slug := strings.TrimPrefix(r.URL.Path, "/api/v1/workers/public/")
 	slug = strings.TrimSuffix(slug, "/")
 	if slug == "" || !core.ValidateSlug(slug) {

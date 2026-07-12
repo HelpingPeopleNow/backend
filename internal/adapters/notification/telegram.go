@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -54,6 +55,7 @@ func NewTelegramNotifierWithClient(botToken, chatID, baseURL string, client *htt
 }
 
 func (n *TelegramNotifier) SendFeedbackAlert(fb *core.Feedback) error {
+	slog.Info("notifier: SendFeedbackAlert", "user_id", fb.UserID, "category", fb.Category)
 	if n.botToken == "" || n.chatID == "" {
 		return fmt.Errorf("telegram not configured")
 	}

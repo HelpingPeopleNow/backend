@@ -84,6 +84,7 @@ func (r *GormFeedbackRepository) GetUserEmail(userID string) (string, error) {
 	var u userRow
 	err := r.db.Table(`"user"`).Where("id = ?", userID).Select("email").Scan(&u).Error
 	if err != nil {
+		slog.Error("feedback_repo: get user email failed", "error", err, "user_id", userID)
 		return "", err
 	}
 	return u.Email, nil

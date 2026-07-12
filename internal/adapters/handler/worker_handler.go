@@ -18,6 +18,7 @@ func NewWorkerHandler(profiles ports.ProfileRepository) *WorkerHandler {
 }
 
 func (h *WorkerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	slog.Info("worker: request", "method", r.Method, "path", r.URL.Path)
 	w.Header().Set("Content-Type", "application/json")
 
 	userID := contextkeys.GetUserID(r.Context())

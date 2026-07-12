@@ -113,6 +113,7 @@ func (s *IntakeService) ProcessIntake(
 	latitude *float64,
 	longitude *float64,
 ) (*IntakeResult, error) {
+	slog.Info("intake: ProcessIntake", "user_id", userID, "mode", mode)
 	sp, err := s.prompts.Get(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load system prompt: %w", err)
@@ -219,6 +220,7 @@ func (s *IntakeService) scheduleReembed(userID string) {
 // immediately (without touching the semaphore) when re-embedding is
 // paused, so existing vectors continue to serve searches unchanged.
 func (s *IntakeService) ReembedWorker(userID string) {
+	slog.Info("intake: ReembedWorker", "user_id", userID)
 	if !s.reembedEnabled {
 		slog.Debug("reembedWorker: skipped (REEMBED_ENABLED=false)", "user_id", userID)
 		metrics.IncrReembedSkipped("kill_switch")

@@ -51,6 +51,7 @@ type updateSystemReq struct {
 }
 
 func (h *SystemPromptHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	slog.Info("system-prompt: request", "method", r.Method, "path", r.URL.Path)
 	w.Header().Set("Content-Type", "application/json")
 
 	parts := strings.Split(strings.TrimSuffix(r.URL.Path, "/"), "/")

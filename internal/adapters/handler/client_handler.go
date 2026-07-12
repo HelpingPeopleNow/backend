@@ -18,6 +18,7 @@ func NewClientHandler(profiles ports.ProfileRepository) *ClientHandler {
 }
 
 func (h *ClientHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	slog.Info("client: request", "method", r.Method, "path", r.URL.Path)
 	w.Header().Set("Content-Type", "application/json")
 
 	userID := contextkeys.GetUserID(r.Context())

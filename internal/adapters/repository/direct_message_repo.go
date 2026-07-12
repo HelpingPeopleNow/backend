@@ -243,6 +243,7 @@ func (r *GormDirectMessageRepository) SendMessage(
 	if err := r.db.WithContext(ctx).
 		Where("id = ?", msg.ConversationID).
 		First(&conv).Error; err != nil {
+		slog.Warn("dm: conversation not found for message", "conversation_id", msg.ConversationID, "error", err)
 		return fmt.Errorf("conversation not found: %w", err)
 	}
 
@@ -260,6 +261,7 @@ func (r *GormDirectMessageRepository) SendMessage(
 	}()
 
 	if err := tx.Create(msg).Error; err != nil {
+		slog.Warn("dm: create message failed", "conversation_id", msg.ConversationID, "error", err)
 		return fmt.Errorf("create message: %w", err)
 	}
 
@@ -274,6 +276,7 @@ func (r *GormDirectMessageRepository) SendMessage(
 			"last_message_preview": preview,
 			unreadField:            gorm.Expr("GREATEST(0, " + unreadField + " + 1)"),
 		}).Error; err != nil {
+		slog.Warn("dm: update conversation failed", "conversation_id", msg.ConversationID, "error", err)
 		return fmt.Errorf("update conversation: %w", err)
 	}
 
@@ -291,6 +294,7 @@ func (r *GormDirectMessageRepository) MarkRead(
 	if err := r.db.WithContext(ctx).
 		Where("id = ?", conversationID).
 		First(&conv).Error; err != nil {
+		slog.Warn("dm: mark read conversation not found", "conversation_id", conversationID, "error", err)
 		return 0, fmt.Errorf("conversation not found: %w", err)
 	}
 
@@ -306,6 +310,7 @@ func (r *GormDirectMessageRepository) MarkRead(
 		Update("read_at", time.Now())
 
 	if result.Error != nil {
+		slog.Warn("dm: mark read failed", "conversation_id", conversationID, "user_id", userID, "error", result.Error)
 		return 0, fmt.Errorf("mark read: %w", result.Error)
 	}
 
@@ -317,6 +322,7 @@ func (r *GormDirectMessageRepository) MarkRead(
 	if err := r.db.WithContext(ctx).Model(&core.DirectConversation{}).
 		Where("id = ?", conversationID).
 		Update(unreadField, 0).Error; err != nil {
+		slog.Warn("dm: reset unread count failed", "conversation_id", conversationID, "user_id", userID, "error", err)
 		return 0, fmt.Errorf("reset unread count: %w", err)
 	}
 
@@ -326,15 +332,15 @@ func (r *GormDirectMessageRepository) MarkRead(
 func (r *GormDirectMessageRepository) PollSince(
 	ctx context.Context, userID string, since time.Time,
 ) ([]core.DirectMessage, error) {
-	var msgs []core.DirectMessage
-	err := r.db.WithContext(ctx).
+	joinsQuery := r.db.WithContext(ctx).
 		Joins("JOIN direct_conversations ON direct_conversations.id = direct_messages.conversation_id").
 		Where("(direct_conversations.user_a_id = ? OR direct_conversations.user_b_id = ?)", userID, userID).
 		Where("direct_messages.sender_id != ?", userID).
 		Where("direct_messages.created_at > ?", since).
-		Order("direct_messages.created_at ASC").
-		Find(&msgs).Error
-	if err != nil {
+		Order("direct_messages.created_at ASC")
+	var msgs []core.DirectMessage
+	if err := joinsQuery.Find(&msgs).Error; err != nil {
+		slog.Warn("dm: poll since failed", "user_id", userID, "since", since, "error", err)
 		return nil, fmt.Errorf("poll since: %w", err)
 	}
 	return msgs, nil
@@ -348,6 +354,7 @@ func (r *GormDirectMessageRepository) IsParticipant(
 		Where("id = ? AND (user_a_id = ? OR user_b_id = ?)", convID, userID, userID).
 		Count(&count).Error
 	if err != nil {
+		slog.Warn("dm: check participant failed", "conv_id", convID, "user_id", userID, "error", err)
 		return false, fmt.Errorf("check participant: %w", err)
 	}
 	return count > 0, nil

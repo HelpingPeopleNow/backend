@@ -169,6 +169,7 @@ func (s *GRPCLLMService) Ask(
 	history []ports.MessagePair,
 	provider string,
 ) (*ports.LLMResponse, error) {
+	slog.Info("llm: Ask", "msg_len", len(userMessage), "history_len", len(history), "provider", provider)
 	// F3: circuit breaker — fail fast when helper is unhealthy
 	if !s.breakerAllow() {
 		return nil, fmt.Errorf("helper circuit breaker open — search degraded")
@@ -219,6 +220,7 @@ func (s *GRPCLLMService) Ask(
 // Length-mismatch validation happens here so mismatched-dim vectors never
 // reach the database. F3: uses dedicated embed timeout (default 8s).
 func (s *GRPCLLMService) Embed(ctx context.Context, text string) ([]float32, error) {
+	slog.Info("llm: Embed", "text_len", len(text))
 	if !s.breakerAllow() {
 		return nil, fmt.Errorf("helper circuit breaker open — embed degraded")
 	}
@@ -252,6 +254,7 @@ func (s *GRPCLLMService) Embed(ctx context.Context, text string) ([]float32, err
 }
 
 func (s *GRPCLLMService) Health(ctx context.Context) error {
+	slog.Info("llm: Health")
 	if s.healthURL == "" {
 		return fmt.Errorf("no health URL configured")
 	}
