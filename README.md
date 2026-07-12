@@ -29,6 +29,7 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
 5. **Conversation persistence** — all chat messages (worker, client) are saved to the database and can be loaded on page reload via the conversations API
 6. **Search/find professionals** — receives `POST /api/v1/chat` with `mode: "search"`, uses two-pass LLM (filter-fill then presentation) to match clients with workers, returns recommended worker cards with `distance_km` (Haversine) when GPS coordinates are provided in the request
 7. **Profile reset** — worker and client profiles can be cleared via `DELETE /api/v1/worker/profile` and `DELETE /api/v1/client/profile`
+8. **Feedback system** — authenticated users submit feedback (message, page_url, category) via `POST /api/v1/feedback`; saved to `feedback` table with status `open`; async Telegram notification to admin channel; admin CRUD via `/api/v1/admin/feedback`
 
 ---
 
@@ -81,7 +82,7 @@ The backend uses **hexagonal (ports & adapters) architecture**. `main.go` is the
 |---|---|---|
 | Handlers | `internal/adapters/handler/` | HTTP parse, session validation, response shape. Delegate to a service or port. Never hold `*gorm.DB`. |
 | Services | `internal/services/` | Use-case logic. `SearchService.Search` (two-pass LLM), `IntakeService.ProcessIntake` (chat → `[FIELDS]` → map-merge upsert), `SeedService.SeedSystemPrompts`. Depend only on `ports/` interfaces. |
-| Ports | `internal/ports/` | Interface contracts: `LLMService`, `ProfileRepository`, `ChatRepository`, `SystemPromptRepository`, `DirectMessageRepository`, `DirectMessaging`. |
+|| Ports | `internal/ports/` | Interface contracts: `LLMService`, `ProfileRepository`, `ChatRepository`, `SystemPromptRepository`, `DirectMessageRepository`, `DirectMessaging`, `FeedbackRepository`, `Notifier`. |
 | Adapters | `internal/adapters/` | Concrete port implementations: `repository/` (GORM via `*gorm.DB`), `llm/` (`grpc_client.go::GRPCLLMService`), `realtime/` (SSE broker), `middleware/`, `ratelimit/`. |
 | Core | `internal/core/` | Domain models (`WorkerProfile`, `ClientProfile`, `Conversation`, `Message`, `DirectConversation`, `DirectMessage`) and pure helpers (`MergeFields`, DTO mappers). |
 | Cache | in-process map + callbacks | System prompt + LLM provider snapshots loaded at startup from `system_prompts` (`id=1`); refreshed via `SystemPromptHandler` `onUpdate` callback chain at `main.go:143-171`. |
@@ -241,12 +242,13 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | PUT | `/api/v1/user/reset-role` | Yes* | Clear user role (reset to "") |
 | GET | `/api/v1/conversations` | Yes | List conversations (supports `?type=worker&limit=N`) |
 | GET | `/api/v1/conversations/:id` | Yes | Get conversation with full message history |
-| GET | `/api/v1/workers/:id/contact` | Yes | Create-or-resume a direct-message conversation with another worker (returns `conversation_id`) |
+| GET | `/api/v1/workers/:id/contact` | Yes | Create-or-resume a direct-message conversation with another worker (returns `conversation_id`). **CAPTCHA**: when `CAP_SERVER_URL`, `CAP_SITE_KEY`, and `CAP_SECRET_KEY` are set, client must pass a `captcha_token` query parameter; verified against Cap before allowing conversation creation. If env vars are unset, CAPTCHA is skipped. |
 | GET, POST, PATCH | `/api/v1/direct-messages`, `/api/v1/direct-messages/:id/*` | Yes (DM middleware sets user from session) | Direct messaging: inbox, thread, send, read, archive, block, report, SSE stream (`/stream`), polling (`/since`). Errors: `body` over 4000 chars → 400; empty `body` → 400; invalid JSON → 400; `/since?ts=` missing → 400; `/since?ts=` unparseable RFC3339 → 400; `DELETE` on `/api/v1/direct-messages` → 404; SSE `stream` with nil broker → 501. Auth/authorization: no `user_id` in context → 401; authenticated but not a conversation participant → 403; conversation `status="blocked"` → 403 on send. |
 | GET | `/metrics` | No | Prometheus metrics in text/plain (counters: `http_requests_total`, `chat_requests_total`, `vector_search_total`, `profile_saves_total`, `conversations_total`, `dm_sent_total`, `dm_received_total`, `auth_resolve_errors_total`; histograms: `chat_llm_duration_seconds`, `auth_resolve_duration_seconds`, `vector_score`). Registered by `metrics_handler.RegisterMetricsRoutes`. |
 | GET | `/api/v1/workers/public/latest` | No | Public worker profiles — paginated list (default limit 6, capped at 20). Returns `WorkerPublicDTO` (private fields stripped). |
 | GET | `/api/v1/workers/public/{slug}` | No | Public worker profile by URL-friendly slug. Returns `WorkerPublicDTO` (private fields stripped). 404 on missing/invalid slug. |
-| GET | `/admin/*` | Yes (admin) | Admin entity CRUD over exactly 5 entity slugs: `users`, `worker-profiles`, `client-profiles`, `conversations`, `messages` |
+| POST | `/api/v1/feedback` | Yes | Submit user feedback (message 1–2000 chars, page_url 1–2048 chars, category: bug/idea/complaint/general). Saved with status `open`. Sends async Telegram notification. |
+| GET | `/admin/*` | Yes (admin) | Admin entity CRUD over exactly 9 entity slugs: `users`, `worker-profiles`, `client-profiles`, `conversations`, `messages`, `direct-conversations`, `direct-messages`, `direct-message-reports`, `feedback` |
 
 *Chat handler is wrapped by `AuthMiddleware` but does not require a session — anonymous users get chat, and only authenticated requests merge fields into the user's profile.
 
@@ -458,7 +460,8 @@ All handlers use Go's `log/slog` with structured key-value pairs:
 | `AuthMiddleware` | Session validation via auth service + DB fallback, missing/invalid cookies |
 | `ConversationHandler` | Conversation list/get operations, user ID, conversation count, workers JSON readout |
 | `PublicProfileHandler` | Public profile lookups by slug, latest profiles list |
-| `DirectMessagingHandler` | DM send/read/archive, SSE subscribers, rate-limit decisions |
+|| `DirectMessagingHandler` | DM send/read/archive, SSE subscribers, rate-limit decisions |
+|| `FeedbackHandler` | Feedback submission, validation, Telegram notification dispatch |
 
 ---
 
@@ -481,12 +484,18 @@ All handlers use Go's `log/slog` with structured key-value pairs:
 | `SHUTDOWN_DRAIN_WAIT` | `14s` | Go duration. Window between `MarkUnready()` (flip /readyz→503) and `server.Shutdown(30s)` on SIGTERM. Must exceed the Traefik LB health-check interval+timeout (currently 10s+3s=13s) so the LB has time to drain the replica. `0s` allowed for snappy local-dev rebuilds; invalid/negative falls back to 14s with a `slog.Warn`. The infra compose backend service MUST continue to set `stop_grace_period: 120s` so Docker does not SIGKILL the process mid-drain (≥ 14s + 30s + 65s sweeper drain = 109s worst-case + 11s slack). See `infra/docs/FOLLOW_UP_SPOF.md` §Phase 3 for full derivation. |
 | `BETTER_AUTH_SECRET` | — (strongly recommended) | HMAC secret used to verify the Better Auth session token in the DB-fallback path. Without it, a stripped-signature cookie can still resolve (P2-3 / F8). |
 | `METRICS_TOKEN` | — (strongly recommended) | Bearer token required to scrape `/metrics`. Empty value logs a warning and leaves `/metrics` unauthenticated (P2-2 / F9). |
-| `REEMBED_ENABLED` | `true` | Runtime kill switch for the vector-search re-embedding pipeline. `false` pauses new re-embeds (existing vectors still serve search). |
+|| `REEMBED_ENABLED` | `true` | Runtime kill switch for the vector-search re-embedding pipeline. `false` pauses new re-embeds (existing vectors still serve search). |
+| `reembed_enabled` | gauge | Whether re-embedding is currently enabled (0/1). |
+| `reembed_skipped_total` | counter | Total re-embed skips (label: `reason`). |
+| `reembed_completed_total` | counter | Total successful re-embed completions. |
 | `HELPER_LLM_TIMEOUT` | `20s` | Per-request timeout for Pass-1/Pass-2 LLM calls to the helper. |
 | `HELPER_EMBED_TIMEOUT` | `8s` | Per-request timeout for embedding calls to the helper. |
 | `VECTOR_SEARCH_ENABLED` | `true` | Global kill switch for vector search. `false` forces ILIKE-only search. |
 | `VECTOR_SEARCH_MIN_SCORE` | `0.3` | Per-row minimum cosine similarity for vector search results. |
-| `VECTOR_SEARCH_MIN_TOP_SCORE` | `0.5` | If the top vector score is below this threshold, fall back to ILIKE with `branch="ilike_low_top_score"`. |
+|| `VECTOR_SEARCH_MIN_TOP_SCORE` | `0.5` | If the top vector score is below this threshold, fall back to ILIKE with `branch="ilike_low_top_score"`. |
+|| `CAP_SERVER_URL` | — (optional) | Cap CAPTCHA verification server URL. When set (with `CAP_SITE_KEY` and `CAP_SECRET_KEY`), worker contact endpoint enforces CAPTCHA verification. |
+|| `CAP_SITE_KEY` | — (optional) | Cap CAPTCHA site/public key. |
+|| `CAP_SECRET_KEY` | — (optional) | Cap CAPTCHA secret key. |
 
 ---
 
