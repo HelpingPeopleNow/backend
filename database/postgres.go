@@ -176,6 +176,11 @@ END $$;
 		slog.Warn("migration: failed to add find_trader_presentation_prompt column", "error", err)
 	}
 
+	// Drop legacy helper_prompt column (unmapped by GORM, no longer used).
+	if err := db.Exec(`ALTER TABLE system_prompts DROP COLUMN IF EXISTS helper_prompt`).Error; err != nil {
+		slog.Warn("migration: failed to drop system_prompts.helper_prompt", "error", err)
+	}
+
 	// Direct messaging migration — AutoMigrate creates tables if they don't exist
 	// and adds missing columns/indexes on existing ones. No DROP so data persists
 	// across restarts. The old role-based schema (client_id/worker_profile_id) was

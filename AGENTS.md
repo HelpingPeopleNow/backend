@@ -133,7 +133,7 @@ GPS coordinates enable proximity-based worker search. Clients and workers can op
 - Rate limit detection: gRPC error containing `"429"` or `"rate limit"` returns friendly JSON instead of HTTP error (`GRPCLLMService.Ask` returns `RATE_LIMIT:` prefix).
 - CORS reflects the request `Origin` header with `Access-Control-Allow-Credentials: true`. Safe because `Origin` is set by the browser and cannot be spoofed cross-origin. When same-origin (no `Origin` header), no CORS headers are set at all.
 - PUT endpoints for worker/client profiles were **removed** — profiles are now saved automatically by the chat handlers. Only DELETE (reset) endpoints remain.
-- `user.role` column exists in DB but is no longer written by the backend.
+- `user.role` column was dropped via migration (superseded by `is_admin`).
 - `chatRequest` struct includes `Lang` string — `IntakeService.applyLanguage` (and `SearchService`) append a Spanish/English instruction to the system prompt based on the value.
 - `ApplyLanguage` runs in both passes of search: filter-fill (`FindTraderSearchPrompt`) AND results-presentation (`FindTraderPresentationPrompt`).
 - **Shutdown drain**: `main.go` registers the staleness sweeper on a `sync.WaitGroup` and drains it for up to 65s on SIGTERM (slightly above the 60s per-worker `ReembedWorker` deadline). On SIGTERM the inline signal goroutine now delegates to `runShutdownSequence(ctx, startShutdown, cancelRoot, drainWait)` (extracted for testability) which fires `cancelRoot()` → `MarkUnready()` → `time.Sleep(SHUTDOWN_DRAIN_WAIT)` (default 14s) → `server.Shutdown(30s)` in that order, so a Traefik LB health-check tick (10s interval, 3s timeout — see Phase 2 in `infra/docs/FOLLOW_UP_SPOF.md`) drains the replica before the accept listener closes.

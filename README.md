@@ -135,7 +135,7 @@ POST /api/v1/chat { mode: "worker_intake" } ──► ChatHandler.ServeHTTP
        └─ return { answer, detected_fields, conversation_id }
 ```
 
-The worker profile chat does NOT update user roles — the user is already known as a worker. The LLM is prompted to append a `[FIELDS]{"profession":"plumber","city":"Madrid",...}[/FIELDS]` block to every response, including ALL known fields cumulatively. The backend parses this out, merges it with any existing profile in the DB, and sends `detected_fields` to the frontend for display.
+The LLM is prompted to append a `[FIELDS]{"profession":"plumber","city":"Madrid",...}[/FIELDS]` block to every response, including ALL known fields cumulatively. The backend parses this out, merges it with any existing profile in the DB, and sends `detected_fields` to the frontend for display.
 
 ### Client Profile Intake Chat (`POST /api/v1/chat` with `mode: "client_intake"`)
 
@@ -239,7 +239,6 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | PUT | `/api/v1/system-prompts/find_trader_search` | Yes (admin) | Update the find-trader search-params prompt |
 | PUT | `/api/v1/system-prompts/find_trader_presentation` | Yes (admin) | Update the find-trader results-presentation prompt |
 | PUT | `/api/v1/system-prompts/provider` | Yes (admin) | Set LLM provider ("opencode0", "opencode1", "opencode2", "ollama", "mistral", or "" for auto fallback chain) |
-| PUT | `/api/v1/user/reset-role` | Yes* | Clear user role (reset to "") |
 | GET | `/api/v1/conversations` | Yes | List conversations (supports `?type=worker&limit=N`) |
 | GET | `/api/v1/conversations/:id` | Yes | Get conversation with full message history |
 | GET | `/api/v1/workers/:id/contact` | Yes | Create-or-resume a direct-message conversation with another worker (returns `conversation_id`). **CAPTCHA**: when `CAP_SERVER_URL`, `CAP_SITE_KEY`, and `CAP_SECRET_KEY` are set, client must pass a `captcha_token` query parameter; verified against Cap before allowing conversation creation. If env vars are unset, CAPTCHA is skipped. |
@@ -359,14 +358,6 @@ curl -X PUT http://localhost:8081/api/v1/system-prompts/provider \
   -d '{"content":""}'
 ```
 
-### User Role Reset
-
-```bash
-curl -X PUT http://localhost:8081/api/v1/user/reset-role \
-  -H "Cookie: better-auth.something=..."
-# → 200 OK, role cleared to ""
-```
-
 ---
 
 ## Database
@@ -382,8 +373,6 @@ Singleton row (`id=1`) with five key columns:
 | `find_trader_search_prompt` | `TEXT` | System prompt sent to the helper for the search-params pass |
 | `find_trader_presentation_prompt` | `TEXT` | System prompt sent to the helper for the results-presentation pass |
 | `llm_provider` | `VARCHAR(32)` | `"opencode0"`, `"opencode1"`, `"opencode2"`, `"ollama"`, `"mistral"`, or `""` for auto fallback chain |
-
-NOTE: there is no `helper_prompt` column. (The unread `helper_prompt` column referenced in older docs is not part of the `system_prompts` GORM model — admin PUT/GET talk to the four columns above.)
 
 If `worker_profile_prompt` is empty at startup, a default prompt is seeded automatically that instructs the LLM to gather all 22 profile fields conversationally and output `[FIELDS]JSON[/FIELDS]` blocks.
 
