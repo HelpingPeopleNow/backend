@@ -359,13 +359,13 @@ func TestDirectMessageFlow(t *testing.T) {
 	ctx := context.Background()
 
 	// Create DM conversation between two users
-	conv, isNew, err := repo.GetOrCreateConversation(ctx, "user-a-dm1", "user-b-dm1")
+	conv, isNew, err := repo.GetOrCreateConversation(ctx, "user-a-dm1", "user", "user-b-dm1", "user")
 	require.NoError(t, err)
 	assert.True(t, isNew)
 	require.NotNil(t, conv)
 
 	// Get same conversation (not new)
-	conv2, isNew2, err := repo.GetOrCreateConversation(ctx, "user-a-dm1", "user-b-dm1")
+	conv2, isNew2, err := repo.GetOrCreateConversation(ctx, "user-a-dm1", "user", "user-b-dm1", "user")
 	require.NoError(t, err)
 	assert.False(t, isNew2)
 	assert.Equal(t, conv.ID, conv2.ID)

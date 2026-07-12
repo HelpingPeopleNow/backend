@@ -13,8 +13,20 @@ type DirectMessageRepository interface {
 
 	// GetOrCreateConversation finds or creates a conversation between two users.
 	// userID1 and userID2 are sorted so the smaller ID becomes user_a_id.
+	// userARole and userBRole are denormalized onto the conversation row
+	// at creation time so SendMessage can resolve the per-message
+	// sender_role in O(1) without per-send profile lookups (audit). On
+	// the existing-conversation path the caller's roles are ignored —
+	// a fresh contact can refresh them via UpdateConversationRoles.
 	// Returns the conversation and a flag indicating whether it was newly created.
-	GetOrCreateConversation(ctx context.Context, userID1, userID2 string) (*core.DirectConversation, bool, error)
+	GetOrCreateConversation(ctx context.Context, userID1, userARole, userID2, userBRole string) (*core.DirectConversation, bool, error)
+
+	// UpdateConversationRoles patches (user_a_role, user_b_role) on an
+	// existing conversation. Used when the caller wants to refresh the
+	// cached roles (e.g., user flipped profile types or admin moderation
+	// re-classifies a participant). No-op when the conversation is not
+	// found.
+	UpdateConversationRoles(ctx context.Context, conversationID, userARole, userBRole string) error
 
 	// GetConversation returns a conversation by ID.
 	GetConversation(ctx context.Context, conversationID string) (*core.DirectConversation, error)

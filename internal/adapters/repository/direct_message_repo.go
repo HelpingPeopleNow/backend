@@ -21,20 +21,32 @@ func NewGormDirectMessageRepository(db *gorm.DB) ports.DirectMessageRepository {
 	return &GormDirectMessageRepository{db: db}
 }
 
-// sortUserIDs returns the two IDs in sorted order (user_a_id < user_b_id).
-func sortUserIDs(a, b string) (string, string) {
-	if a < b {
-		return a, b
+// sortUserIDs returns the two IDs AND their corresponding roles in sorted
+// order (user_a_id < user_b_id). Roles follow their owning user so the
+// caller can pass (userID1, role1, userID2, role2) in any order and the
+// repo persists (user_a_id, user_a_role, user_b_id, user_b_role) sorted.
+//
+// Audit: this signature is the smallest possible refactor that preserves
+// the "user_a < user_b" invariant while threading roles through.
+func sortUserIDs(userID1, role1, userID2, role2 string) (a, aRole, b, bRole string) {
+	if userID1 < userID2 {
+		return userID1, role1, userID2, role2
 	}
-	return b, a
+	return userID2, role2, userID1, role1
 }
 
 // ── Conversations ────────────────────────────────────────────────────────────
 
 func (r *GormDirectMessageRepository) GetOrCreateConversation(
-	ctx context.Context, userID1, userID2 string,
+	ctx context.Context, userID1, userARole, userID2, userBRole string,
 ) (*core.DirectConversation, bool, error) {
-	a, b := sortUserIDs(userID1, userID2)
+	a, aRole, b, bRole := sortUserIDs(userID1, userARole, userID2, userBRole)
+	if aRole == "" {
+		aRole = core.DirectMessageRoleUser
+	}
+	if bRole == "" {
+		bRole = core.DirectMessageRoleUser
+	}
 
 	var conv core.DirectConversation
 	err := r.db.WithContext(ctx).
@@ -58,16 +70,43 @@ func (r *GormDirectMessageRepository) GetOrCreateConversation(
 	}
 
 	conv = core.DirectConversation{
-		UserAID: a,
-		UserBID: b,
-		Status:  "active",
+		UserAID:   a,
+		UserARole: aRole,
+		UserBID:   b,
+		UserBRole: bRole,
+		Status:    "active",
 	}
 	if err := r.db.WithContext(ctx).Create(&conv).Error; err != nil {
 		return nil, false, fmt.Errorf("create conversation: %w", err)
 	}
 	slog.Info("dm: conversation created",
-		"conv_id", conv.ID, "user_a", a, "user_b", b)
+		"conv_id", conv.ID, "user_a", a, "user_b", b,
+		"user_a_role", aRole, "user_b_role", bRole)
 	return &conv, true, nil
+}
+
+// UpdateConversationRoles patches (user_a_role, user_b_role) on an existing
+// conversation. No-op on miss (returns nil, no error). Audit: lets operators
+// re-classify participants without touching messages.
+func (r *GormDirectMessageRepository) UpdateConversationRoles(
+	ctx context.Context, conversationID, userARole, userBRole string,
+) error {
+	if userARole == "" {
+		userARole = core.DirectMessageRoleUser
+	}
+	if userBRole == "" {
+		userBRole = core.DirectMessageRoleUser
+	}
+	res := r.db.WithContext(ctx).Model(&core.DirectConversation{}).
+		Where("id = ?", conversationID).
+		Updates(map[string]interface{}{
+			"user_a_role": userARole,
+			"user_b_role": userBRole,
+		})
+	if res.Error != nil {
+		return fmt.Errorf("update conversation roles: %w", res.Error)
+	}
+	return nil
 }
 
 func (r *GormDirectMessageRepository) GetConversation(
@@ -178,11 +217,25 @@ func (r *GormDirectMessageRepository) GetMessages(
 	return msgs, nil
 }
 
+// SendMessage persists a message and updates the conversation's
+// last_message_* fields. Audit (sender_role denormalization):
+//
+//	msg.SenderRole MUST be set by the handler from conv.SenderRole(userID)
+//	before this call. We refuse the insert at the repo boundary so a
+//	caller bug doesn't translate to a 500 NOT NULL violation.
+//
+// The transaction uses the defer+committed-flag pattern (idiomatic Go)
+// so a panic between Begin and Commit will still roll back; Commit
+// followed by Rollback is a no-op in GORM.
 func (r *GormDirectMessageRepository) SendMessage(
 	ctx context.Context, msg *core.DirectMessage,
 ) error {
 	if len(msg.Body) == 0 || len(msg.Body) > core.MaxDirectMessageLength {
 		return fmt.Errorf("body must be 1-%d characters", core.MaxDirectMessageLength)
+	}
+
+	if msg.SenderRole == "" {
+		return fmt.Errorf("sender_role required (handler must populate from conv.SenderRole(userID)); conv_id=%s", msg.ConversationID)
 	}
 
 	// Determine which unread count to increment (the other party's)
@@ -199,14 +252,17 @@ func (r *GormDirectMessageRepository) SendMessage(
 	}
 
 	tx := r.db.WithContext(ctx).Begin()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
 
-	// Create the message
 	if err := tx.Create(msg).Error; err != nil {
-		tx.Rollback()
 		return fmt.Errorf("create message: %w", err)
 	}
 
-	// Update conversation metadata
 	preview := msg.Body
 	if utf8.RuneCountInString(preview) > 120 {
 		preview = string([]rune(preview)[:120])
@@ -218,11 +274,14 @@ func (r *GormDirectMessageRepository) SendMessage(
 			"last_message_preview": preview,
 			unreadField:            gorm.Expr("GREATEST(0, " + unreadField + " + 1)"),
 		}).Error; err != nil {
-		tx.Rollback()
 		return fmt.Errorf("update conversation: %w", err)
 	}
 
-	return tx.Commit().Error
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (r *GormDirectMessageRepository) MarkRead(

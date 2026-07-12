@@ -178,6 +178,42 @@ func TestDirectMessagingHandlerSendMessage(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, rec.Code)
 }
 
+// TestDirectMessagingHandlerSendMessageIncludesSenderRole locks sender_role
+// into the response contract (audit, post-fix regression check). The
+// fixture's UserAID matches the auth'd user, so the conv row's SenderRole
+// resolves to UserARole (empty in this fixture), falling back to "user".
+// Future drift must update both this assertion AND the handler's
+// writeJSON payload in lockstep.
+func TestDirectMessagingHandlerSendMessageIncludesSenderRole(t *testing.T) {
+	repo := &testingutil.MockDMRepo{
+		Conv:              &core.DirectConversation{ID: "conv-1", UserAID: "user-1", UserBID: "other-1", UserARole: core.DirectMessageRoleClient},
+		IsParticipantBool: true,
+	}
+	h := newDMHandlerWithRepo(repo)
+	body := `{"body":"hi"}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, dmAuthReq(http.MethodPost, "/api/v1/direct-messages/conv-1/messages", body))
+	assert.Equal(t, http.StatusCreated, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"sender_role":"client"`,
+		"response JSON must include sender_role (audit: locks the production-bug fix into unit-test contract)")
+}
+
+// TestDirectMessagingHandlerSendMessageWorkerRole verifies the WorkerSide
+// branch: when the fixture's UserARole='worker' and the auth'd user is the
+// B-side, the handler must snap 'worker' onto the message.
+func TestDirectMessagingHandlerSendMessageWorkerRole(t *testing.T) {
+	repo := &testingutil.MockDMRepo{
+		Conv:              &core.DirectConversation{ID: "conv-1", UserAID: "a-1", UserBID: "user-1", UserBRole: core.DirectMessageRoleWorker},
+		IsParticipantBool: true,
+	}
+	h := newDMHandlerWithRepo(repo)
+	body := `{"body":"hi"}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, dmAuthReq(http.MethodPost, "/api/v1/direct-messages/conv-1/messages", body))
+	assert.Equal(t, http.StatusCreated, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"sender_role":"worker"`)
+}
+
 func TestDirectMessagingHandlerSendMessageEmptyBody(t *testing.T) {
 	repo := &testingutil.MockDMRepo{IsParticipantBool: true}
 	h := newDMHandlerWithRepo(repo)

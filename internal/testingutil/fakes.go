@@ -306,7 +306,7 @@ type MockDMRepo struct {
 	IsParticipantBool bool
 }
 
-func (m *MockDMRepo) GetOrCreateConversation(_ context.Context, _, _ string) (*core.DirectConversation, bool, error) {
+func (m *MockDMRepo) GetOrCreateConversation(_ context.Context, _, _, _, _ string) (*core.DirectConversation, bool, error) {
 	return m.Conv, m.Created, m.Err
 }
 
@@ -331,6 +331,10 @@ func (m *MockDMRepo) GetMessages(_ context.Context, _ string, _ int, _ string) (
 }
 
 func (m *MockDMRepo) SendMessage(_ context.Context, _ *core.DirectMessage) error {
+	return m.Err
+}
+
+func (m *MockDMRepo) UpdateConversationRoles(_ context.Context, _, _, _ string) error {
 	return m.Err
 }
 

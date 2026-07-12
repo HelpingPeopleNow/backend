@@ -58,6 +58,24 @@ type DirectMessagingHandler struct {
 	limiter *ratelimit.RateLimiter
 }
 
+// resolveRole returns the role used for DM purposes (audit: denormalized
+// onto direct_conversations at contact-creation time and snapshotted onto
+// every new DirectMessage). Mirrors the existing convention used by
+// conversationItem — worker profile present → "worker", else client
+// profile present → "client", otherwise → "user". Result is unknown-safe:
+// a missing profile is logged at debug, the handler falls through to the
+// next check. Designed to be cheap (two indexed primary-key lookups) —
+// only called at contact-creation time, never inside SendMessage hot path.
+func (h *DirectMessagingHandler) resolveRole(ctx context.Context, userID string) string {
+	if wp, err := h.profs.GetWorkerProfile(ctx, userID); err == nil && wp != nil {
+		return core.DirectMessageRoleWorker
+	}
+	if cp, err := h.profs.GetClientProfile(ctx, userID); err == nil && cp != nil {
+		return core.DirectMessageRoleClient
+	}
+	return core.DirectMessageRoleUser
+}
+
 func NewDirectMessagingHandler(
 	dm ports.DirectMessageRepository,
 	profs ports.ProfileRepository,
@@ -141,9 +159,7 @@ func extractSegment(path, prefix, suffix string) string {
 	return s
 }
 
-// ── Endpoints ────────────────────────────────────────────────────────────────
-
-// GET /api/v1/workers/:workerProfileID/contact
+// ── Endpoints ────────────────────────────────────────────────────────────────	// GET /api/v1/workers/:workerProfileID/contact
 func (h *DirectMessagingHandler) getOrCreateContact(
 	w http.ResponseWriter, r *http.Request, userID, workerProfileID string,
 ) {
@@ -167,7 +183,14 @@ func (h *DirectMessagingHandler) getOrCreateContact(
 		return
 	}
 
-	conv, created, err := h.dm.GetOrCreateConversation(r.Context(), userID, wp.UserID)
+	// Audit (denormalized role on DirectConversation): resolve BOTH
+	// participants' roles here so sendMessage can read them in O(1).
+	// WorkerProfile gives us the worker's role for free; the caller's
+	// role is resolved via the standard worker/client/user ladder.
+	callerRole := h.resolveRole(r.Context(), userID)
+	workerRole := core.DirectMessageRoleWorker // wp came from GetWorkerProfileByID
+
+	conv, created, err := h.dm.GetOrCreateConversation(r.Context(), userID, callerRole, wp.UserID, workerRole)
 	if err != nil {
 		slog.Error("dm: get-or-create conversation", "error", err)
 		writeError(w, http.StatusInternalServerError, "database error")
@@ -324,9 +347,15 @@ func (h *DirectMessagingHandler) sendMessage(
 		return
 	}
 
+	// Audit (denormalized role on DirectConversation): derive the
+	// sender_role from the conversation row we just loaded — no
+	// per-send profile lookup. The conv row has the canonical role
+	// cached at contact-creation time so this is always O(1) and never
+	// produces a NOT NULL violation.
 	msg := &core.DirectMessage{
 		ConversationID: convID,
 		SenderID:       userID,
+		SenderRole:     conv.SenderRole(userID),
 		Body:           req.Body,
 	}
 	if err := h.dm.SendMessage(r.Context(), msg); err != nil {
@@ -335,7 +364,7 @@ func (h *DirectMessagingHandler) sendMessage(
 		return
 	}
 
-	IncrDMSent("user")
+	IncrDMSent(msg.SenderRole)
 
 	go h.pushSSE(conv, ports.Event{
 		Type: "message",
@@ -343,6 +372,7 @@ func (h *DirectMessagingHandler) sendMessage(
 			"id":              msg.ID,
 			"conversation_id": msg.ConversationID,
 			"sender_id":       msg.SenderID,
+			"sender_role":     msg.SenderRole,
 			"body":            msg.Body,
 			"created_at":      msg.CreatedAt.Format(time.RFC3339),
 		},
@@ -351,6 +381,7 @@ func (h *DirectMessagingHandler) sendMessage(
 	slog.Info("dm: message sent",
 		"conv_id", convID,
 		"sender_id", userID,
+		"sender_role", msg.SenderRole,
 		"body_len", len(req.Body),
 	)
 
@@ -358,6 +389,7 @@ func (h *DirectMessagingHandler) sendMessage(
 		"id":              msg.ID,
 		"conversation_id": msg.ConversationID,
 		"sender_id":       msg.SenderID,
+		"sender_role":     msg.SenderRole,
 		"body":            msg.Body,
 		"created_at":      msg.CreatedAt,
 	})

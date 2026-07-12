@@ -96,12 +96,12 @@ func TestSchemaDirectConversationUnique(t *testing.T) {
 	dmRepo := repository.NewGormDirectMessageRepository(db)
 
 	// Create first conversation
-	_, isNew, err := dmRepo.GetOrCreateConversation(t.Context(), "schema-dm-c1", wp.ID)
+	_, isNew, err := dmRepo.GetOrCreateConversation(t.Context(), "schema-dm-c1", "user", wp.ID, "user")
 	require.NoError(t, err)
 	assert.True(t, isNew)
 
 	// Create second with same pair — should not be new
-	_, isNew2, err := dmRepo.GetOrCreateConversation(t.Context(), "schema-dm-c1", wp.ID)
+	_, isNew2, err := dmRepo.GetOrCreateConversation(t.Context(), "schema-dm-c1", "user", wp.ID, "user")
 	require.NoError(t, err)
 	assert.False(t, isNew2)
 }

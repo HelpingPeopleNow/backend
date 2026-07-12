@@ -264,6 +264,81 @@ END $$;
 		slog.Warn("migration: failed to drop conversation_status type", "error", err)
 	}
 
+	// ── DM role denormalization (audit) ──
+	// Adds user_a_role + user_b_role to direct_conversations and
+	// backfills from worker_profiles / client_profiles by user_id.
+	// Idempotent — IF NOT EXISTS guards make this a no-op on fresh DBs
+	// (AutoMigrate already creates the columns via GORM struct tags).
+	//
+	// Backfill strategy: when a row already exists we resolve by
+	// joining on user_id. If user_a_id matches a worker_profiles.user_id,
+	// role = 'worker'; else if a client_profiles.user_id matches, role
+	// = 'client'; else fall back to 'user'. Same on the b side.
+	if err := db.Exec(`
+		ALTER TABLE direct_conversations
+			ADD COLUMN IF NOT EXISTS user_a_role VARCHAR(10) NOT NULL DEFAULT 'user';
+	`).Error; err != nil {
+		slog.Warn("migration: failed to add direct_conversations.user_a_role", "error", err)
+	}
+	if err := db.Exec(`
+		ALTER TABLE direct_conversations
+			ADD COLUMN IF NOT EXISTS user_b_role VARCHAR(10) NOT NULL DEFAULT 'user';
+	`).Error; err != nil {
+		slog.Warn("migration: failed to add direct_conversations.user_b_role", "error", err)
+	}
+	// Backfill user_a_role (idempotent — scoped to rows still at default).
+	if err := db.Exec(`
+		UPDATE direct_conversations dc
+		SET user_a_role = 'worker'
+		FROM worker_profiles wp
+		WHERE wp.user_id = dc.user_a_id
+		  AND dc.user_a_role = 'user'
+	`).Error; err != nil {
+		slog.Warn("migration: failed to backfill user_a_role from worker_profiles", "error", err)
+	}
+	if err := db.Exec(`
+		UPDATE direct_conversations dc
+		SET user_a_role = 'client'
+		FROM client_profiles cp
+		WHERE cp.user_id = dc.user_a_id
+		  AND dc.user_a_role = 'user'
+	`).Error; err != nil {
+		slog.Warn("migration: failed to backfill user_a_role from client_profiles", "error", err)
+	}
+	// Backfill user_b_role (same logic, mirrored).
+	if err := db.Exec(`
+		UPDATE direct_conversations dc
+		SET user_b_role = 'worker'
+		FROM worker_profiles wp
+		WHERE wp.user_id = dc.user_b_id
+		  AND dc.user_b_role = 'user'
+	`).Error; err != nil {
+		slog.Warn("migration: failed to backfill user_b_role from worker_profiles", "error", err)
+	}
+	if err := db.Exec(`
+		UPDATE direct_conversations dc
+		SET user_b_role = 'client'
+		FROM client_profiles cp
+		WHERE cp.user_id = dc.user_b_id
+		  AND dc.user_b_role = 'user'
+	`).Error; err != nil {
+		slog.Warn("migration: failed to backfill user_b_role from client_profiles", "error", err)
+	}
+
+	// ── Drop duplicate FK constraint (audit) ──
+	// Production \d direct_messages revealed TWO foreign keys on
+	// direct_messages.sender_id: fk_dm_sender + fk_sender_user, both
+	// pointing at "user"(id) ON DELETE CASCADE. The fk_sender_user was
+	// probably an earlier hand-written migration that overlapped the
+	// idempotent fk_dm_sender created by the DO $$ block below. Drop
+	// the duplicate so future ALTERs and write paths do not pay double
+	// constraint-check overhead and the schema stays clean.
+	if err := db.Exec(`
+		ALTER TABLE direct_messages DROP CONSTRAINT IF EXISTS fk_sender_user;
+	`).Error; err != nil {
+		slog.Warn("migration: failed to drop duplicate fk_sender_user constraint", "error", err)
+	}
+
 	// User-to-user indexes
 	if err := db.Exec(`
 		CREATE INDEX IF NOT EXISTS idx_direct_conv_a
