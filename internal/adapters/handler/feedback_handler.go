@@ -93,6 +93,11 @@ func (h *FeedbackHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("feedback: submit ok", "user_id", userID, "category", req.Category, "id", fb.ID)
 
+	// Resolve user email for the Telegram notification.
+	if email, err := h.repo.GetUserEmail(userID); err == nil && email != "" {
+		fb.Email = email
+	}
+
 	// Fire-and-forget Telegram notification. Non-blocking: if it
 	// fails, the feedback is still saved.
 	if h.notifier != nil {

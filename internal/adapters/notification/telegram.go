@@ -78,10 +78,11 @@ func (n *TelegramNotifier) SendFeedbackAlert(fb *core.Feedback) error {
 	text := fmt.Sprintf(
 		"💬 New Feedback\n\n"+
 			"👤 User: %s\n"+
+			"📧 Email: %s\n"+
 			"📄 Page: %s\n"+
 			"🏷️ Category: %s %s\n\n"+
 			"\"%s\"",
-		fb.UserID, fb.PageURL, emoji, fb.Category, fb.Message,
+		fb.UserID, fb.Email, fb.PageURL, emoji, fb.Category, fb.Message,
 	)
 
 	body, _ := json.Marshal(map[string]interface{}{

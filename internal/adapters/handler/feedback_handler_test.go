@@ -35,6 +35,7 @@ func (m *mockFeedbackRepo) List(string, int, int) ([]core.Feedback, int64, error
 }
 func (m *mockFeedbackRepo) UpdateStatus(string, string, string) error { return nil }
 func (m *mockFeedbackRepo) CountByStatus() (map[string]int64, error)  { return nil, nil }
+func (m *mockFeedbackRepo) GetUserEmail(string) (string, error)       { return "", nil }
 
 // mockNotifier is a no-op Notifier for handler tests.
 type mockNotifier struct {

@@ -76,3 +76,15 @@ func (r *GormFeedbackRepository) CountByStatus() (map[string]int64, error) {
 	}
 	return result, nil
 }
+
+func (r *GormFeedbackRepository) GetUserEmail(userID string) (string, error) {
+	type userRow struct {
+		Email string
+	}
+	var u userRow
+	err := r.db.Table(`"user"`).Where("id = ?", userID).Select("email").Scan(&u).Error
+	if err != nil {
+		return "", err
+	}
+	return u.Email, nil
+}

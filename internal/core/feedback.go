@@ -24,6 +24,7 @@ type Feedback struct {
 	Category  string    `gorm:"type:text;not null;default:'general'" json:"category"`
 	Status    string    `gorm:"type:text;not null;default:'open';index:idx_feedback_status" json:"status"`
 	AdminNote *string   `gorm:"type:text" json:"admin_note,omitempty"`
+	Email     string    `gorm:"-" json:"-"`
 	CreatedAt time.Time `gorm:"autoCreateTime;index:idx_feedback_created_at,priority:1" json:"created_at"`
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }
