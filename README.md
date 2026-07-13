@@ -14,7 +14,8 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
 | **HTTP** | stdlib `net/http` (no frameworks) |
 | **gRPC** | `google.golang.org/grpc` (client → helper) |
 | **ORM** | GORM v1.25 (PostgreSQL driver) |
-| **DB** | PostgreSQL 16 (`system_prompts` table) |
+| **DB** | PostgreSQL 16 + pgvector (`worker_embeddings` HNSW index) |
+| **Concurrency** | `golang.org/x/sync` (errgroup for parallel Pass-1 + Embed) |
 | **Logging** | `log/slog` (structured, text to stdout) |
 | **Container** | golang:1.25 → alpine:3.20 (multi-stage, static binary) |
 
@@ -27,7 +28,7 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
 3. **System prompt management** — admin can read/update the worker profile prompt (`worker_profile_prompt`), the client profile prompt (`client_profile_prompt`), and the LLM provider (`llm_provider`) via REST endpoints
 4. **LLM provider runtime switch** — admin can toggle between `opencode0` (big-pickle), `opencode1`, `opencode2` (external), `ollama` (local), and `mistral` (cloud) without restarting the container; empty = uses the helper's auto fallback chain (OpenCode 0 → OpenCode 1 → OpenCode 2 → Mistral → Ollama, cheap-first R5)
 5. **Conversation persistence** — all chat messages (worker, client) are saved to the database and can be loaded on page reload via the conversations API
-6. **Search/find professionals** — receives `POST /api/v1/chat` with `mode: "search"`, uses two-pass LLM (filter-fill then presentation) to match clients with workers, returns recommended worker cards with `distance_km` (Haversine) when GPS coordinates are provided in the request
+6. **Search/find professionals** — receives `POST /api/v1/chat` with `mode: "search"`, uses two-pass LLM (filter-fill then presentation) to match clients with workers. Pass-1 (LLM filter extraction) and Embed (raw message → vector) run concurrently via `errgroup`. Hybrid ILIKE + pgvector cosine search with per-field weighted scoring (`FieldWeights`). Falls back to ILIKE when vector scores are low or embedding fails. Returns recommended worker cards with `distance_km` (Haversine) when GPS coordinates are provided in the request
 7. **Profile reset** — worker and client profiles can be cleared via `DELETE /api/v1/worker/profile` and `DELETE /api/v1/client/profile`
 8. **Feedback system** — authenticated users submit feedback (message, page_url, category) via `POST /api/v1/feedback`; saved to `feedback` table with status `open`; async Telegram notification to admin channel; admin CRUD via `/api/v1/admin/feedback`
 
@@ -551,7 +552,8 @@ backend/
     ├── core/
     │   ├── system_prompt.go           # SystemPrompt GORM model (4 prompt columns + llm_provider)
     │   ├── worker.go                  # WorkerProfile GORM model + DTO + ToFindTraderCard
-    │   ├── worker_embeddings.go       # WorkerEmbedding (vector(768), text_hash, updated_at trigger)
+    │   ├── worker_embeddings.go       # WorkerEmbedding (vector(768)), BuildFieldTexts, FieldWeights, NormalizeProfessionForEmbedding
+    │   ├── professions.go             # ProfessionAliases (EN/ES normalization map), NormalizeProfession
     │   ├── client.go                  # ClientProfile GORM model + DTO
     │   ├── conversation.go            # Conversation + Message
     │   ├── direct_conversation.go     # DirectConversation
@@ -572,7 +574,8 @@ backend/
     │   └── direct_messaging.go        # Broker + Event (SSE pub/sub)
     ├── services/                      # Use-case orchestration
     │   ├── intake_service.go          # ProcessIntake: chat → [FIELDS] → map-merge upsert + debounced re-embed
-    │   ├── search_service.go          # Search: two-pass LLM (filter-fill → present) + hybrid ILIKE/vector + 60s cache
+    │   ├── search_service.go          # Search: parallel Pass-1 + Embed → hybrid ILIKE/vector → Pass-2 presentation + 60s cache
+    │   ├── search_service_test.go     # 30+ tests: cache, branch selection, filters, parallel execution, embed failure
     │   └── seed_service.go            # SeedSystemPrompts: defaults at startup
     ├── adapters/
     │   ├── handler/                   # HTTP handlers
