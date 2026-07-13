@@ -11,7 +11,7 @@ go test -race -coverprofile=coverage.out ./...
 # Coverage thresholds enforced via .testcoverage.yml (60% overall; services/core 90%, handlers 65%)
 ```
 
-CI is `.github/workflows/ci.yml`: `gofmt -l` + `go vet` + `go tool govulncheck` (lint) → `go build` → `go test -race` with PG service container → Docker build/push to `ghcr.io/helpingpeoplenow/backend`.
+CI is `.github/workflows/ci.yml`: `gofmt -l` + `go vet` + `go tool govulncheck` (lint) → `go build` → `go test -race` with PG service container → Docker build/push to `ghcr.io/helpingpeoplenow/backend` → Deploy to Hermes (self-hosted runner, runs `deploy-service.sh backend`).
 
 A second workflow `.github/workflows/vector-parity.yml` runs `helper/scripts/test_byte_parity_gate.sh` to gate byte-level parity between Go (`BuildFieldTexts`) and Python (`backfill_embeddings.py`).
 
