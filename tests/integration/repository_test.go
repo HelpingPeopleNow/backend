@@ -24,6 +24,7 @@ func migrateTestSchema(t *testing.T, db *gorm.DB) {
 		&core.DirectConversation{},
 		&core.DirectMessage{},
 		&core.Feedback{},
+		&core.WorkerEmbedding{}, // VECTOR_SEARCH_PLAN §6.2 — added for ilike_low_top_score test
 	)
 	require.NoError(t, err, "AutoMigrate failed")
 }
@@ -577,4 +578,123 @@ func TestFindWorkersMaxDistanceFilter(t *testing.T) {
 		assert.NotEqual(t, "user-maxdist", w.UserID,
 			"F14: Barcelona worker must be excluded when MaxDistanceKm=100")
 	}
+}
+
+// ── F7: VECTOR_SEARCH_MIN_TOP_SCORE → ilike_low_top_score branch ──
+//
+// When findWorkersVector returns rows but the highest cosine is below
+// VECTOR_SEARCH_MIN_TOP_SCORE, FindWorkers must fall back to ILIKE and
+// tag the result with branch="ilike_low_top_score". This test exercises
+// the transition by:
+//
+//   1. Inserting a worker with two embedding rows pointing at axis 0.
+//   2. Passing a query vector with a 45°-off component (cosine ≈ 0.707).
+//   3. Setting VECTOR_SEARCH_MIN_TOP_SCORE=0.99 (forces fallback).
+//   4. Lowering VECTOR_SEARCH_MIN_SCORE so the row passes the inner
+//      HAVING filter and reaches the top-score check.
+
+// unit768 returns a 768-dim float32 vector pointing at axis `i` only.
+func unit768(i int) []float32 {
+	v := make([]float32, 768)
+	v[i] = 1.0
+	return v
+}
+
+func TestFindWorkersILIKELowTopScoreFallback(t *testing.T) {
+	db := NewTestDB(t)
+	migrateTestSchema(t, db)
+	repo := repository.NewGormProfileRepository(db)
+	ctx := context.Background()
+
+	// Tight post-query threshold so non-identical cosine triggers fallback.
+	t.Setenv("VECTOR_SEARCH_MIN_TOP_SCORE", "0.99")
+	// Loose inner cosine floor so the worker passes the HAVING filter.
+	t.Setenv("VECTOR_SEARCH_MIN_SCORE", "0.1")
+
+	// Create the worker profile (used by both vector and ILIKE branches).
+	require.NoError(t, repo.UpsertWorkerProfile(ctx, "user-lowtopscore", map[string]interface{}{
+		"profession": "Plumber",
+		"city":       "Madrid",
+	}))
+
+	// Insert two embedding rows for the same user so the vector branch
+	// has at least one row to return. Both point at axis 0.
+	storedVec := unit768(0)
+	require.NoError(t, repo.UpsertWorkerEmbedding(ctx, "user-lowtopscore", "profession", storedVec, "hash-prof"))
+	require.NoError(t, repo.UpsertWorkerEmbedding(ctx, "user-lowtopscore", "city", storedVec, "hash-city"))
+
+	// Query vector at 45° from axis 0 → cosine ≈ 0.7071068 with storedVec.
+	queryVec := make([]float32, 768)
+	queryVec[0] = 0.7071068 // cos(45°)
+	queryVec[1] = 0.7071068 // sin(45°)
+	// remaining components stay zero.
+
+	filters := core.WorkerSearchFilters{
+		Profession:  "Plumber",
+		QueryVector: queryVec,
+	}
+
+	result, err := repo.FindWorkers(ctx, filters)
+	require.NoError(t, err)
+
+	// Vector branch returned rows (top cosine ≈ 0.707) but 0.707 < 0.99
+	// → FindWorkers must reroute to ILIKE branch=ilike_low_top_score.
+	assert.Equal(t, "ilike_low_top_score", result.Branch,
+		"F7: top_score below VECTOR_SEARCH_MIN_TOP_SCORE must fall back to ILIKE with branch=ilike_low_top_score")
+	require.NotEmpty(t, result.Workers,
+		"after fallback, profession ILIKE filter should still surface the worker")
+
+	// Verify the worker that came back is the one we created.
+	containsWorker := false
+	for _, w := range result.Workers {
+		if w.UserID == "user-lowtopscore" {
+			containsWorker = true
+			break
+		}
+	}
+	assert.True(t, containsWorker,
+		"F7: post-fallback ILIKE result must include the original worker")
+}
+
+// ── F7 positive control: low threshold → branch must be "vector" ───
+//
+// Same worker + embeddings setup as the fallback test, but with the
+// VECTOR_SEARCH_MIN_TOP_SCORE threshold pulled BELOW the actual cosine
+// (~0.707). This proves the fallback is conditional on the threshold
+// and not always triggered by a regression that hard-codes
+// "ilike_low_top_score".
+func TestFindWorkersVectorBranchKeptWhenTopScoreAboveThreshold(t *testing.T) {
+	db := NewTestDB(t)
+	migrateTestSchema(t, db)
+	repo := repository.NewGormProfileRepository(db)
+	ctx := context.Background()
+
+	// Threshold BELOW the cosine we'll get (~0.707) → no fallback.
+	t.Setenv("VECTOR_SEARCH_MIN_TOP_SCORE", "0.5")
+	// Inner cosine floor still low so the row reaches the top-score check.
+	t.Setenv("VECTOR_SEARCH_MIN_SCORE", "0.1")
+
+	require.NoError(t, repo.UpsertWorkerProfile(ctx, "user-vector-kept", map[string]interface{}{
+		"profession": "Plumber",
+		"city":       "Madrid",
+	}))
+	storedVec := unit768(0)
+	require.NoError(t, repo.UpsertWorkerEmbedding(ctx, "user-vector-kept", "profession", storedVec, "hash-prof"))
+	require.NoError(t, repo.UpsertWorkerEmbedding(ctx, "user-vector-kept", "city", storedVec, "hash-city"))
+
+	queryVec := make([]float32, 768)
+	queryVec[0] = 0.7071068
+	queryVec[1] = 0.7071068
+
+	result, err := repo.FindWorkers(ctx, core.WorkerSearchFilters{
+		Profession:  "Plumber",
+		QueryVector: queryVec,
+	})
+	require.NoError(t, err)
+
+	// F7 positive control: cosine (~0.707) ≥ threshold (0.5) → vector branch kept.
+	assert.Equal(t, "vector", result.Branch,
+		"F7 positive control: when top_score >= VECTOR_SEARCH_MIN_TOP_SCORE, branch must be vector")
+	assert.Greater(t, result.TopScore, 0.0,
+		"vector branch must report a non-zero top_score")
 }

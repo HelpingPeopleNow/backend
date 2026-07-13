@@ -246,7 +246,7 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | GET | `/metrics` | No | Prometheus metrics in text/plain (counters: `http_requests_total`, `chat_requests_total`, `vector_search_total`, `profile_saves_total`, `conversations_total`, `dm_sent_total`, `dm_received_total`, `auth_resolve_errors_total`; histograms: `chat_llm_duration_seconds`, `auth_resolve_duration_seconds`, `vector_score`). Registered by `metrics_handler.RegisterMetricsRoutes`. |
 | GET | `/api/v1/workers/public/latest` | No | Public worker profiles — paginated list (default limit 6, capped at 20). Returns `WorkerPublicDTO` (private fields stripped). |
 | GET | `/api/v1/workers/public/{slug}` | No | Public worker profile by URL-friendly slug. Returns `WorkerPublicDTO` (private fields stripped). 404 on missing/invalid slug. |
-| POST | `/api/v1/feedback` | Yes | Submit user feedback (message 1–2000 chars, page_url 1–2048 chars, category: bug/idea/complaint/general). Saved with status `open`. Sends async Telegram notification. |
+| POST | `/api/v1/feedback` | Yes | Submit user feedback (message, page_url, category) via `POST /api/v1/feedback`; saved to `feedback` table with status `open`; async Telegram notification to admin channel; admin CRUD via `/api/v1/admin/feedback` |
 | GET | `/admin/*` | Yes (admin) | Admin entity CRUD over exactly 9 entity slugs: `users`, `worker-profiles`, `client-profiles`, `conversations`, `messages`, `direct-conversations`, `direct-messages`, `direct-message-reports`, `feedback` |
 
 *Chat handler is wrapped by `AuthMiddleware` but does not require a session — anonymous users get chat, and only authenticated requests merge fields into the user's profile.
@@ -427,7 +427,19 @@ The backend supports GPS-based distance search. Users provide `latitude` and `lo
 - `latitude` (float64, optional) — GPS latitude coordinate
 - `longitude` (float64, optional) — GPS longitude coordinate
 
+**GPS source precedence (highest → lowest):**
+1. Request `latitude`/`longitude` from browser geolocation (most current)
+2. Stored `client_profiles.latitude`/`longitude` from intake
+3. Absent → no distance sorting, no proximity filter
+
+**City source precedence (highest → lowest):**
+1. City extracted from the user's message by the Pass-1 LLM
+2. Stored `client_profiles.city` from intake
+3. Absent → no city filter
+
 **Distance calculation:** When both client and worker have GPS coordinates, the backend computes straight-line distance using the [Haversine formula](https://en.wikipedia.org/wiki/Haversine_formula). Results include a `distance_km` field (in kilometers) for each matched worker, sorted by proximity.
+
+**Max distance filter:** When the Pass-1 LLM extracts `max_distance_km` from the user's message, results are further filtered to workers within that radius. A value of `0` or absence means no cap.
 
 **Search response (mode: "search"):** Each worker card in the results array includes:
 - `distance_km` (float64) — Haversine distance in kilometers from the client's location; only present when both parties have GPS coordinates

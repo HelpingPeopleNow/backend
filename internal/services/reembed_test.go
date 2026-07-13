@@ -85,24 +85,25 @@ func TestSearchClientCityFallback(t *testing.T) {
 	assert.NotNil(t, result)
 }
 
-// ── currentWorkerFloor ───────────────────────────────────────────────
+// ── currentWorkerSignature ───────────────────────────────────────────
 
-func TestCurrentWorkerFloorNilDB(t *testing.T) {
+func TestCurrentWorkerSignatureNilDB(t *testing.T) {
 	profs := &testingutil.MockProfiles{} // RawQuery returns nil
 	svc := NewSearchService(&testingutil.MockLLM{}, profs, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	floor, err := svc.currentWorkerFloor(t.Context())
+	sig, err := svc.currentWorkerSignature(t.Context())
 	assert.NoError(t, err)
-	assert.True(t, floor.IsZero()) // nil DB → zero time
+	assert.True(t, sig.MaxUpdate.IsZero()) // nil DB → zero time
+	assert.Equal(t, 0, sig.Count)
 }
 
-func TestCurrentWorkerFloorMemoization(t *testing.T) {
+func TestCurrentWorkerSignatureMemoization(t *testing.T) {
 	profs := &testingutil.MockProfiles{} // RawQuery returns nil
 	svc := NewSearchService(&testingutil.MockLLM{}, profs, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	floor1, _ := svc.currentWorkerFloor(t.Context())
-	floor2, _ := svc.currentWorkerFloor(t.Context())
-	assert.Equal(t, floor1, floor2)
+	sig1, _ := svc.currentWorkerSignature(t.Context())
+	sig2, _ := svc.currentWorkerSignature(t.Context())
+	assert.Equal(t, sig1, sig2)
 }
 
 // ── ReembedWorker ────────────────────────────────────────────────────

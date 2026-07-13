@@ -13,6 +13,7 @@ import (
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
 	"github.com/HelpingPeopleNow/backend/internal/ports"
+	"golang.org/x/sync/errgroup"
 )
 
 // SearchService orchestrates the two-pass LLM workflow for search mode.
@@ -28,24 +29,30 @@ type SearchService struct {
 	chats    ports.ChatRepository
 	prompts  ports.SystemPromptRepository
 
-	// VECTOR_SEARCH_PLAN P2 / third-pass review — search cache.
+	// VECTOR_SEARCH_PLAN Phase 2 — single full-result cache.
 	// Key: sha256(canonicalized filters JSON).
 	// Entry expires either:
 	//   - by age (TTL = 60s)
-	//   - by worker-list mutation (workerFloor < MAX(worker_profiles.updated_at))
-	// The floor mechanism avoids the marketplace failure mode where
-	// new workers are invisible for the entire TTL window.
-	// F8: bounded by maxSearchCacheEntries (lazy eviction of oldest).
+	//   - by worker-list mutation (signature changed)
+	// The signature mechanism detects inserts, updates, and deletes.
+	// Bounded by maxSearchCacheEntries (lazy eviction of oldest).
 	searchCache    map[string]searchCacheEntry
 	searchCacheTTL time.Duration
 	searchCacheMu  sync.RWMutex
 
-	// floorMu / floorCached / floorCachedAt — 1-second-granular memoization
-	// around SELECT MAX(updated_at) FROM worker_profiles so rapid refinement
-	// ("plumber" → "plumber in Madrid") doesn't repeatedly hit the floor query.
-	floorMu       sync.Mutex
-	floorCached   time.Time
-	floorCachedAt time.Time
+	// VECTOR_SEARCH_PLAN Phase 2 — embed-result cache.
+	// Key: sha256(message). Caches the embedding vector for identical
+	// resubmits so the expensive Embed call is skipped. Pure function of
+	// message + model, so it needs no worker-signature invalidation.
+	embedResultCache   map[string]embedCacheEntry
+	embedResultCacheMu sync.RWMutex
+
+	// signatureMu / signatureCached / signatureCachedAt — 1-second-granular
+	// memoization around SELECT COUNT(*), MAX(updated_at) FROM worker_profiles
+	// so rapid refinement doesn't repeatedly hit the DB.
+	signatureMu       sync.Mutex
+	signatureCached   workerSignature
+	signatureCachedAt time.Time
 }
 
 const (
@@ -57,6 +64,32 @@ type searchCacheEntry struct {
 	result      *SearchResult
 	cachedAt    time.Time
 	workerFloor time.Time
+	// signature tracks the worker table state at cache time.
+	signature workerSignature
+}
+
+// workerSignature replaces the MAX(updated_at) floor with a count+max
+// pair so deletes (which lower the count) also invalidate the cache.
+type workerSignature struct {
+	Count     int
+	MaxUpdate time.Time
+}
+
+func (sig workerSignature) Equal(other workerSignature) bool {
+	return sig.Count == other.Count && sig.MaxUpdate.Equal(other.MaxUpdate)
+}
+
+type embedCacheEntry struct {
+	qvec     []float32
+	cachedAt time.Time
+}
+
+type SearchResult struct {
+	Answer         string
+	Workers        []core.WorkerProfile
+	TopScore       float64
+	Branch         string // "vector" | "ilike" | "ilike_disabled_via_env" | "ilike_low_top_score" | "ilike_embed_failed"
+	ConversationID string
 }
 
 func NewSearchService(
@@ -66,21 +99,14 @@ func NewSearchService(
 	prompts ports.SystemPromptRepository,
 ) *SearchService {
 	return &SearchService{
-		llm:            llm,
-		profiles:       profiles,
-		chats:          chats,
-		prompts:        prompts,
-		searchCache:    make(map[string]searchCacheEntry),
-		searchCacheTTL: 60 * time.Second,
+		llm:              llm,
+		profiles:         profiles,
+		chats:            chats,
+		prompts:          prompts,
+		searchCache:      make(map[string]searchCacheEntry),
+		searchCacheTTL:   60 * time.Second,
+		embedResultCache: make(map[string]embedCacheEntry),
 	}
-}
-
-type SearchResult struct {
-	Answer         string
-	Workers        []core.WorkerProfile
-	TopScore       float64
-	Branch         string // "vector" | "ilike" | "ilike_disabled_via_env" | "ilike_low_top_score" | "ilike_embed_failed"
-	ConversationID string
 }
 
 func (s *SearchService) Search(
@@ -129,22 +155,64 @@ func (s *SearchService) Search(
 		message = message[:searchInputMaxLen] + "\n\n[Truncated at 2048 characters]"
 	}
 
-	// F11: cheap pre-key check before Pass-1/Embed — hash just the raw
-	// message + city to short-circuit identical repeat queries.
-	preKeyBytes, _ := json.Marshal(struct{ Msg, City string }{message, clientCity})
-	preKey := sha256Hex(string(preKeyBytes))
-	s.searchCacheMu.RLock()
-	preEntry, preOk := s.searchCache[preKey]
-	s.searchCacheMu.RUnlock()
-	if preOk && time.Since(preEntry.cachedAt) < s.searchCacheTTL {
-		slog.Info("search: pre-key cache hit (skipped Pass-1+Embed)",
-			"key", preKey[:12], "branch", preEntry.result.Branch)
-		return preEntry.result, nil
+	// ── VECTOR_SEARCH_PLAN P-D: parallelize Pass-1 ∥ Embed ──
+	// Pass-1 consumes the prompt; Embed consumes the raw message. They
+	// have no data dependency, so run them concurrently. Both must
+	// complete before FindWorkers.
+	//
+	// Phase 2 embed-result cache: identical messages reuse the previously
+	// computed vector without another round-trip to the helper.
+	var pass1Resp *ports.LLMResponse
+	var qvec []float32
+	var pass1Err, embedErr error
+
+	embedKey := sha256Hex(message)
+	s.embedResultCacheMu.RLock()
+	embedEntry, embedHit := s.embedResultCache[embedKey]
+	s.embedResultCacheMu.RUnlock()
+	if embedHit && time.Since(embedEntry.cachedAt) < s.searchCacheTTL && len(embedEntry.qvec) > 0 {
+		qvec = embedEntry.qvec
+		slog.Info("search: embed-result cache hit", "key", embedKey[:12])
 	}
 
-	pass1Resp, err := s.llm.Ask(ctx, searchPrompt, message, history, provider)
-	if err != nil {
+	g, gctx := errgroup.WithContext(ctx)
+
+	// Pass-1: LLM extracts search filters.
+	g.Go(func() error {
+		pass1Resp, pass1Err = s.llm.Ask(gctx, searchPrompt, message, history, provider)
+		return pass1Err
+	})
+
+	// Embed: raw message → vector (only if not served from cache).
+	if !embedHit {
+		g.Go(func() error {
+			qvec, embedErr = s.llm.Embed(gctx, message)
+			return nil // embed failure is handled gracefully below
+		})
+	}
+
+	if err := g.Wait(); err != nil {
 		return nil, fmt.Errorf("pass 1: %w", err)
+	}
+
+	// Cache the freshly computed vector for identical resubmits.
+	if !embedHit && embedErr == nil && len(qvec) > 0 {
+		s.embedResultCacheMu.Lock()
+		if len(s.embedResultCache) >= maxSearchCacheEntries {
+			var oldestKey string
+			var oldestTime time.Time
+			for k, v := range s.embedResultCache {
+				if oldestKey == "" || v.cachedAt.Before(oldestTime) {
+					oldestKey = k
+					oldestTime = v.cachedAt
+				}
+			}
+			if oldestKey != "" {
+				delete(s.embedResultCache, oldestKey)
+			}
+		}
+		s.embedResultCache[embedKey] = embedCacheEntry{qvec: qvec, cachedAt: time.Now()}
+		s.embedResultCacheMu.Unlock()
 	}
 
 	pass1Clean, searchParams := core.ParseSearch(pass1Resp.Answer)
@@ -167,15 +235,11 @@ func (s *SearchService) Search(
 	if filters.City == "" {
 		filters.City = clientCity
 	}
-	// Inject client GPS coords into search filters — request coords
-	// override stored profile coords (more recent / accurate).
-	if requestLat != nil && requestLng != nil {
-		filters.Latitude = requestLat
-		filters.Longitude = requestLng
-	} else if clientLat != nil && clientLng != nil {
-		filters.Latitude = clientLat
-		filters.Longitude = clientLng
-	}
+	// VECTOR_SEARCH_PLAN Phase 1: explicit GPS precedence.
+	// 1. request coords (browser geolocation, most current)
+	// 2. stored client profile coords
+	// 3. nil → no distance sorting / proximity filter
+	filters.Latitude, filters.Longitude = resolveSearchCoords(requestLat, requestLng, clientLat, clientLng)
 
 	slog.Info("search: querying workers",
 		"profession", filters.Profession,
@@ -185,16 +249,7 @@ func (s *SearchService) Search(
 		"insured", filters.InsuredOnly,
 	)
 
-	// ── VECTOR_SEARCH_PLAN §8.6: hybrid branch ──
-	//
-	// If the embedding call succeeds AND we have a non-zero QueryVector, the
-	// repository's FindWorkers will run findWorkersVector first and fall back
-	// to findWorkersILIKE on error or low top-score — but we ALSO cache the
-	// whole SearchResult keyed on the canonicalized search params to absorb
-	// "plumber" → "plumber in Madrid" → "plumber in Madrid insured" refinement
-	// (P2 — TTL 60 s + worker-floor invalidation).
-
-	qvec, embedErr := s.llm.Embed(ctx, message)
+	// Apply embedding if available.
 	if embedErr == nil && len(qvec) > 0 {
 		filters.QueryVector = qvec
 	} else if embedErr != nil {
@@ -208,45 +263,18 @@ func (s *SearchService) Search(
 	// injection), not raw LLM searchParams. This prevents cross-city
 	// and cross-geo cache leaks where two users in different locations
 	// with the same query share a cache entry.
-	type cacheKeyParts struct {
-		Profession    string
-		City          string
-		Latitude      float64
-		Longitude     float64
-		MaxDistanceKm float64
-		Emergency     bool
-		FreeEstimate  bool
-		Insured       bool
-	}
-	var latVal, lngVal, maxDist float64
-	if filters.Latitude != nil {
-		latVal = *filters.Latitude
-	}
-	if filters.Longitude != nil {
-		lngVal = *filters.Longitude
-	}
-	if filters.MaxDistanceKm != nil {
-		maxDist = float64(*filters.MaxDistanceKm)
-	}
-	keyParts := cacheKeyParts{
-		Profession:    filters.Profession,
-		City:          filters.City,
-		Latitude:      latVal,
-		Longitude:     lngVal,
-		MaxDistanceKm: maxDist,
-		Emergency:     filters.EmergencyOnly,
-		FreeEstimate:  filters.FreeEstimateOnly,
-		Insured:       filters.InsuredOnly,
-	}
-	keyBytes, _ := json.Marshal(keyParts)
-	cacheKey := sha256Hex(string(keyBytes))
-	floor, _ := s.currentWorkerFloor(ctx)
+	//
+	// Include lang because the Pass-2 presentation prompt is translated;
+	// without it, an English resubmit could return a cached Spanish answer.
+	cacheKey := s.buildCacheKey(filters, lang)
+	signature, _ := s.currentWorkerSignature(ctx)
 
 	s.searchCacheMu.RLock()
 	entry, ok := s.searchCache[cacheKey]
 	s.searchCacheMu.RUnlock()
 	cacheHit := false
-	if ok && time.Since(entry.cachedAt) < s.searchCacheTTL && !floor.After(entry.workerFloor) {
+
+	if ok && time.Since(entry.cachedAt) < s.searchCacheTTL && entry.signature.Equal(signature) {
 		cacheHit = true
 		slog.Info("search: cache hit",
 			"key", cacheKey[:12], "age_s", int(time.Since(entry.cachedAt).Seconds()))
@@ -258,7 +286,9 @@ func (s *SearchService) Search(
 			"cache_hit", true,
 			"duration_ms", time.Since(start).Milliseconds(),
 		)
-		return entry.result, nil
+		// Return a shallow copy so callers cannot mutate the cached object.
+		copyVal := *entry.result
+		return &copyVal, nil
 	}
 
 	// Cache miss (or invalidation): run the repository. It picks ILIKE or
@@ -296,25 +326,19 @@ func (s *SearchService) Search(
 				convID = id
 			}
 		}
-		// Cache 0-result response so repeat queries hit the cache.
-		cacheVal := SearchResult{
-			Answer:         templatedAnswer,
-			Workers:        workers,
-			TopScore:       topScore,
-			Branch:         branch,
-			ConversationID: "",
-		}
-		newFloor, _ := s.currentWorkerFloor(ctx)
-		s.searchCacheMu.Lock()
-		s.searchCache[preKey] = searchCacheEntry{result: &cacheVal, cachedAt: time.Now(), workerFloor: newFloor}
-		s.searchCacheMu.Unlock()
-		return &SearchResult{
+		result := &SearchResult{
 			Answer:         templatedAnswer,
 			Workers:        workers,
 			TopScore:       topScore,
 			Branch:         branch,
 			ConversationID: convID,
-		}, nil
+		}
+		// Cache 0-result response under the full-filter key.
+		// Strip ConversationID before caching so it is not leaked across users.
+		cacheVal := *result
+		cacheVal.ConversationID = ""
+		s.writeSearchCache(cacheKey, &cacheVal, signature)
+		return result, nil
 	}
 
 	// Pre-bound presentation prompt (cached lookup already done above).
@@ -363,30 +387,7 @@ func (s *SearchService) Search(
 	cacheVal := *result
 	cacheVal.ConversationID = "" // P2 cache hygiene — never leak per-user IDs.
 
-	newFloor, _ := s.currentWorkerFloor(ctx)
-	s.searchCacheMu.Lock()
-	// F8: lazy eviction — if cache is at capacity, evict the oldest entry
-	if len(s.searchCache) >= maxSearchCacheEntries {
-		var oldestKey string
-		var oldestTime time.Time
-		for k, v := range s.searchCache {
-			if oldestKey == "" || v.cachedAt.Before(oldestTime) {
-				oldestKey = k
-				oldestTime = v.cachedAt
-			}
-		}
-		if oldestKey != "" {
-			delete(s.searchCache, oldestKey)
-		}
-	}
-	s.searchCache[cacheKey] = searchCacheEntry{
-		result: &cacheVal, cachedAt: time.Now(), workerFloor: newFloor,
-	}
-	// F11: also store the pre-key (message+city) for future short-circuit
-	s.searchCache[preKey] = searchCacheEntry{
-		result: &cacheVal, cachedAt: time.Now(), workerFloor: newFloor,
-	}
-	s.searchCacheMu.Unlock()
+	s.writeSearchCache(cacheKey, &cacheVal, signature)
 
 	// Idea C: structured slog per search so grep+jq can eyeball branches
 	// before wiring percentile-tracking machinery (N6 — V1.1).
@@ -417,32 +418,112 @@ func (s *SearchService) SearchCacheSize() int {
 	return len(s.searchCache)
 }
 
-// currentWorkerFloor returns MAX(worker_profiles.updated_at), but
-// memoizes the result for 1s so rapid refinement doesn't hammer Postgres.
-// P2 (third-pass review) requires the floor mechanism for cache
-// invalidation correctness.
+// writeSearchCache stores a result with lazy eviction. It must be called
+// with the searchCacheMu unlocked.
+func (s *SearchService) writeSearchCache(key string, result *SearchResult, signature workerSignature) {
+	s.searchCacheMu.Lock()
+	defer s.searchCacheMu.Unlock()
+	// F8: lazy eviction — if cache is at capacity, evict the oldest entry
+	if len(s.searchCache) >= maxSearchCacheEntries {
+		var oldestKey string
+		var oldestTime time.Time
+		for k, v := range s.searchCache {
+			if oldestKey == "" || v.cachedAt.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = v.cachedAt
+			}
+		}
+		if oldestKey != "" {
+			delete(s.searchCache, oldestKey)
+		}
+	}
+	s.searchCache[key] = searchCacheEntry{
+		result:    result,
+		cachedAt:  time.Now(),
+		signature: signature,
+	}
+}
+
+// buildCacheKey returns a stable SHA-256 key for the resolved filters.
+// lang is included because the Pass-2 presentation prompt is translated.
+func (s *SearchService) buildCacheKey(filters core.WorkerSearchFilters, lang string) string {
+	type cacheKeyParts struct {
+		Profession    string
+		City          string
+		Latitude      float64
+		Longitude     float64
+		MaxDistanceKm float64
+		Emergency     bool
+		FreeEstimate  bool
+		Insured       bool
+		Lang          string
+	}
+	var latVal, lngVal, maxDist float64
+	if filters.Latitude != nil {
+		latVal = *filters.Latitude
+	}
+	if filters.Longitude != nil {
+		lngVal = *filters.Longitude
+	}
+	if filters.MaxDistanceKm != nil {
+		maxDist = float64(*filters.MaxDistanceKm)
+	}
+	keyParts := cacheKeyParts{
+		Profession:    filters.Profession,
+		City:          filters.City,
+		Latitude:      latVal,
+		Longitude:     lngVal,
+		MaxDistanceKm: maxDist,
+		Emergency:     filters.EmergencyOnly,
+		FreeEstimate:  filters.FreeEstimateOnly,
+		Insured:       filters.InsuredOnly,
+		Lang:          lang,
+	}
+	keyBytes, _ := json.Marshal(keyParts)
+	return sha256Hex(string(keyBytes))
+}
+
+// currentWorkerSignature returns (COUNT(*), MAX(updated_at)) from
+// worker_profiles, memoized for 1s so rapid refinement doesn't hammer
+// Postgres. The count detects deletes; the max detects inserts/updates.
 //
 // Nil-DB guard: in tests, mockProfiles.RawQuery returns nil (mockProfiles
-// has no real gorm.DB). Rather than panic, return zero time so cache
-// invalidation falls back to age-only — safe in tests because the test
-// runs against in-memory state anyway.
-func (s *SearchService) currentWorkerFloor(ctx context.Context) (time.Time, error) {
-	s.floorMu.Lock()
-	defer s.floorMu.Unlock()
-	if time.Since(s.floorCachedAt) < time.Second {
-		return s.floorCached, nil
+// has no real gorm.DB). Rather than panic, return a zero signature so
+// cache invalidation falls back to age-only.
+func (s *SearchService) currentWorkerSignature(ctx context.Context) (workerSignature, error) {
+	s.signatureMu.Lock()
+	defer s.signatureMu.Unlock()
+	if time.Since(s.signatureCachedAt) < time.Second {
+		return s.signatureCached, nil
 	}
-	tx := s.profiles.RawQuery(ctx, "SELECT MAX(updated_at) FROM worker_profiles")
+
+	tx := s.profiles.RawQuery(ctx, "SELECT COUNT(id), COALESCE(MAX(updated_at), 'epoch') FROM worker_profiles")
 	if tx == nil {
-		return time.Time{}, nil
+		return workerSignature{}, nil
 	}
-	var floor time.Time
-	if err := tx.Scan(&floor).Error; err != nil {
-		return time.Time{}, err
+	var sig workerSignature
+	if err := tx.Row().Scan(&sig.Count, &sig.MaxUpdate); err != nil {
+		return workerSignature{}, err
 	}
-	s.floorCached = floor
-	s.floorCachedAt = time.Now()
-	return floor, nil
+
+	s.signatureCached = sig
+	s.signatureCachedAt = time.Now()
+	return sig, nil
+}
+
+// resolveSearchCoords returns the coordinates to use for a search,
+// following the precedence:
+//  1. requestLat/requestLng (browser geolocation, most current)
+//  2. stored client profile coords
+//  3. nil, nil (no distance sorting / proximity filter)
+func resolveSearchCoords(requestLat, requestLng, clientLat, clientLng *float64) (*float64, *float64) {
+	if requestLat != nil && requestLng != nil {
+		return requestLat, requestLng
+	}
+	if clientLat != nil && clientLng != nil {
+		return clientLat, clientLng
+	}
+	return nil, nil
 }
 
 func searchFiltersFromJSON(raw []byte) core.WorkerSearchFilters {
@@ -466,38 +547,17 @@ func searchFiltersFromJSON(raw []byte) core.WorkerSearchFilters {
 	if v, ok := m["insured"].(bool); ok {
 		filters.InsuredOnly = v
 	}
+	if v, ok := m["max_distance_km"].(float64); ok && v > 0 {
+		d := int(v)
+		filters.MaxDistanceKm = &d
+	}
 	return filters
 }
 
-// normalizeProfession maps Spanish (and other common) profession names to the
-// English canonical values stored in worker_profiles. This is a safety net —
-// the search prompt should already instruct the LLM to use English names, but
-// when users speak Spanish the LLM often returns the Spanish term anyway.
-//
-// KEEP IN SYNC with core.normalizeProfessionForEmbedding.
+// normalizeProfession delegates to the shared core.NormalizeProfession
+// so search queries and embedding text canonicalize to identical strings.
 func normalizeProfession(p string) string {
-	switch strings.ToLower(strings.TrimSpace(p)) {
-	case "electricista", "electrician", "electric":
-		return "Electrician"
-	case "fontanero", "plomero", "plumber":
-		return "Plumber"
-	case "limpiador", "limpieza", "limpiadora", "cleaner", "cleaning":
-		return "Cleaner"
-	case "manitas", "handyman", "handy man":
-		return "Handyman"
-	case "carpintero", "carpenter":
-		return "Carpenter"
-	case "pintor", "pintura", "painter", "painting":
-		return "Painter"
-	case "jardinero", "landscaper", "gardener":
-		return "Landscaper"
-	case "tejador", "techo", "roofer", "roofing":
-		return "Roofer"
-	case "clima", "aire acondicionado", "hvac", "hvac technician":
-		return "HVAC Technician"
-	default:
-		return p
-	}
+	return core.NormalizeProfession(p)
 }
 
 func buildWorkerSummaries(workers []core.WorkerProfile, originalMessage string) string {

@@ -129,32 +129,10 @@ var FieldWeights = map[string]float64{
 	"business_name":  0.3,
 }
 
-// NormalizeProfessionForEmbedding mirrors search_service.go's
-// normalizeProfession but lives in core (services → core, not the other
-// way around).  Keep this in sync with search_service.go::normalizeProfession.
-// If you add a profession there, mirror it here.
-// Exported so the services parity test can verify casing consistency.
+// NormalizeProfessionForEmbedding delegates to the shared
+// NormalizeProfession so search queries and embedding text canonicalize
+// to identical strings. Kept as a separate exported name to avoid
+// changing existing callers in worker_embeddings.go and reembed tests.
 func NormalizeProfessionForEmbedding(p string) string {
-	switch p {
-	case "electricista", "Electricista", "electrician", "Electrician":
-		return "Electrician"
-	case "fontanero", "Fontanero", "plomero", "Plomero", "plumber", "Plumber":
-		return "Plumber"
-	case "limpieza", "Limpieza", "limpiador", "Limpiador", "limpiadora", "Limpiadora", "cleaner", "Cleaner", "cleaning", "Cleaning":
-		return "Cleaner"
-	case "manitas", "Manitas", "handyman", "Handyman":
-		return "Handyman"
-	case "carpintero", "Carpintero", "carpenter", "Carpenter":
-		return "Carpenter"
-	case "pintor", "Pintor", "pintura", "Pintura", "painter", "Painter":
-		return "Painter"
-	case "jardinero", "Jardinero", "landscaper", "Landscaper", "gardener", "Gardener":
-		return "Landscaper"
-	case "tejado", "Tejado", "tejador", "Tejador", "techo", "Techo", "roofer", "Roofer":
-		return "Roofer"
-	case "clima", "Clima", "hvac", "HVAC":
-		return "HVAC Technician"
-	default:
-		return p
-	}
+	return NormalizeProfession(p)
 }
