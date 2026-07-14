@@ -76,13 +76,22 @@ jobs:
         # which re-compiles on every call.
         run: go build -o /tmp/hash_fixture ./cmd/hash_fixture
 
-      - name: Fetch helper Python script (raw, no auth needed for public repo)
+      - name: Fetch helper Python script + sibling professions.json (raw, no auth needed for public repo)
+        # backfill_embeddings.py loads its alias map from a committed
+        # sibling `professions.json` via dirname(__file__). Failing to ship
+        # that file makes PROFESSION_ALIASES fall back to {} and silently
+        # degrades profession normalization to a pass-through — which breaks
+        # the byte-parity gate (raw vs. canonical profession string).
         run: |
           mkdir -p /tmp/parity
           curl -fsSL \
             "https://raw.githubusercontent.com/HelpingPeopleNow/helper/main/scripts/backfill_embeddings.py" \
             -o /tmp/parity/backfill_embeddings.py
+          curl -fsSL \
+            "https://raw.githubusercontent.com/HelpingPeopleNow/helper/main/scripts/professions.json" \
+            -o /tmp/parity/professions.json
           test -s /tmp/parity/backfill_embeddings.py
+          test -s /tmp/parity/professions.json
           echo "fetched $(wc -l < /tmp/parity/backfill_embeddings.py) lines"
 
       - name: Run Python --self-test
