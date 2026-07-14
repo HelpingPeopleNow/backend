@@ -1,56 +1,34 @@
 package core
 
-import "strings"
+import (
+	_ "embed"
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+//go:embed professions.json
+var professionsJSON []byte
 
 // ProfessionAliases maps lowercase, trimmed aliases to canonical English
 // profession names. It is the single source of truth for profession
 // normalization across the backend (search query normalization and
 // embedding text normalization).
 //
-// Keep this map in sync with helper/scripts/backfill_embeddings.py so
-// batch backfill and runtime queries canonicalize to the same strings.
-var ProfessionAliases = map[string]string{
-	// Electrician
-	"electricista": "Electrician",
-	"electrician":  "Electrician",
-	"electric":     "Electrician",
-	// Plumber
-	"fontanero": "Plumber",
-	"plomero":   "Plumber",
-	"plumber":   "Plumber",
-	// Cleaner
-	"limpiador":  "Cleaner",
-	"limpiadora": "Cleaner",
-	"limpieza":   "Cleaner",
-	"cleaner":    "Cleaner",
-	"cleaning":   "Cleaner",
-	// Handyman
-	"manitas":   "Handyman",
-	"handyman":  "Handyman",
-	"handy man": "Handyman",
-	// Carpenter
-	"carpintero": "Carpenter",
-	"carpenter":  "Carpenter",
-	// Painter
-	"pintor":   "Painter",
-	"pintura":  "Painter",
-	"painter":  "Painter",
-	"painting": "Painter",
-	// Landscaper
-	"jardinero":  "Landscaper",
-	"landscaper": "Landscaper",
-	"gardener":   "Landscaper",
-	// Roofer
-	"tejador": "Roofer",
-	"tejado":  "Roofer",
-	"techo":   "Roofer",
-	"roofer":  "Roofer",
-	"roofing": "Roofer",
-	// HVAC Technician
-	"clima":              "HVAC Technician",
-	"aire acondicionado": "HVAC Technician",
-	"hvac":               "HVAC Technician",
-	"hvac technician":    "HVAC Technician",
+// The map is loaded at package init from professions.json (same file the
+// helper backfill script reads), so runtime queries and batch backfill
+// canonicalize to the same strings. The two copies are kept in lock-step by
+// the byte-parity CI gate (helper/scripts/test_byte_parity_gate.sh).
+var ProfessionAliases = loadProfessionAliases()
+
+func loadProfessionAliases() map[string]string {
+	m := make(map[string]string)
+	if err := json.Unmarshal(professionsJSON, &m); err != nil {
+		// A malformed embedded asset is a build-time defect, not a
+		// runtime condition — fail fast so it is caught in CI.
+		panic(fmt.Sprintf("core: failed to load professions.json: %v", err))
+	}
+	return m
 }
 
 // NormalizeProfession returns the canonical English profession name for a
