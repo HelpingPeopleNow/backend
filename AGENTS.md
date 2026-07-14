@@ -145,7 +145,7 @@ GPS coordinates enable proximity-based worker search. Clients and workers can op
 
 ## Gotchas
 
-- **Architecture source of truth.** The Architecture section above is the source of truth for the current hexagonal layout. Vector search is documented in the Vector search section below; the implementation plan was `infra/docs/VECTOR_SEARCH_PLAN.md` (deleted after shipping).
+- **Architecture source of truth.** The Architecture section above is the source of truth for the current hexagonal layout. Vector search is documented in the Vector search section below.
 - `AuthMiddleware` IS wired: `main.go` constructs `*middleware.AuthMiddleware` via `middleware.NewAuthMiddleware(AUTH_SERVICE_URL, db)` and wraps every protected handler with `d.Auth.Wrap(...)`. Session is resolved via the auth service first, falling back to DB on failure. Do not bypass it from individual handlers.
 - `sessionCookie()` / `rawSessionToken()` (`internal/adapters/middleware/auth.go`) check `__Secure-better-auth.session_token` first, then `better-auth.session_token`. The legacy `better-auth-session` cookie name has been removed.
 - gRPC client uses `insecure.NewCredentials()` with `grpc.WithBlock()` at startup; failure is non-fatal and `ensureClient()` re-dials on each request if nil.
