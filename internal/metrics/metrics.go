@@ -8,6 +8,7 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"time"
 )
 
 // counter stores a monotonically increasing value identified by label values.
@@ -34,10 +35,19 @@ var registry = struct {
 	reembedEnabled   map[string]*gauge
 	reembedSkipped   map[string]*counter
 	reembedCompleted map[string]*counter
+
+	// Sentiment metrics
+	sentimentEnabled map[string]*gauge
+	sentimentScored  map[string]*counter
+	sentimentLatency map[string]*histogram
 }{
 	reembedEnabled:   make(map[string]*gauge),
 	reembedSkipped:   make(map[string]*counter),
 	reembedCompleted: make(map[string]*counter),
+
+	sentimentEnabled: make(map[string]*gauge),
+	sentimentScored:  make(map[string]*counter),
+	sentimentLatency: make(map[string]*histogram),
 }
 
 // defaultBuckets for latency histograms (seconds).
@@ -59,6 +69,29 @@ func getGauge(m map[string]*gauge, key string) *gauge {
 		m[key] = g
 	}
 	return g
+}
+
+func getHistogram(m map[string]*histogram, key string) *histogram {
+	h, ok := m[key]
+	if !ok {
+		buckets := make(map[float64]float64, len(defaultBuckets))
+		for _, b := range defaultBuckets {
+			buckets[b] = 0
+		}
+		h = &histogram{buckets: buckets}
+		m[key] = h
+	}
+	return h
+}
+
+func observeValue(h *histogram, v float64) {
+	h.count++
+	h.sum += v
+	for bound := range h.buckets {
+		if v <= bound {
+			h.buckets[bound]++
+		}
+	}
 }
 
 // SetReembedEnabled sets the reembed_enabled gauge (1 = on, 0 = off).
@@ -89,6 +122,34 @@ func IncrReembedCompleted(status string) {
 	getCounter(registry.reembedCompleted, status).value++
 }
 
+// SetSentimentEnabled sets the sentiment_enabled gauge (1 = on, 0 = off).
+func SetSentimentEnabled(enabled bool) {
+	registry.Lock()
+	defer registry.Unlock()
+	g := getGauge(registry.sentimentEnabled, "default")
+	if enabled {
+		g.value = 1
+	} else {
+		g.value = 0
+	}
+}
+
+// IncrSentimentScored increments the sentiment_scored_total counter.
+// Outcome values: "ok", "error".
+func IncrSentimentScored(outcome string) {
+	registry.Lock()
+	defer registry.Unlock()
+	getCounter(registry.sentimentScored, outcome).value++
+}
+
+// ObserveSentimentLatency records a sentiment LLM call duration.
+func ObserveSentimentLatency(d time.Duration) {
+	registry.Lock()
+	defer registry.Unlock()
+	h := getHistogram(registry.sentimentLatency, "default")
+	observeValue(h, d.Seconds())
+}
+
 // Render returns Prometheus text-format lines for all metrics in this package.
 // Called by the main metricsHandler so Grafana can scrape them.
 func Render() string {
@@ -117,6 +178,30 @@ func Render() string {
 		metricType: "counter",
 		keys:       []string{"status"},
 		counters:   registry.reembedCompleted,
+	}))
+
+	write(renderFamily(family{
+		name:       "sentiment_enabled",
+		help:       "Whether sentiment scanning is enabled (1) or disabled (0).",
+		metricType: "gauge",
+		keys:       []string{"dummy"},
+		gauges:     registry.sentimentEnabled,
+	}))
+
+	write(renderFamily(family{
+		name:       "sentiment_scored_total",
+		help:       "Total sentiment scoring attempts by outcome.",
+		metricType: "counter",
+		keys:       []string{"outcome"},
+		counters:   registry.sentimentScored,
+	}))
+
+	write(renderFamily(family{
+		name:       "sentiment_latency_seconds",
+		help:       "Sentiment LLM call latency in seconds.",
+		metricType: "histogram",
+		keys:       []string{"dummy"},
+		histograms: registry.sentimentLatency,
 	}))
 
 	return sb.String()

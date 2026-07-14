@@ -275,6 +275,9 @@ func (r *GormDirectMessageRepository) SendMessage(
 			"last_message_at":      msg.CreatedAt,
 			"last_message_preview": preview,
 			unreadField:            gorm.Expr("GREATEST(0, " + unreadField + " + 1)"),
+			"sentiment_score":      nil,
+			"sentiment_reason":     nil,
+			"sentiment_scored_at":  nil,
 		}).Error; err != nil {
 		slog.Warn("dm: update conversation failed", "conversation_id", msg.ConversationID, "error", err)
 		return fmt.Errorf("update conversation: %w", err)

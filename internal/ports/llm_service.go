@@ -18,6 +18,12 @@ type LLMService interface {
 	Ask(ctx context.Context, systemPrompt string, userMessage string, history []MessagePair, provider string) (*LLMResponse, error)
 	Health(ctx context.Context) error
 
+	// AdapterNames returns the list of LLM adapters registered in the
+	// helper service (as reported by the helper /health endpoint). It is
+	// used by the sentiment scanner to fail fast when the required
+	// "mistral" adapter is not loaded.
+	AdapterNames(ctx context.Context) ([]string, error)
+
 	// Embed returns a 768-dim []float32 representation of text via
 	// helper's Ollama embedding adapter (granite-embedding:278m). The
 	// error channel distinguishes plane-network failures from

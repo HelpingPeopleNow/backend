@@ -31,6 +31,7 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
 6. **Search/find professionals** — receives `POST /api/v1/chat` with `mode: "search"`, uses two-pass LLM (filter-fill then presentation) to match clients with workers. Pass-1 (LLM filter extraction) and Embed (raw message → vector) run concurrently via `errgroup`. Hybrid ILIKE + pgvector cosine search with per-field weighted scoring (`FieldWeights`). Falls back to ILIKE when vector scores are low or embedding fails. Returns recommended worker cards with `distance_km` (Haversine) when GPS coordinates are provided in the request
 7. **Profile reset** — worker and client profiles can be cleared via `DELETE /api/v1/worker/profile` and `DELETE /api/v1/client/profile`
 8. **Feedback system** — authenticated users submit feedback (message, page_url, category) via `POST /api/v1/feedback`; saved to `feedback` table with status `open`; async Telegram notification to admin channel; admin CRUD via `/api/v1/admin/feedback`
+9. **Sentiment scoring** — background scanner periodically scores the tone of 1:1 direct-message conversations on a 0–10 scale using a hardcoded `mistral` provider; stores `sentiment_score`, `sentiment_reason`, and `sentiment_scored_at` on `direct_conversations`; clears the score when a new message arrives; exposes columns in the admin dashboard; emits Prometheus metrics; sends a Telegram alert when a score falls at or below `SENTIMENT_ALERT_THRESHOLD` (default 4) (requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`); and runs a startup probe that fails fast if the helper does not register the `mistral` adapter
 
 ---
 
@@ -487,6 +488,12 @@ All handlers use Go's `log/slog` with structured key-value pairs:
 | `BETTER_AUTH_SECRET` | — (strongly recommended) | HMAC secret used to verify the Better Auth session token in the DB-fallback path. Without it, a stripped-signature cookie can still resolve (P2-3 / F8). |
 | `METRICS_TOKEN` | — (strongly recommended) | Bearer token required to scrape `/metrics`. Empty value logs a warning and leaves `/metrics` unauthenticated (P2-2 / F9). |
 || `REEMBED_ENABLED` | `true` | Runtime kill switch for the vector-search re-embedding pipeline. `false` pauses new re-embeds (existing vectors still serve search). |
+|| `SENTIMENT_SCANNER_ENABLED` | `true` | Kill switch for the background sentiment scanner. `false` disables the goroutine. |
+|| `SENTIMENT_SCANNER_INTERVAL` | `5m` | Tick interval for the sentiment scanner (Go duration). |
+|| `SENTIMENT_SCORE_COOLDOWN` | `24h` | Minimum age of `sentiment_scored_at` before a conversation can be re-scored. |
+|| `SENTIMENT_SCANNER_BATCH_SIZE` | `50` | Max conversations scored per tick. |
+|| `SENTIMENT_ALERT_THRESHOLD` | `4` | Score threshold (0–10) for Telegram alerts. Conversations scoring at or below this value trigger an alert. |
+|| `SENTIMENT_SCORE_MAX_MESSAGES` | `20` | Max messages included in the transcript sent to the LLM. |
 | `reembed_enabled` | gauge | Whether re-embedding is currently enabled (0/1). |
 | `reembed_skipped_total` | counter | Total re-embed skips (label: `reason`). |
 | `reembed_completed_total` | counter | Total successful re-embed completions. |

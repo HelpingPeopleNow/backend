@@ -383,6 +383,16 @@ END $$;
 		slog.Warn("migration: failed to create idx_direct_conv_users", "error", err)
 	}
 
+	// Sentiment scoring eligibility index: covers never-scored active
+	// conversations so the scanner can find work without a seq-scan.
+	if err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_direct_conv_sentiment_eligible
+			ON direct_conversations(last_message_at ASC)
+			WHERE status = 'active' AND sentiment_scored_at IS NULL
+	`).Error; err != nil {
+		slog.Warn("migration: failed to create idx_direct_conv_sentiment_eligible", "error", err)
+	}
+
 	if err := db.Exec(`
 		DO $$ BEGIN
 			IF NOT EXISTS (

@@ -51,6 +51,10 @@ func (n *mockNotifier) SendFeedbackAlert(fb *core.Feedback) error {
 	return nil
 }
 
+func (n *mockNotifier) SendSentimentAlert(_ string, _ int16, _ string, _ string, _ string) error {
+	return nil
+}
+
 func TestFeedbackHandler_Submit_Success(t *testing.T) {
 	repo := &mockFeedbackRepo{}
 	notifier := &mockNotifier{}

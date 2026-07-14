@@ -31,7 +31,7 @@ A second workflow `.github/workflows/vector-parity.yml` runs `helper/scripts/tes
 - **Conversations** — `ConversationHandler` lists/fetches saved conversations from the `conversations` table with `messages` sub-table. Used by frontend to resume chat on page reload.
 - **Re-embed on profile change** — `IntakeService.scheduleReembed` debounces a 60s per-user timer; `runStalenessSweeper` runs every 10 min in `main.go` to catch profiles that updated without a chat message. Both paths feed `IntakeService.ReembedWorker` (bounded by `reembedSem` cap of 3 to respect Ollama's `NUM_PARALLEL=1`).
 - **Reembed kill switch** — `IntakeService.SetReembedEnabled(bool)` toggles re-embedding at runtime. When disabled, `ReembedWorker` and `scheduleReembed` short-circuit immediately. Controlled via `POST /api/v1/admin/reembed` (admin-protected, `ReembedToggleHandler`). Env `REEMBED_ENABLED` sets the default at startup. The toggle and metrics live in `internal/metrics/` (not `handler/` or `services/`) to avoid a handler↔services import cycle.
-- **`internal/metrics/` package** — Standalone Prometheus helpers (gauge, counter, render) used by both `services/intake_service.go` and `adapters/handler/metrics_handler.go`. Houses reembed metrics: `reembed_enabled` (gauge), `reembed_skipped_total{reason}`, `reembed_completed_total`. The handler's `metricsHandler` appends `metrics.Render()` to the `/metrics` output.
+- **`internal/metrics/` package** — Standalone Prometheus helpers (gauge, counter, render) used by both `services/intake_service.go` and `adapters/handler/metrics_handler.go`. Houses reembed metrics: `reembed_enabled` (gauge), `reembed_skipped_total{reason}`, `reembed_completed_total`. Also houses sentiment metrics: `sentiment_enabled` (gauge), `sentiment_scored_total{outcome}` (counter), `sentiment_latency_seconds` (histogram). The handler's `metricsHandler` appends `metrics.Render()` to the `/metrics` output.
 
 ### Readiness / shutdown (SPOF Phase 1–3 — see `infra/docs/FOLLOW_UP_SPOF.md`)
 
@@ -83,6 +83,20 @@ The single-replica SPOF was remediated in three commits; each one ships a primit
 ## Direct Messaging
 
 Two-table schema: `direct_conversations` (unique per client+worker pair) + `direct_messages` (per-message rows with soft delete).
+
+### Sentiment scoring
+
+Background goroutine (`internal/services/sentiment/scanner.go`) scores the tone of 1:1 direct-message conversations on a 0–10 scale (0 = extremely angry, 10 = extremely happy). It runs every `SENTIMENT_SCANNER_INTERVAL` (default 5m), finds up to `SENTIMENT_SCANNER_BATCH_SIZE` (default 50) eligible `direct_conversations`, fetches the last `SENTIMENT_SCORE_MAX_MESSAGES` (default 20) messages, sends a transcript to the helper with provider hardcoded to `mistral`, parses the JSON response, and writes `sentiment_score`, `sentiment_reason`, and `sentiment_scored_at` back to the conversation row. A new message in a scored conversation clears the score so the 24h cooldown restarts (handled inside the existing `SendMessage` transaction). Eligibility requires `status='active'`, `last_message_at < NOW() - INTERVAL '24 hours'`, and `sentiment_scored_at IS NULL` or older than `SENTIMENT_SCORE_COOLDOWN` (default 24h). The scanner is wired into `main.go` on the same `rootWG` as the staleness sweeper and drains cleanly on SIGTERM.
+
+**Mistral startup probe** — before the first tick, `Scanner.Run` calls `probeMistral(ctx)`, which invokes `LLMService.AdapterNames(ctx)`. The gRPC client hits the helper `/health` endpoint, parses the `loaded_adapters` array, and fails fast with `slog.Error` if `mistral` is not registered. This prevents silent fallback to the cheap-provider chain when `MISTRAL_API_KEY` is unset. The probe also fails fast if the helper health endpoint is unreachable.
+
+- **Port**: `internal/ports/sentiment_scanner_repository.go`
+- **Repository**: `internal/adapters/repository/sentiment_scanner_repo.go`
+- **Service**: `internal/services/sentiment/` (`scanner.go`, `prompt.go`, `parser.go`)
+- **Metrics**: `sentiment_enabled`, `sentiment_scored_total{outcome="ok|error"}`, `sentiment_latency_seconds`
+- **Kill switch**: `SENTIMENT_SCANNER_ENABLED=false` disables the goroutine (default `true`)
+- **Admin exposure**: `sentiment_score`, `sentiment_reason`, `sentiment_scored_at` columns are included in the `direct-conversations` admin entity
+- **Telegram alert**: when a conversation scores at or below `SENTIMENT_ALERT_THRESHOLD` (default 4), the scanner calls `Notifier.SendSentimentAlert(convID, score, reason)`. The existing Telegram notifier (`internal/adapters/notification/telegram.go`) implements this and reuses the same 1 msg/sec global rate limit. Requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` to be set; if unset, the alert is skipped but scoring continues.
 
 - **Repository**: `GormDirectMessageRepository` in `internal/adapters/repository/direct_message_repo.go` — implements `DirectMessageRepository` (12 methods on `DirectMessageRepository` interface in `internal/ports/direct_message_repository.go`)
 - **Handler**: `DirectMessagingHandler` dispatches by path segment (`ServeHTTP` switch in `internal/adapters/handler/direct_messaging_handler.go`). Auth via `contextkeys.GetUserID(r.Context())`.

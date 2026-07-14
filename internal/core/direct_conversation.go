@@ -23,6 +23,9 @@ type DirectConversation struct {
 	UserBUnreadCount   int        `gorm:"not null;default:0;column:user_b_unread_count" json:"user_b_unread_count"`
 	LastMessageAt      *time.Time `json:"last_message_at,omitempty"`
 	LastMessagePreview string     `gorm:"type:text" json:"last_message_preview"`
+	SentimentScore     *int16     `gorm:"type:smallint;column:sentiment_score" json:"sentiment_score,omitempty"`
+	SentimentReason    *string    `gorm:"type:text;column:sentiment_reason" json:"sentiment_reason,omitempty"`
+	SentimentScoredAt  *time.Time `gorm:"column:sentiment_scored_at" json:"sentiment_scored_at,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 }

@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -276,6 +277,40 @@ func (s *GRPCLLMService) Health(ctx context.Context) error {
 		return fmt.Errorf("helper health returned %s", http.StatusText(resp.StatusCode))
 	}
 	return nil
+}
+
+// AdapterNames returns the list of adapters loaded in the helper service,
+// as reported by the helper's /health endpoint under "loaded_adapters".
+func (s *GRPCLLMService) AdapterNames(ctx context.Context) ([]string, error) {
+	slog.Info("llm: AdapterNames")
+	if s.healthURL == "" {
+		return nil, fmt.Errorf("no health URL configured")
+	}
+
+	healthCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(healthCtx, http.MethodGet, s.healthURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("helper health returned %s", http.StatusText(resp.StatusCode))
+	}
+
+	var payload struct {
+		LoadedAdapters []string `json:"loaded_adapters"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode helper health response: %w", err)
+	}
+	return payload.LoadedAdapters, nil
 }
 
 // attachOutgoingRequestID returns a derived context that carries the

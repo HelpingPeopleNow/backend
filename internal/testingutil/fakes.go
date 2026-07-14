@@ -14,12 +14,15 @@ import (
 // ── LLMService fake (Strategy A) ───────────────────────────────────
 // MockLLM is a configurable fake for ports.LLMService.
 // Fields: Answer (canned), AskErr (injected), HealthErr (injected),
+// AdapterNamesErr (injected), AdapterNamesVal (canned adapter list),
 // EmbedFn (function-pointer override, Strategy C hybrid).
 type MockLLM struct {
-	Answer    string
-	AskErr    error
-	HealthErr error
-	EmbedFn   func(ctx context.Context, text string) ([]float32, error)
+	Answer          string
+	AskErr          error
+	HealthErr       error
+	AdapterNamesErr error
+	AdapterNamesVal []string
+	EmbedFn         func(ctx context.Context, text string) ([]float32, error)
 }
 
 func (m *MockLLM) Ask(_ context.Context, _, _ string, _ []ports.MessagePair, _ string) (*ports.LLMResponse, error) {
@@ -30,6 +33,13 @@ func (m *MockLLM) Ask(_ context.Context, _, _ string, _ []ports.MessagePair, _ s
 }
 
 func (m *MockLLM) Health(_ context.Context) error { return m.HealthErr }
+
+func (m *MockLLM) AdapterNames(_ context.Context) ([]string, error) {
+	if m.AdapterNamesErr != nil {
+		return nil, m.AdapterNamesErr
+	}
+	return m.AdapterNamesVal, nil
+}
 
 func (m *MockLLM) Embed(_ context.Context, text string) ([]float32, error) {
 	if m.EmbedFn != nil {
@@ -356,4 +366,30 @@ func (m *MockDMRepo) CreateReport(_ context.Context, _ *core.DirectMessageReport
 
 func (m *MockDMRepo) ListReports(_ context.Context) ([]core.DirectMessageReport, error) {
 	return m.Reports, m.Err
+}
+
+// ── Notifier fake ──────────────────────────────────────────────────
+// MockNotifier records alert calls.
+type MockNotifier struct {
+	SentimentAlerts []MockSentimentAlert
+	FeedbackAlerts  []*core.Feedback
+	Err             error
+}
+
+type MockSentimentAlert struct {
+	ConvID string
+	Score  int16
+	Reason string
+	EmailA string
+	EmailB string
+}
+
+func (m *MockNotifier) SendFeedbackAlert(fb *core.Feedback) error {
+	m.FeedbackAlerts = append(m.FeedbackAlerts, fb)
+	return m.Err
+}
+
+func (m *MockNotifier) SendSentimentAlert(convID string, score int16, reason string, emailA, emailB string) error {
+	m.SentimentAlerts = append(m.SentimentAlerts, MockSentimentAlert{ConvID: convID, Score: score, Reason: reason, EmailA: emailA, EmailB: emailB})
+	return m.Err
 }

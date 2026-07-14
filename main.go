@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -18,8 +19,10 @@ import (
 	"github.com/HelpingPeopleNow/backend/internal/adapters/ratelimit"
 	"github.com/HelpingPeopleNow/backend/internal/adapters/realtime"
 	"github.com/HelpingPeopleNow/backend/internal/adapters/repository"
+	"github.com/HelpingPeopleNow/backend/internal/metrics"
 	"github.com/HelpingPeopleNow/backend/internal/ports"
 	"github.com/HelpingPeopleNow/backend/internal/services"
+	"github.com/HelpingPeopleNow/backend/internal/services/sentiment"
 	"gorm.io/gorm"
 )
 
@@ -35,6 +38,7 @@ type appDeps struct {
 	Intake       *services.IntakeService
 	Search       *services.SearchService
 	Seed         *services.SeedService
+	Sentiment    *sentiment.Scanner
 	Auth         *middleware.AuthMiddleware
 	Admin        *middleware.AdminMiddleware
 }
@@ -45,7 +49,16 @@ func buildDeps(db *gorm.DB) appDeps {
 	promptRepo := repository.NewGormSystemPromptRepository(db)
 	llmSvc := llm.NewGRPCLLMService(os.Getenv("HELPER_GRPC_ADDR"), os.Getenv("HELPER_HEALTH_URL"))
 	feedbackRepo := repository.NewGormFeedbackRepository(db)
-	notifier := notification.NewTelegramNotifier(os.Getenv("TELEGRAM_BOT_TOKEN"), os.Getenv("TELEGRAM_CHAT_ID"))
+	notifier := notification.NewTelegramNotifier(os.Getenv("TELEGRAM_BOT_TOKEN"), os.Getenv("TELEGRAM_CHAT_ID"), os.Getenv("FRONTEND_URL"))
+
+	sentimentRepo := repository.NewGormSentimentScannerRepository(db)
+	sentimentScanner := sentiment.NewScanner(sentimentRepo, llmSvc, notifier, sentiment.Config{
+		Interval:       parseDurationEnv("SENTIMENT_SCANNER_INTERVAL", 5*time.Minute),
+		Cooldown:       parseDurationEnv("SENTIMENT_SCORE_COOLDOWN", 24*time.Hour),
+		BatchSize:      parseIntEnv("SENTIMENT_SCANNER_BATCH_SIZE", 50),
+		MaxMessages:    parseIntEnv("SENTIMENT_SCORE_MAX_MESSAGES", 20),
+		AlertThreshold: int16(parseIntEnv("SENTIMENT_ALERT_THRESHOLD", 4)),
+	})
 
 	return appDeps{
 		DB:           db,
@@ -59,6 +72,7 @@ func buildDeps(db *gorm.DB) appDeps {
 		Intake:       services.NewIntakeService(llmSvc, profileRepo, chatRepo, promptRepo),
 		Search:       services.NewSearchService(llmSvc, profileRepo, chatRepo, promptRepo),
 		Seed:         services.NewSeedService(promptRepo),
+		Sentiment:    sentimentScanner,
 		// P2-3 (audit / F8): the third arg is BETTER_AUTH_SECRET. The
 		// DB-fallback path verifies the cookie HMAC against this secret
 		// before honoring the session token — without it, a cookie whose
@@ -324,6 +338,19 @@ func main() {
 		runStalenessSweeper(rootCtx, deps.Intake, deps.ProfileRepo, 10*time.Minute)
 	}()
 
+	// Sentiment scanner background goroutine.
+	if os.Getenv("SENTIMENT_SCANNER_ENABLED") != "false" {
+		metrics.SetSentimentEnabled(true)
+		rootWG.Add(1)
+		go func() {
+			defer rootWG.Done()
+			deps.Sentiment.Run(rootCtx)
+		}()
+	} else {
+		metrics.SetSentimentEnabled(false)
+		slog.Warn("sentiment: scanner disabled via SENTIMENT_SCANNER_ENABLED=false")
+	}
+
 	// P3-4 (audit): insert RequestID as the OUTERMOST middleware so
 	// (a) the Logging middleware's "request started"/"request completed"
 	//     lines carry the request_id attribute, AND
@@ -374,6 +401,32 @@ func main() {
 	case <-time.After(65 * time.Second):
 		slog.Warn("sweeper drain timed out after 65s; exiting anyway (in-flight ReembedWorker may have been killed)")
 	}
+}
+
+func parseDurationEnv(key string, fallback time.Duration) time.Duration {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		slog.Warn("invalid duration env, falling back to default", "key", key, "value", raw, "default", fallback)
+		return fallback
+	}
+	return d
+}
+
+func parseIntEnv(key string, fallback int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		slog.Warn("invalid int env, falling back to default", "key", key, "value", raw, "default", fallback)
+		return fallback
+	}
+	return n
 }
 
 func requireEnv(key string) string {

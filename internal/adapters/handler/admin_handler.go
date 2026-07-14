@@ -37,7 +37,7 @@ var entities = map[string]entityMeta{
 	},
 	"direct-conversations": {
 		Table:   "direct_conversations",
-		Columns: []string{"id", "user_a_id", "user_b_id", "status", "user_a_unread_count", "user_b_unread_count", "last_message_preview", "last_message_at", "created_at", "updated_at"},
+		Columns: []string{"id", "user_a_id", "user_b_id", "status", "user_a_unread_count", "user_b_unread_count", "last_message_preview", "last_message_at", "sentiment_score", "sentiment_reason", "sentiment_scored_at", "created_at", "updated_at"},
 	},
 	"direct-messages": {
 		Table:   "direct_messages",

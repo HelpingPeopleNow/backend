@@ -250,7 +250,8 @@ func (l *pass2ErrorLLM) Ask(_ context.Context, _, _ string, _ []ports.MessagePai
 	}
 	return nil, assert.AnError
 }
-func (l *pass2ErrorLLM) Health(_ context.Context) error { return nil }
+func (l *pass2ErrorLLM) Health(_ context.Context) error                   { return nil }
+func (l *pass2ErrorLLM) AdapterNames(_ context.Context) ([]string, error) { return nil, nil }
 func (l *pass2ErrorLLM) Embed(_ context.Context, _ string) ([]float32, error) {
 	return make([]float32, 768), nil
 }
@@ -423,7 +424,8 @@ func (l *capturingLLM) Ask(_ context.Context, _ string, message string, _ []port
 	}
 	return &ports.LLMResponse{Answer: l.pass2Answer}, nil
 }
-func (l *capturingLLM) Health(_ context.Context) error { return nil }
+func (l *capturingLLM) Health(_ context.Context) error                   { return nil }
+func (l *capturingLLM) AdapterNames(_ context.Context) ([]string, error) { return nil, nil }
 func (l *capturingLLM) Embed(_ context.Context, text string) ([]float32, error) {
 	if l.EmbedFn != nil {
 		return l.EmbedFn(nil, text)
@@ -449,7 +451,8 @@ func (l *countingLLM) Ask(_ context.Context, _ string, _ string, _ []ports.Messa
 	}
 	return &ports.LLMResponse{Answer: l.pass2Answer}, nil
 }
-func (l *countingLLM) Health(_ context.Context) error { return nil }
+func (l *countingLLM) Health(_ context.Context) error                   { return nil }
+func (l *countingLLM) AdapterNames(_ context.Context) ([]string, error) { return nil, nil }
 func (l *countingLLM) Embed(_ context.Context, _ string) ([]float32, error) {
 	if l.EmbedFn != nil {
 		return l.EmbedFn(nil, "")
@@ -471,7 +474,8 @@ func (l *dynamicLLM) Ask(_ context.Context, _ string, _ string, _ []ports.Messag
 	l.callNum++
 	return &ports.LLMResponse{Answer: l.answerFn(l.callNum)}, nil
 }
-func (l *dynamicLLM) Health(_ context.Context) error { return nil }
+func (l *dynamicLLM) Health(_ context.Context) error                   { return nil }
+func (l *dynamicLLM) AdapterNames(_ context.Context) ([]string, error) { return nil, nil }
 func (l *dynamicLLM) Embed(_ context.Context, _ string) ([]float32, error) {
 	if l.EmbedFn != nil {
 		return l.EmbedFn(nil, "")
@@ -673,7 +677,8 @@ func (l *embedCountingLLM) Ask(_ context.Context, _ string, _ string, _ []ports.
 	return &ports.LLMResponse{Answer: l.pass2Answer}, nil
 }
 
-func (l *embedCountingLLM) Health(_ context.Context) error { return nil }
+func (l *embedCountingLLM) Health(_ context.Context) error                   { return nil }
+func (l *embedCountingLLM) AdapterNames(_ context.Context) ([]string, error) { return nil, nil }
 
 func (l *embedCountingLLM) Embed(_ context.Context, _ string) ([]float32, error) {
 	l.mu.Lock()
