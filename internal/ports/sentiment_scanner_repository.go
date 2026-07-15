@@ -31,4 +31,11 @@ type SentimentScannerRepository interface {
 	// FetchParticipantEmails returns the email addresses of both participants
 	// in a direct conversation, looked up from the user table.
 	FetchParticipantEmails(ctx context.Context, conversationID string) (emailA, emailB string, err error)
+
+	// FetchLastAlertSentAt returns the last time an alert was sent for this
+	// conversation, or nil if never.
+	FetchLastAlertSentAt(ctx context.Context, conversationID string) (*time.Time, error)
+
+	// MarkAlertSent records that an alert was sent for this conversation.
+	MarkAlertSent(ctx context.Context, conversationID string) error
 }

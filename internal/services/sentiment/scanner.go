@@ -235,18 +235,30 @@ func (s *Scanner) scoreOne(ctx context.Context, convID string) {
 	}
 
 	if score <= s.cfg.AlertThreshold && s.notifier != nil {
-		emailA, emailB, err := s.repo.FetchParticipantEmails(ctx, convID)
+		// Check if we should send an alert (score <= threshold AND no recent alert).
+		lastAlert, err := s.repo.FetchLastAlertSentAt(ctx, convID)
 		if err != nil {
-			slog.Warn("sentiment: fetch participant emails failed", "conv_id", convID, "error", err)
-			emailA, emailB = convID, "(unknown)"
+			slog.Warn("sentiment: fetch last alert sent failed", "conv_id", convID, "error", err)
 		}
-		s.alertWG.Add(1)
-		go func(id string, sc int16, r string, eA, eB string) {
-			defer s.alertWG.Done()
-			if err := s.notifier.SendSentimentAlert(id, sc, r, eA, eB); err != nil {
-				slog.Warn("sentiment: alert failed", "conv_id", id, "error", err)
+		if lastAlert != nil && time.Since(*lastAlert) < s.cfg.Cooldown {
+			slog.Debug("sentiment: skipping duplicate alert", "conv_id", convID, "last_alert", *lastAlert)
+		} else {
+			emailA, emailB, err := s.repo.FetchParticipantEmails(ctx, convID)
+			if err != nil {
+				slog.Warn("sentiment: fetch participant emails failed", "conv_id", convID, "error", err)
+				emailA, emailB = convID, "(unknown)"
 			}
-		}(convID, score, reason, emailA, emailB)
+			s.alertWG.Add(1)
+			go func(id string, sc int16, r string, eA, eB string) {
+				defer s.alertWG.Done()
+				if err := s.notifier.SendSentimentAlert(id, sc, r, eA, eB); err != nil {
+					slog.Warn("sentiment: alert failed", "conv_id", id, "error", err)
+				}
+			}(convID, score, reason, emailA, emailB)
+			if err := s.repo.MarkAlertSent(ctx, convID); err != nil {
+				slog.Warn("sentiment: mark alert sent failed", "conv_id", convID, "error", err)
+			}
+		}
 	}
 
 	latency := time.Since(start)

@@ -26,6 +26,7 @@ type DirectConversation struct {
 	SentimentScore     *int16     `gorm:"type:smallint;column:sentiment_score" json:"sentiment_score,omitempty"`
 	SentimentReason    *string    `gorm:"type:text;column:sentiment_reason" json:"sentiment_reason,omitempty"`
 	SentimentScoredAt  *time.Time `gorm:"column:sentiment_scored_at" json:"sentiment_scored_at,omitempty"`
+	LastAlertSentAt    *time.Time `gorm:"column:last_alert_sent_at" json:"last_alert_sent_at,omitempty"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 }

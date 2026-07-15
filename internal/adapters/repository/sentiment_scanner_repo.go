@@ -132,3 +132,29 @@ func (r *GormSentimentScannerRepository) FetchParticipantEmails(ctx context.Cont
 
 	return emailMap[conv.UserAID], emailMap[conv.UserBID], nil
 }
+
+// FetchLastAlertSentAt returns the last time an alert was sent for this conversation.
+func (r *GormSentimentScannerRepository) FetchLastAlertSentAt(ctx context.Context, conversationID string) (*time.Time, error) {
+	var lastAlert *time.Time
+	err := r.db.WithContext(ctx).
+		Model(&core.DirectConversation{}).
+		Select("last_alert_sent_at").
+		Where("id = ?", conversationID).
+		Scan(&lastAlert).Error
+	if err != nil {
+		return nil, fmt.Errorf("fetch last alert sent: %w", err)
+	}
+	return lastAlert, nil
+}
+
+// MarkAlertSent records that an alert was sent for this conversation.
+func (r *GormSentimentScannerRepository) MarkAlertSent(ctx context.Context, conversationID string) error {
+	err := r.db.WithContext(ctx).
+		Model(&core.DirectConversation{}).
+		Where("id = ?", conversationID).
+		Update("last_alert_sent_at", time.Now()).Error
+	if err != nil {
+		return fmt.Errorf("mark alert sent: %w", err)
+	}
+	return nil
+}
