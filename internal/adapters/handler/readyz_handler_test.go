@@ -116,7 +116,7 @@ func TestReadyzSingletonSurvivesMarkReady(t *testing.T) {
 }
 
 // TestReadyzFlipsBothWays is the drain semantic for Phase 2 of the SPOF
-// remediation (see infra/docs/FOLLOW_UP_SPOF.md). It exercises the
+// remediation (see infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md). It exercises the
 // MarkUnready companion to MarkReady by binding a handler to the
 // singleton readyFlag then flipping via the package-level functions:
 //

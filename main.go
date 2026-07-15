@@ -319,7 +319,7 @@ func main() {
 	// starts a few lines further down — readiness does NOT block on it.
 	// Traefik uses /readyz as the health-check in the multi-replica
 	// deploy that resolves the single-replica SPOF (see
-	// infra/docs/FOLLOW_UP_SPOF.md Phase 2). Until the flag is true the
+	// infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md Phase 2). Until the flag is true the
 	// load-balancer should treat this replica as drained.
 	handler.MarkReady()
 
@@ -361,7 +361,7 @@ func main() {
 
 	// Signal handler — SIGTERM/SIGINT triggers the coordinated
 	// shutdown sequence (see runShutdownSequence below + the Phase 3
-	// entry in infra/docs/FOLLOW_UP_SPOF.md). The body is extracted
+	// entry in infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md). The body is extracted
 	// to a package-level function so it can be unit-tested with an
 	// injected startShutdown recorder and a 50ms drainWait (no need
 	// for real wall-clock 14s sleep in CI).
@@ -488,7 +488,7 @@ func shutdownDrainDur() time.Duration {
 // goroutine delegates to it (sees above).
 //
 // Sequence (Phase 3 of the SPOF remediation — see
-// infra/docs/FOLLOW_UP_SPOF.md):
+// infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md):
 //
 //  1. cancelRoot() — stop the staleness sweeper and start its 60s
 //     drain. Firing it BEFORE the LB drain parallelises the two waits

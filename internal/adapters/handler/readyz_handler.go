@@ -30,7 +30,7 @@ func ReadyFlag() *atomic.Bool {
 // is complete.
 //
 // This is the SPOF follow-up ticket's gating endpoint (see
-// `infra/docs/FOLLOW_UP_SPOF.md`): a multi-replica Traefik
+// `infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md`): a multi-replica Traefik
 // deployment can drain a replica by holding the response at 503
 // across a deploy, instead of killing existing in-flight requests.
 type ReadyzHandler struct {
@@ -80,7 +80,7 @@ func MarkReady() {
 // the 5xx and removes the replica from the pool until 200 returns.
 //
 // Phase 3 of the SPOF remediation (multi-replica deploy see
-// infra/docs/FOLLOW_UP_SPOF.md) will wire this into the SIGTERM
+// infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md) will wire this into the SIGTERM
 // handler so a rolling restart drains cleanly. Until then, the
 // companion is reachable from tests + future SIGTERM wiring.
 func MarkUnready() {

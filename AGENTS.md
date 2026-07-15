@@ -33,7 +33,7 @@ A second workflow `.github/workflows/vector-parity.yml` runs `helper/scripts/tes
 - **Reembed kill switch** — `IntakeService.SetReembedEnabled(bool)` toggles re-embedding at runtime. When disabled, `ReembedWorker` and `scheduleReembed` short-circuit immediately. Controlled via `POST /api/v1/admin/reembed` (admin-protected, `ReembedToggleHandler`). Env `REEMBED_ENABLED` sets the default at startup. The toggle and metrics live in `internal/metrics/` (not `handler/` or `services/`) to avoid a handler↔services import cycle.
 - **`internal/metrics/` package** — Standalone Prometheus helpers (gauge, counter, render) used by both `services/intake_service.go` and `adapters/handler/metrics_handler.go`. Houses reembed metrics: `reembed_enabled` (gauge), `reembed_skipped_total{reason}`, `reembed_completed_total`. Also houses sentiment metrics: `sentiment_enabled` (gauge), `sentiment_scored_total{outcome}` (counter), `sentiment_latency_seconds` (histogram). The handler's `metricsHandler` appends `metrics.Render()` to the `/metrics` output.
 
-### Readiness / shutdown (SPOF Phase 1–3 — see `infra/docs/FOLLOW_UP_SPOF.md`)
+### Readiness / shutdown (SPOF Phase 1–3 — see `infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md`)
 
 The single-replica SPOF was remediated in three commits; each one ships a primitive the next consumes:
 
@@ -67,7 +67,7 @@ The single-replica SPOF was remediated in three commits; each one ships a primit
 |---------|------|---------|---------|
 | `HealthHandler` | `/health` | GET | Composite PG + helper gRPC health (no auth) — used for dashboards / alerting; deliberately NOT used for the docker container healthcheck |
 | `HealthHandler` (Livez method) | `/livez` | GET | Process + PG liveness only — the docker container healthcheck target. The handler type is the same `*HealthHandler` as `/health`; the `/livez` route invokes the `Livez` method (helper-ignoring liveness) so a helper outage doesn't cascade to a full API outage. |
-| `ReadyzHandler` | `/readyz` | GET | Singleton `*atomic.Bool`-backed readiness (no auth) — flipped by `MarkReady()` once `main.buildMux` returns; flipped back by `MarkUnready()` from `main.runShutdownSequence` on SIGTERM. **Used by the Traefik LB health-check** (10s interval, 3s timeout) so a 503 drains the replica from the routing pool. See the Readiness / shutdown section below + `infra/docs/FOLLOW_UP_SPOF.md`. |
+| `ReadyzHandler` | `/readyz` | GET | Singleton `*atomic.Bool`-backed readiness (no auth) — flipped by `MarkReady()` once `main.buildMux` returns; flipped back by `MarkUnready()` from `main.runShutdownSequence` on SIGTERM. **Used by the Traefik LB health-check** (10s interval, 3s timeout) so a 503 drains the replica from the routing pool. See the Readiness / shutdown section below + `infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md`. |
 | `MetricsHandler` | `/metrics` | GET | Homegrown Prometheus text |
 | `ChatHandler` | `/api/v1/chat` | POST | Unified chat endpoint (mode in body: worker_intake, client_intake, search) |
 | `WorkerHandler` | `/api/v1/worker/profile` | GET, DELETE | Worker profile read/reset |
@@ -155,7 +155,7 @@ GPS coordinates enable proximity-based worker search. Clients and workers can op
 - `user.role` column was dropped via migration (superseded by `is_admin`).
 - `chatRequest` struct includes `Lang` string — `IntakeService.applyLanguage` (and `SearchService`) append a Spanish/English instruction to the system prompt based on the value.
 - `ApplyLanguage` runs in both passes of search: filter-fill (`FindTraderSearchPrompt`) AND results-presentation (`FindTraderPresentationPrompt`).
-- **Shutdown drain**: `main.go` registers the staleness sweeper on a `sync.WaitGroup` and drains it for up to 65s on SIGTERM (slightly above the 60s per-worker `ReembedWorker` deadline). On SIGTERM the inline signal goroutine now delegates to `runShutdownSequence(ctx, startShutdown, cancelRoot, drainWait)` (extracted for testability) which fires `cancelRoot()` → `MarkUnready()` → `time.Sleep(SHUTDOWN_DRAIN_WAIT)` (default 14s) → `server.Shutdown(30s)` in that order, so a Traefik LB health-check tick (10s interval, 3s timeout — see Phase 2 in `infra/docs/FOLLOW_UP_SPOF.md`) drains the replica before the accept listener closes.
+- **Shutdown drain**: `main.go` registers the staleness sweeper on a `sync.WaitGroup` and drains it for up to 65s on SIGTERM (slightly above the 60s per-worker `ReembedWorker` deadline). On SIGTERM the inline signal goroutine now delegates to `runShutdownSequence(ctx, startShutdown, cancelRoot, drainWait)` (extracted for testability) which fires `cancelRoot()` → `MarkUnready()` → `time.Sleep(SHUTDOWN_DRAIN_WAIT)` (default 14s) → `server.Shutdown(30s)` in that order, so a Traefik LB health-check tick (10s interval, 3s timeout — see Phase 2 in `infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md`) drains the replica before the accept listener closes.
 - **Readyz is wired**, `MarkUnready()` is the only flip back, `/readyz` is the Traefik LB health-check target (NOT `/livez` and NOT `/health`). See the readiness / shutdown section above for the full invariant.
 - **Helper version drift**: backend `HelmClient` doesn't pin a proto version, but helper's `proto/helper.proto` is the canonical source of truth.
 

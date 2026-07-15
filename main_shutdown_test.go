@@ -12,7 +12,7 @@ import (
 )
 
 // TestShutdownSequenceDrainPhase is the SPOF Phase 3 regression test
-// (see infra/docs/FOLLOW_UP_SPOF.md). It asserts three invariants:
+// (see infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md). It asserts three invariants:
 //
 //  1. cancelRoot() is called BEFORE startShutdown (parallelises
 //     sweeper drain with HTTP shutdown — total time shorter than
