@@ -322,6 +322,16 @@ func SetHealthStatus(component string, healthy bool) {
 	}
 }
 
+// GetHealthStatus reads the current health_status gauge (1 = healthy,
+// 0 = unhealthy) for a component. Uses an atomic load so callers (tests,
+// poller assertions) never acquire the metrics RWMutex.
+func GetHealthStatus(component string) int64 {
+	if a, ok := atomicHealthStatus[component]; ok {
+		return a.Load()
+	}
+	return 0
+}
+
 // IncrVectorSearch increments the vector_search_total counter per branch
 // (VECTOR_SEARCH_PLAN §12.3 / Idea C). status values:
 //   - "vector"                        — vector branch produced the result

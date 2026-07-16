@@ -269,6 +269,56 @@ func runStalenessSweeper(
 	}
 }
 
+// startHealthPoller keeps the health_status gauges (postgres, grpc_helper)
+// live instead of stale. The gauges were previously only updated inside the
+// /health handler, so after a transient dependency blip the gauge stayed at
+// the failed value until the next /health call — producing false "down"
+// readings in Grafana (and any future alert) long after the dependency
+// recovered. Polling every 10s keeps the metrics truthful. It runs on the
+// shared rootCtx/rootWG so it drains cleanly on SIGTERM.
+// healthChecker is the minimal dependency startHealthPoller needs.
+type healthChecker interface {
+	Health(ctx context.Context) error
+}
+
+func startHealthPoller(ctx context.Context, wg *sync.WaitGroup, db *gorm.DB, llm healthChecker) {
+	const interval = 10 * time.Second
+	probe := func() {
+		postgres := "ok"
+		if sqlDB, err := db.DB(); err != nil {
+			postgres = "down"
+		} else if err := sqlDB.PingContext(ctx); err != nil {
+			postgres = "down"
+		}
+		handler.SetHealthStatus("postgres", postgres == "ok")
+
+		grpcHelper := "ok"
+		if err := llm.Health(ctx); err != nil {
+			grpcHelper = "down"
+		}
+		handler.SetHealthStatus("grpc_helper", grpcHelper == "ok")
+
+		if postgres != "ok" || grpcHelper != "ok" {
+			slog.Warn("health poller: degraded", "postgres", postgres, "grpc_helper", grpcHelper)
+		}
+	}
+
+	// Probe once immediately so the gauges are correct from startup, not
+	// after the first 10s tick.
+	probe()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			probe()
+		}
+	}
+}
+
 func main() {
 	// P3-4 (audit): wrap the slog default handler with a ContextHandler so
 	// every log line emitted via slog.Default() automatically carries the
@@ -349,6 +399,15 @@ func main() {
 		metrics.SetSentimentEnabled(false)
 		slog.Warn("sentiment: scanner disabled via SENTIMENT_SCANNER_ENABLED=false")
 	}
+
+	// Background health poller — keeps health_status gauges live so Grafana
+	// (and any future alert) reflects real dependency state, not the last
+	// /health call (see startHealthPoller).
+	rootWG.Add(1)
+	go func() {
+		defer rootWG.Done()
+		startHealthPoller(rootCtx, &rootWG, db, deps.LLM)
+	}()
 
 	// P3-4 (audit): insert RequestID as the OUTERMOST middleware so
 	// (a) the Logging middleware's "request started"/"request completed"
