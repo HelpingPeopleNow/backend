@@ -9,14 +9,13 @@ import (
 func TestClientProfileMergeFields(t *testing.T) {
 	cp := &ClientProfile{}
 	fields := map[string]interface{}{
-		"full_name":         "Alvaro",
-		"phone":             "+34600123456",
-		"city":              "Madrid",
-		"address":           "Calle Mayor 1",
-		"bio":               "Need a plumber",
-		"preferred_contact": "phone",
-		"property_type":     "apartment",
-		"notes":             "Urgent",
+		"full_name":     "Alvaro",
+		"phone":         "+34600123456",
+		"city":          "Madrid",
+		"address":       "Calle Mayor 1",
+		"bio":           "Need a plumber",
+		"property_type": "apartment",
+		"notes":         "Urgent",
 	}
 	cp.MergeFields(fields)
 
@@ -25,7 +24,6 @@ func TestClientProfileMergeFields(t *testing.T) {
 	assert.Equal(t, "Madrid", cp.City)
 	assert.Equal(t, "Calle Mayor 1", cp.Address)
 	assert.Equal(t, "Need a plumber", cp.Bio)
-	assert.Equal(t, "phone", cp.PreferredContact)
 	assert.Equal(t, "apartment", cp.PropertyType)
 	assert.Equal(t, "Urgent", cp.Notes)
 }

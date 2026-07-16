@@ -25,7 +25,7 @@ var entities = map[string]entityMeta{
 	},
 	"client-profiles": {
 		Table:   "client_profiles",
-		Columns: []string{"id", "user_id", "full_name", "phone", "city", "address", "bio", "preferred_contact", "property_type", "notes", "created_at", "updated_at"},
+		Columns: []string{"id", "user_id", "full_name", "phone", "city", "address", "bio", "property_type", "notes", "created_at", "updated_at"},
 	},
 	"conversations": {
 		Table:   "conversations",
