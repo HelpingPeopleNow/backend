@@ -5,7 +5,9 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
+	"github.com/HelpingPeopleNow/backend/internal/adapters/ratelimit"
 	"github.com/HelpingPeopleNow/backend/internal/contextkeys"
 	"github.com/HelpingPeopleNow/backend/internal/core"
 	"github.com/HelpingPeopleNow/backend/internal/ports"
@@ -15,12 +17,13 @@ const maxFeedbackMessageLength = 2000
 
 // FeedbackHandler handles user-submitted feedback.
 type FeedbackHandler struct {
-	repo     ports.FeedbackRepository
-	notifier ports.Notifier
+	repo        ports.FeedbackRepository
+	notifier    ports.Notifier
+	rateLimiter *ratelimit.RateLimiter
 }
 
-func NewFeedbackHandler(repo ports.FeedbackRepository, notifier ports.Notifier) *FeedbackHandler {
-	return &FeedbackHandler{repo: repo, notifier: notifier}
+func NewFeedbackHandler(repo ports.FeedbackRepository, notifier ports.Notifier, rateLimiter *ratelimit.RateLimiter) *FeedbackHandler {
+	return &FeedbackHandler{repo: repo, notifier: notifier, rateLimiter: rateLimiter}
 }
 
 type feedbackRequest struct {
@@ -73,9 +76,18 @@ func (h *FeedbackHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := contextkeys.GetUserID(r.Context())
-	if userID == "" {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
+
+	// Apply rate limiting per user (when logged in) or per IP (when anonymous).
+	if h.rateLimiter != nil {
+		limitKey := userID
+		if limitKey == "" {
+			limitKey = clientIP(r)
+		}
+		if !h.rateLimiter.Allow(limitKey) {
+			slog.Warn("feedback: rate limit hit", "key", limitKey)
+			writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+			return
+		}
 	}
 
 	fb := &core.Feedback{
@@ -93,9 +105,11 @@ func (h *FeedbackHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("feedback: submit ok", "user_id", userID, "category", req.Category, "id", fb.ID)
 
-	// Resolve user email for the Telegram notification.
-	if email, err := h.repo.GetUserEmail(userID); err == nil && email != "" {
-		fb.Email = email
+	// Resolve user email for the Telegram notification only when logged in.
+	if userID != "" {
+		if email, err := h.repo.GetUserEmail(userID); err == nil && email != "" {
+			fb.Email = email
+		}
 	}
 
 	// Fire-and-forget Telegram notification. Non-blocking: if it
@@ -109,4 +123,21 @@ func (h *FeedbackHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, fb)
+}
+
+// clientIP returns the best-effort client IP for rate limiting.
+// It prefers the X-Forwarded-For header (set by Traefik) and falls back
+// to the connection's RemoteAddr. Only the first address in the header
+// is used to keep the key stable.
+func clientIP(r *http.Request) string {
+	fwd := r.Header.Get("X-Forwarded-For")
+	if fwd != "" {
+		if idx := strings.Index(fwd, ","); idx != -1 {
+			fwd = strings.TrimSpace(fwd[:idx])
+		}
+		if fwd != "" {
+			return fwd
+		}
+	}
+	return r.RemoteAddr
 }

@@ -17,6 +17,26 @@ import (
 
 // ── Feedback admin CRUD integration tests ────────────────────────
 
+func TestFeedbackAnonymousSubmit(t *testing.T) {
+	db := NewTestDB(t)
+	migrateTestSchema(t, db)
+
+	llm := newFakeLLM("irrelevant")
+	mux := buildIntegrationMux(t, db, llm)
+
+	body, _ := json.Marshal(map[string]interface{}{"message": "Anonymous feedback", "page_url": "/chat", "category": "general"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var fb map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &fb))
+	require.Equal(t, "Anonymous feedback", fb["message"])
+	require.Equal(t, "", fb["user_id"])
+}
+
 func TestFeedbackSubmitsAndListsAsAdmin(t *testing.T) {
 	db := NewTestDB(t)
 	migrateTestSchema(t, db)

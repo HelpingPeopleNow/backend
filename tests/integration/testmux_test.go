@@ -42,6 +42,8 @@ func buildIntegrationMux(t *testing.T, db *gorm.DB, llm ports.LLMService) http.H
 	spHandler := handler.NewSystemPromptHandler(promptRepo)
 	dmHandler := handler.NewDirectMessagingHandler(dmRepo, profileRepo, broker, dmLimiter)
 	adminHandler := handler.NewAdminHandler(db)
+	feedbackRepo := repository.NewGormFeedbackRepository(db)
+	feedbackHandler := handler.NewFeedbackHandler(feedbackRepo, nil, nil)
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/chat", chatHandler)
@@ -54,6 +56,7 @@ func buildIntegrationMux(t *testing.T, db *gorm.DB, llm ports.LLMService) http.H
 	mux.Handle("/api/v1/workers/", dmHandler)
 	mux.Handle("/api/v1/direct-messages", dmHandler)
 	mux.Handle("/api/v1/direct-messages/", dmHandler)
+	mux.Handle("/api/v1/feedback", http.HandlerFunc(feedbackHandler.Submit))
 	mux.Handle("/api/v1/admin/", adminHandler)
 
 	return mux

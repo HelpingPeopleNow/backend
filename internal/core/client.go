@@ -66,18 +66,18 @@ func (c *ClientProfile) MergeFields(fields map[string]interface{}) {
 
 func (c ClientProfile) ToDTO() ClientProfileDTO {
 	return ClientProfileDTO{
-		ID:       c.ID,
-		UserID:   c.UserID,
-		FullName: c.FullName,
-		Phone:    c.Phone,
-		City:     c.City,
-		Address:  c.Address,
-		Bio:      c.Bio,
+		ID:           c.ID,
+		UserID:       c.UserID,
+		FullName:     c.FullName,
+		Phone:        c.Phone,
+		City:         c.City,
+		Address:      c.Address,
+		Bio:          c.Bio,
 		PropertyType: c.PropertyType,
-		Notes:    c.Notes,
-		Latitude: c.Latitude,
-		Longitude: c.Longitude,
-		CreatedAt: c.CreatedAt,
-		UpdatedAt: c.UpdatedAt,
+		Notes:        c.Notes,
+		Latitude:     c.Latitude,
+		Longitude:    c.Longitude,
+		CreatedAt:    c.CreatedAt,
+		UpdatedAt:    c.UpdatedAt,
 	}
 }

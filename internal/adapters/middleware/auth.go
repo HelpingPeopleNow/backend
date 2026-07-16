@@ -47,6 +47,28 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 	})
 }
 
+// WrapOptional is like Wrap but does not reject requests that lack a
+// valid session. It still attempts to resolve the user and, when found,
+// injects the user ID into the request context. Endpoints that accept
+// anonymous traffic (e.g. feedback) can use this to enrich submissions
+// when the caller is logged in without requiring authentication.
+func (m *AuthMiddleware) WrapOptional(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Short-circuit: if no session cookie is present, skip the
+		// auth-service/DB lookup entirely. This keeps anonymous requests
+		// fast and avoids unnecessary load on the auth service.
+		if !hasSessionCookie(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		userID := m.resolve(r)
+		if userID != "" {
+			r = r.WithContext(contextkeys.SetUserID(r.Context(), userID))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (m *AuthMiddleware) resolve(r *http.Request) string {
 	if id := m.resolveViaAuthService(r); id != "" {
 		return id

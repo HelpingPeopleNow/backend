@@ -59,13 +59,14 @@ func Connect() (*gorm.DB, error) {
 	}
 
 	// Feedback migration: user_id must be text to match Better Auth user IDs
-	// (not UUIDs). Safe because the table is currently empty.
+	// (not UUIDs) and is nullable so anonymous users can submit feedback.
 	if err := db.Exec(`
 		ALTER TABLE feedback
 			ALTER COLUMN user_id TYPE text,
-			ALTER COLUMN user_id DROP DEFAULT
+			ALTER COLUMN user_id DROP DEFAULT,
+			ALTER COLUMN user_id DROP NOT NULL
 	`).Error; err != nil {
-		slog.Warn("migration: failed to alter feedback.user_id to text", "error", err)
+		slog.Warn("migration: failed to alter feedback.user_id to nullable text", "error", err)
 	}
 
 	// Domain models.

@@ -112,10 +112,9 @@ func buildMux(d appDeps) *http.ServeMux {
 	mux.Handle("/api/v1/admin/", middleware.CORS(d.Auth.Wrap(d.Admin.Wrap(handler.NewAdminHandler(d.DB)))))
 	mux.Handle("/api/v1/admin/reembed", middleware.CORS(d.Auth.Wrap(d.Admin.Wrap(handler.NewReembedToggleHandler(d.Intake)))))
 
-	// Feedback — user submission (any authenticated user), admin CRUD via /api/v1/admin/feedback.
-	feedbackHandler := handler.NewFeedbackHandler(d.FeedbackRepo, d.Notifier)
-	_ = feedbackRateLimiter // reserved for POST /api/v1/feedback rate limiting
-	mux.Handle("/api/v1/feedback", middleware.CORS(d.Auth.Wrap(http.HandlerFunc(feedbackHandler.Submit))))
+	// Feedback — user submission (logged-in or anonymous), admin CRUD via /api/v1/admin/feedback.
+	feedbackHandler := handler.NewFeedbackHandler(d.FeedbackRepo, d.Notifier, feedbackRateLimiter)
+	mux.Handle("/api/v1/feedback", middleware.CORS(d.Auth.WrapOptional(http.HandlerFunc(feedbackHandler.Submit))))
 
 	// Public profiles — no auth middleware.
 	publicProfileHandler := handler.NewPublicProfileHandler(d.ProfileRepo)

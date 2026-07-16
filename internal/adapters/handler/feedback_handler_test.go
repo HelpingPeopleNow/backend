@@ -58,7 +58,7 @@ func (n *mockNotifier) SendSentimentAlert(_ string, _ int16, _ string, _ string,
 func TestFeedbackHandler_Submit_Success(t *testing.T) {
 	repo := &mockFeedbackRepo{}
 	notifier := &mockNotifier{}
-	h := NewFeedbackHandler(repo, notifier)
+	h := NewFeedbackHandler(repo, notifier, nil)
 
 	body, _ := json.Marshal(feedbackRequest{
 		Message:  "The submit button is broken on mobile",
@@ -97,7 +97,7 @@ func TestFeedbackHandler_Submit_Success(t *testing.T) {
 
 func TestFeedbackHandler_Submit_DefaultCategory(t *testing.T) {
 	repo := &mockFeedbackRepo{}
-	h := NewFeedbackHandler(repo, nil)
+	h := NewFeedbackHandler(repo, nil, nil)
 
 	body, _ := json.Marshal(feedbackRequest{
 		Message: "just a thought",
@@ -119,7 +119,7 @@ func TestFeedbackHandler_Submit_DefaultCategory(t *testing.T) {
 }
 
 func TestFeedbackHandler_Submit_MethodNotAllowed(t *testing.T) {
-	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil)
+	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/feedback", nil)
 	w := httptest.NewRecorder()
 
@@ -131,7 +131,7 @@ func TestFeedbackHandler_Submit_MethodNotAllowed(t *testing.T) {
 }
 
 func TestFeedbackHandler_Submit_EmptyMessage(t *testing.T) {
-	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil)
+	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil, nil)
 	body, _ := json.Marshal(feedbackRequest{Message: "", PageURL: "/chat", Category: "bug"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -146,7 +146,7 @@ func TestFeedbackHandler_Submit_EmptyMessage(t *testing.T) {
 }
 
 func TestFeedbackHandler_Submit_InvalidCategory(t *testing.T) {
-	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil)
+	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil, nil)
 	body, _ := json.Marshal(feedbackRequest{Message: "hi", PageURL: "/chat", Category: "spam"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -161,7 +161,7 @@ func TestFeedbackHandler_Submit_InvalidCategory(t *testing.T) {
 }
 
 func TestFeedbackHandler_Submit_EmptyPageURL(t *testing.T) {
-	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil)
+	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil, nil)
 	body, _ := json.Marshal(feedbackRequest{Message: "hi", PageURL: "", Category: "bug"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -176,7 +176,7 @@ func TestFeedbackHandler_Submit_EmptyPageURL(t *testing.T) {
 }
 
 func TestFeedbackHandler_Submit_MessageTooLong(t *testing.T) {
-	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil)
+	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil, nil)
 	longMsg := make([]byte, 2001)
 	for i := range longMsg {
 		longMsg[i] = 'a'
@@ -194,8 +194,9 @@ func TestFeedbackHandler_Submit_MessageTooLong(t *testing.T) {
 	}
 }
 
-func TestFeedbackHandler_Submit_NoUserID(t *testing.T) {
-	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil)
+func TestFeedbackHandler_Submit_Anonymous(t *testing.T) {
+	repo := &mockFeedbackRepo{}
+	h := NewFeedbackHandler(repo, nil, nil)
 	body, _ := json.Marshal(feedbackRequest{Message: "hi", PageURL: "/chat", Category: "bug"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -204,13 +205,16 @@ func TestFeedbackHandler_Submit_NoUserID(t *testing.T) {
 
 	h.Submit(w, req)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	if w.Code != http.StatusCreated {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusCreated)
+	}
+	if repo.fb.UserID != "" {
+		t.Errorf("user_id = %q, want empty for anonymous feedback", repo.fb.UserID)
 	}
 }
 
 func TestFeedbackHandler_Submit_UnknownField(t *testing.T) {
-	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil)
+	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil, nil)
 	body := []byte(`{"message":"hi","page_url":"/chat","category":"bug","evil_field":"x"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -227,7 +231,7 @@ func TestFeedbackHandler_Submit_UnknownField(t *testing.T) {
 func TestFeedbackHandler_Submit_NotifierCalled(t *testing.T) {
 	repo := &mockFeedbackRepo{}
 	notifier := &mockNotifier{}
-	h := NewFeedbackHandler(repo, notifier)
+	h := NewFeedbackHandler(repo, notifier, nil)
 
 	body, _ := json.Marshal(feedbackRequest{Message: "test", PageURL: "/chat", Category: "general"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", bytes.NewReader(body))
@@ -247,7 +251,7 @@ func TestFeedbackHandler_Submit_NotifierCalled(t *testing.T) {
 
 func TestFeedbackHandler_Submit_NilNotifier(t *testing.T) {
 	repo := &mockFeedbackRepo{}
-	h := NewFeedbackHandler(repo, nil)
+	h := NewFeedbackHandler(repo, nil, nil)
 
 	body, _ := json.Marshal(feedbackRequest{Message: "test", PageURL: "/chat", Category: "general"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", bytes.NewReader(body))
@@ -263,7 +267,7 @@ func TestFeedbackHandler_Submit_NilNotifier(t *testing.T) {
 }
 
 func TestFeedbackHandler_Submit_CreateRepoError(t *testing.T) {
-	h := NewFeedbackHandler(&mockFeedbackRepo{createErr: errors.New("db timeout")}, nil)
+	h := NewFeedbackHandler(&mockFeedbackRepo{createErr: errors.New("db timeout")}, nil, nil)
 
 	body, _ := json.Marshal(feedbackRequest{Message: "test", PageURL: "/chat", Category: "general"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", bytes.NewReader(body))
@@ -279,7 +283,7 @@ func TestFeedbackHandler_Submit_CreateRepoError(t *testing.T) {
 }
 
 func TestFeedbackHandler_Submit_BodyTooLarge(t *testing.T) {
-	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil)
+	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil, nil)
 	longMsg := make([]byte, 5000)
 	for i := range longMsg {
 		longMsg[i] = 'a'
@@ -298,7 +302,7 @@ func TestFeedbackHandler_Submit_BodyTooLarge(t *testing.T) {
 }
 
 func TestFeedbackHandler_Submit_MalformedJSON(t *testing.T) {
-	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil)
+	h := NewFeedbackHandler(&mockFeedbackRepo{}, nil, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", strings.NewReader(`{bad json`))
 	req.Header.Set("Content-Type", "application/json")
 	req = req.WithContext(contextkeys.SetUserID(req.Context(), "user-1"))
@@ -319,7 +323,7 @@ func TestFeedbackHandler_Submit_NotifierFiresInGoroutine(t *testing.T) {
 			return nil
 		},
 	}
-	h := NewFeedbackHandler(&mockFeedbackRepo{}, notifier)
+	h := NewFeedbackHandler(&mockFeedbackRepo{}, notifier, nil)
 
 	body, _ := json.Marshal(feedbackRequest{Message: "hello", PageURL: "/chat", Category: "general"})
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/feedback", bytes.NewReader(body))
