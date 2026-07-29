@@ -185,6 +185,49 @@ func TestSentimentPreservesScoreOnLLMError(t *testing.T) {
 	}
 }
 
+// TestSentimentSkipsStaleConversation verifies that a conversation whose
+// last_message_at is older than sentiment_scored_at (i.e. no new messages
+// since the last score) is NOT re-eligible for scoring. Without this guard,
+// the scanner would re-score the same transcript every cooldown window and
+// re-fire low-sentiment alerts indefinitely.
+func TestSentimentSkipsStaleConversation(t *testing.T) {
+	db := NewTestDB(t)
+	ctx := context.Background()
+
+	clientID := "client-stale"
+	workerID := "worker-stale"
+
+	// Conversation: last message 48h ago, but sentiment was already scored 25h ago.
+	// Without the new guard, the cooldown check (scored_at older than 24h) would
+	// make it eligible. With the guard, last_message_at > sentiment_scored_at
+	// fails, so it's skipped.
+	conv := core.DirectConversation{
+		UserAID:           clientID,
+		UserARole:         core.DirectMessageRoleClient,
+		UserBID:           workerID,
+		UserBRole:         core.DirectMessageRoleWorker,
+		Status:            "active",
+		LastMessageAt:     sentimentPtrTime(time.Now().Add(-48 * time.Hour)),
+		SentimentScore:    sentimentPtrInt16(3),
+		SentimentReason:   sentimentPtrString("Tense"),
+		SentimentScoredAt: sentimentPtrTime(time.Now().Add(-25 * time.Hour)),
+	}
+	if err := db.Create(&conv).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	repo := repository.NewGormSentimentScannerRepository(db)
+	ids, err := repo.FindEligibleConversations(ctx, 24*time.Hour, 50)
+	if err != nil {
+		t.Fatalf("find eligible: %v", err)
+	}
+	for _, id := range ids {
+		if id == conv.ID {
+			t.Fatalf("stale conversation should NOT be eligible for re-scoring (last_message_at older than sentiment_scored_at)")
+		}
+	}
+}
+
 func sentimentPtrTime(t time.Time) *time.Time { return &t }
 func sentimentPtrInt16(i int16) *int16        { return &i }
 func sentimentPtrString(s string) *string     { return &s }

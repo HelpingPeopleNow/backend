@@ -25,6 +25,9 @@ func NewGormSentimentScannerRepository(db *gorm.DB) ports.SentimentScannerReposi
 //   - status = 'active'
 //   - last_message_at is older than 24 hours
 //   - sentiment_scored_at is NULL or older than the cooldown
+//   - last_message_at is newer than sentiment_scored_at (only rescore when there
+//     is something new to evaluate; otherwise stale conversations re-trigger
+//     alerts indefinitely with the same transcript)
 func (r *GormSentimentScannerRepository) FindEligibleConversations(ctx context.Context, cooldown time.Duration, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 50
@@ -37,6 +40,7 @@ func (r *GormSentimentScannerRepository) FindEligibleConversations(ctx context.C
 		Where("status = ?", "active").
 		Where("last_message_at < NOW() - INTERVAL '24 hours'").
 		Where("sentiment_scored_at IS NULL OR sentiment_scored_at < NOW() - (? * INTERVAL '1 second')", cooldown.Seconds()).
+		Where("last_message_at > sentiment_scored_at").
 		Order("last_message_at ASC").
 		Limit(limit).
 		Pluck("id", &ids).Error
