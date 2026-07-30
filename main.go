@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -49,7 +50,7 @@ func buildDeps(db *gorm.DB) appDeps {
 	promptRepo := repository.NewGormSystemPromptRepository(db)
 	llmSvc := llm.NewGRPCLLMService(os.Getenv("HELPER_GRPC_ADDR"), os.Getenv("HELPER_HEALTH_URL"))
 	feedbackRepo := repository.NewGormFeedbackRepository(db)
-	notifier := notification.NewTelegramNotifier(os.Getenv("TELEGRAM_BOT_TOKEN"), os.Getenv("TELEGRAM_CHAT_ID"), os.Getenv("FRONTEND_URL"))
+	notifier := notification.NewTelegramNotifier(readSecretEnv("TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN_FILE"), os.Getenv("TELEGRAM_CHAT_ID"), os.Getenv("FRONTEND_URL"))
 
 	sentimentRepo := repository.NewGormSentimentScannerRepository(db)
 	sentimentScanner := sentiment.NewScanner(sentimentRepo, llmSvc, notifier, sentiment.Config{
@@ -600,4 +601,21 @@ func runShutdownSequence(
 		slog.Error("shutdown sequence: HTTP shutdown error", "error", err)
 	}
 	slog.Info("shutdown sequence: HTTP shutdown complete")
+}
+
+// readSecretEnv resolves a secret by preferring a *_FILE env var
+// (Docker-secret-style: path to a file containing only the secret value)
+// over the plain env var. If fileEnv points to a readable file, its
+// trimmed contents are returned; otherwise the value of directEnv is
+// returned. Either may be empty.
+func readSecretEnv(directEnv, fileEnv string) string {
+	if path := strings.TrimSpace(os.Getenv(fileEnv)); path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			slog.Warn("secret file unreadable, falling back to env", "file_env", fileEnv, "path", path, "error", err)
+		} else {
+			return strings.TrimSpace(string(data))
+		}
+	}
+	return os.Getenv(directEnv)
 }

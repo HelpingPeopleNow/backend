@@ -98,7 +98,7 @@ Background goroutine (`internal/services/sentiment/scanner.go`) scores the tone 
 - **Metrics**: `sentiment_enabled`, `sentiment_scored_total{outcome="ok|error"}`, `sentiment_latency_seconds`
 - **Kill switch**: `SENTIMENT_SCANNER_ENABLED=false` disables the goroutine (default `true`)
 - **Admin exposure**: `sentiment_score`, `sentiment_reason`, `sentiment_scored_at` columns are included in the `direct-conversations` admin entity
-- **Telegram alert**: when a conversation scores at or below `SENTIMENT_ALERT_THRESHOLD` (default 4), the scanner calls `Notifier.SendSentimentAlert(convID, score, reason)`. The existing Telegram notifier (`internal/adapters/notification/telegram.go`) implements this and reuses the same 1 msg/sec global rate limit. Requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` to be set; if unset, the alert is skipped but scoring continues.
+- **Telegram alert**: when a conversation scores at or below `SENTIMENT_ALERT_THRESHOLD` (default 4), the scanner calls `Notifier.SendSentimentAlert(convID, score, reason)`. The existing Telegram notifier (`internal/adapters/notification/telegram.go`) implements this and reuses the same 1 msg/sec global rate limit. Requires `TELEGRAM_BOT_TOKEN` (or `TELEGRAM_BOT_TOKEN_FILE`) and `TELEGRAM_CHAT_ID` to be set; if unset, the alert is skipped but scoring continues.
 
 - **Repository**: `GormDirectMessageRepository` in `internal/adapters/repository/direct_message_repo.go` — implements `DirectMessageRepository` (12 methods on `DirectMessageRepository` interface in `internal/ports/direct_message_repository.go`)
 - **Handler**: `DirectMessagingHandler` dispatches by path segment (`ServeHTTP` switch in `internal/adapters/handler/direct_messaging_handler.go`). Auth via `contextkeys.GetUserID(r.Context())`.
@@ -130,7 +130,7 @@ User-submitted feedback with in-app widget + Telegram notifications + admin dash
 - **`FeedbackRepository`** — `internal/ports/feedback_repository.go` interface. GORM implementation in `internal/adapters/repository/feedback_repo.go`. Methods: `Create`, `List(status, limit, offset)`, `UpdateStatus(id, status, adminNote)`, `CountByStatus()`.
 - **`Notifier` interface** — `internal/ports/notifier.go`. Single method: `SendFeedbackAlert(fb *core.Feedback) error`. Implementation: `internal/adapters/notification/telegram.go` (Telegram Bot API, 1 msg/sec global rate limit).
 - **Admin entity** — `"feedback"` added to `AdminHandler` entities map → `GET /api/v1/admin/feedback` returns paginated list, `PUT /api/v1/admin/feedback?id=&status=&admin_note=` updates status/note.
-- **Env vars** — `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` (required for notifications). If unset, feedback is still saved but notifications are skipped.
+- **Env vars** — `TELEGRAM_BOT_TOKEN` (or `TELEGRAM_BOT_TOKEN_FILE`) and `TELEGRAM_CHAT_ID` (required for notifications). If unset, feedback is still saved but notifications are skipped.
 - **Frontend** — `FeedbackWidget` (bottom-right FAB, all pages except admin), `FeedbackPopover` (form), `FeedbackAdminPage` (`/admin/feedback`). See frontend AGENTS.md for details.
 
 ## GPS Geolocation
@@ -165,7 +165,7 @@ GPS coordinates enable proximity-based worker search. Clients and workers can op
 
 Required at startup: `DB_HOST`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `AUTH_SERVICE_URL`, `HELPER_GRPC_ADDR`, `HELPER_HEALTH_URL`.
 
-Optional: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (feedback notifications — if unset, feedback is saved but alerts are skipped), `REEMBED_ENABLED` (default true).
+Optional: `TELEGRAM_BOT_TOKEN` (direct) or `TELEGRAM_BOT_TOKEN_FILE` (path to a 0600 file containing the token), `TELEGRAM_CHAT_ID` (feedback notifications — if all unset, feedback is saved but alerts are skipped), `REEMBED_ENABLED` (default true). `TELEGRAM_BOT_TOKEN_FILE` takes precedence.
 
 Optional: `PORT` (default `8081`), `HELPER_TIMEOUT_SECONDS` (default `60`, but docker-compose sets `600`), `HELPER_LLM_TIMEOUT` (default `20s`), `HELPER_EMBED_TIMEOUT` (default `8s`), `DATABASE_URL` or `DB_HOST/PORT/USER/PASSWORD/NAME/SSLMODE`, `VECTOR_SEARCH_ENABLED` (default `true`), `VECTOR_SEARCH_MIN_SCORE` (default `0.3`), `VECTOR_SEARCH_MIN_TOP_SCORE` (default `0.5`, wired — see Vector search section), `SHUTDOWN_DRAIN_WAIT` (default `14s`; Go duration format; `0s` allowed for snappy local-dev rebuilds; README/AGENTS for bigger values when Traefik config uses longer LB health-check intervals).
 
