@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -287,4 +288,70 @@ func itoa(i int) string {
 		buf[pos] = '-'
 	}
 	return string(buf[pos:])
+}
+
+// TestMetricsConcurrentRenderAndHotPath is a regression test for the
+// 2026-08 deadlock. IncrHTTPRequests/ObserveHTTPDuration are invoked by
+// the logging middleware on EVERY request (including /livez), and used to
+// take a WRITE lock on the global metrics RWMutex. The /metrics render
+// held that RWMutex's READ lock for the whole response and then re-locked
+// it inside renderDynamicGauges. With a writer queued between the outer
+// and inner RLock, Go's writer-preferring RWMutex wedged forever: every
+// handler piled up behind the write lock (38k goroutines, 5-day unhealthy
+// streak on hermes).
+//
+// This test hammers the hot-path increments concurrently with /metrics
+// scrapes. Under the old code a scrape goroutine wedges holding the read
+// lock and the test hangs (go test -timeout turns it into a hard failure);
+// with requestMetrics isolation + the removed nested RLock it completes.
+func TestMetricsConcurrentRenderAndHotPath(t *testing.T) {
+	RegisterGaugeScrapeSource(
+		"test_deadlock_regression_gauge",
+		"Synthetic gauge for TestMetricsConcurrentRenderAndHotPath.",
+		nil, nil,
+		func() float64 { return 1 },
+	)
+
+	mux := http.NewServeMux()
+	RegisterMetricsRoutes(mux, "")
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				req := httptest.NewRequest("GET", "/metrics", nil)
+				rec := httptest.NewRecorder()
+				mux.ServeHTTP(rec, req)
+			}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				IncrHTTPRequests("GET", "/api/v1/deadlock-test", "200")
+				ObserveHTTPDuration("GET", "/api/v1/deadlock-test", 0.001)
+			}
+		}()
+	}
+
+	// Contend well past the point where the old code's writer-queue +
+	// reentrant-RLock race (microseconds) would reliably deadlock.
+	time.Sleep(3 * time.Second)
+	close(stop)
+	wg.Wait()
 }

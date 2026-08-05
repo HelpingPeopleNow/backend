@@ -52,8 +52,6 @@ type gaugeScrapeSource struct {
 var metrics = struct {
 	sync.RWMutex
 
-	httpRequestsTotal      map[string]*counter // key: method|path|status
-	httpRequestDuration    map[string]*histogram
 	chatRequestsTotal      map[string]*counter // key: mode
 	chatLLMDuration        map[string]*histogram
 	chatLLMErrorsTotal     map[string]*counter // key: provider|error_type
@@ -87,8 +85,6 @@ var metrics = struct {
 	// renderFamily() can distinguish them if needed.
 	dynamicGauges map[string]*gauge // key: source.Name()
 }{
-	httpRequestsTotal:      make(map[string]*counter),
-	httpRequestDuration:    make(map[string]*histogram),
 	chatRequestsTotal:      make(map[string]*counter),
 	chatLLMDuration:        make(map[string]*histogram),
 	chatLLMErrorsTotal:     make(map[string]*counter),
@@ -108,6 +104,28 @@ var metrics = struct {
 
 	gaugeScrapeSources: nil,
 	dynamicGauges:      make(map[string]*gauge),
+}
+
+// requestMetrics tracks HTTP request counters/latencies. These are updated
+// by the logging middleware on EVERY request (including /livez, /health,
+// /readyz, /metrics), so they are isolated behind their own RWMutex instead
+// of the global metrics RWMutex. Putting a write lock on the request hot
+// path behind the same RWMutex whose read lock is held for the whole
+// /metrics render caused a reader/writer convoy plus a reentrant RLock
+// deadlock in 2026-08: metricsHandler grabbed metrics.RLock for the render,
+// renderDynamicGauges re-locked it, a queued writer (IncrHTTPRequests from
+// another request) blocked both, and every handler — including /livez —
+// piled up behind it (38k goroutines, 5-day unhealthy streak). Keeping these
+// two families on a dedicated lock removes the hot path from the render lock
+// entirely, while the nested-RLock bug is fixed separately in
+// renderDynamicGauges (which must only be called with the render lock held).
+var requestMetrics = struct {
+	sync.RWMutex
+	httpRequestsTotal   map[string]*counter // key: method|path|status
+	httpRequestDuration map[string]*histogram
+}{
+	httpRequestsTotal:   make(map[string]*counter),
+	httpRequestDuration: make(map[string]*histogram),
 }
 
 // atomicHealthStatus uses atomics instead of the metrics RWMutex to avoid
@@ -214,20 +232,22 @@ func sameLabels(a, b []string) bool {
 // Public API – called from handlers to record metrics
 // ---------------------------------------------------------------------------
 
-// IncrHTTPRequests increments the http_requests_total counter.
+// IncrHTTPRequests increments the http_requests_total counter. Uses the
+// dedicated requestMetrics lock (see above) so the per-request hot path
+// never contends with the global metrics render lock.
 func IncrHTTPRequests(method, path, status string) {
-	metrics.Lock()
-	defer metrics.Unlock()
+	requestMetrics.Lock()
+	defer requestMetrics.Unlock()
 	key := method + "|" + path + "|" + status
-	getCounter(metrics.httpRequestsTotal, key).value++
+	getCounter(requestMetrics.httpRequestsTotal, key).value++
 }
 
 // ObserveHTTPDuration records a request duration observation.
 func ObserveHTTPDuration(method, path string, seconds float64) {
-	metrics.Lock()
-	defer metrics.Unlock()
+	requestMetrics.Lock()
+	defer requestMetrics.Unlock()
 	key := method + "|" + path
-	h := getHistogram(metrics.httpRequestDuration, key)
+	h := getHistogram(requestMetrics.httpRequestDuration, key)
 	observeValue(h, seconds)
 }
 
@@ -542,22 +562,26 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	write := func(s string) { sb.WriteString(s) }
 
 	// 1. http_requests_total
+	requestMetrics.RLock()
 	write(renderFamilyToString(metricFamily{
 		name:       "http_requests_total",
 		help:       "Total HTTP requests processed.",
 		metricType: "counter",
 		keys:       []string{"method", "path", "status"},
-		counters:   metrics.httpRequestsTotal,
+		counters:   requestMetrics.httpRequestsTotal,
 	}))
+	requestMetrics.RUnlock()
 
 	// 2. http_request_duration_seconds
+	requestMetrics.RLock()
 	write(renderFamilyToString(metricFamily{
 		name:       "http_request_duration_seconds",
 		help:       "HTTP request latency in seconds.",
 		metricType: "histogram",
 		keys:       []string{"method", "path"},
-		histograms: metrics.httpRequestDuration,
+		histograms: requestMetrics.httpRequestDuration,
 	}))
+	requestMetrics.RUnlock()
 
 	// 3. chat_requests_total
 	write(renderFamilyToString(metricFamily{
@@ -738,10 +762,13 @@ func refreshDynamicGauges() {
 // renderDynamicGauges writes one HELP/TYPE block per registered gauge
 // source plus a single series line. Ordered by source name for stable
 // scraper output.
+//
+// MUST be called with metrics.RLock already held (the only caller,
+// metricsHandler, holds it for the whole render). It therefore must NOT
+// acquire metrics.RLock itself: Go's RWMutex reentrantly re-RLocking while
+// a writer is queued blocks forever (2026-08 deadlock — see requestMetrics
+// comment above).
 func renderDynamicGauges() string {
-	metrics.RLock()
-	defer metrics.RUnlock()
-
 	if len(metrics.dynamicGauges) == 0 {
 		return ""
 	}
