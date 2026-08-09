@@ -150,6 +150,16 @@ func (h *AdminHandler) updateRow(w http.ResponseWriter, r *http.Request, meta en
 
 func (h *AdminHandler) deleteRow(w http.ResponseWriter, meta entityMeta, id string) {
 	slog.Info("admin: deleteRow", "entity", meta.Table, "id", id)
+
+	// CMP-01 (audit): deleting a user must cascade to every referencing table
+	// in one transaction — a single-table delete orphans worker/client
+	// profiles, embeddings, conversations, messages, DMs, reports and
+	// feedback, leaving residual PII behind on a right-to-deletion erasure.
+	if meta.Table == `"user"` {
+		h.deleteUserCascade(w, id)
+		return
+	}
+
 	result := h.db.Exec("DELETE FROM ? WHERE id = ?", gorm.Expr(meta.Table), id)
 
 	if result.Error != nil {
@@ -166,4 +176,60 @@ func (h *AdminHandler) deleteRow(w http.ResponseWriter, meta entityMeta, id stri
 
 	slog.Info("admin: delete completed", "entity", meta.Table, "id", id, "rows_affected", result.RowsAffected)
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "rows_affected": result.RowsAffected})
+}
+
+// deleteUserCascade permanently removes a user and every row that references
+// them, in a single transaction. Children with edges to other children
+// (messages -> conversations, direct_messages / direct_message_reports ->
+// direct_conversations) are deleted before their parents, and the auth
+// "user" row last. Raw SQL is used deliberately (not GORM model deletes) so
+// soft-deleted rows (direct_messages.deleted_at) are physically purged too —
+// a GDPR erasure must not leave tombstones or PII behind (CMP-01 audit).
+//
+// Referencing tables / columns:
+//
+//	worker_profiles.user_id, client_profiles.user_id,
+//	worker_embeddings.user_id, conversations.user_id,
+//	messages.conversation_id -> conversations.id,
+//	direct_conversations.user_a_id / user_b_id,
+//	direct_messages.conversation_id -> direct_conversations.id,
+//	direct_message_reports.conversation_id -> direct_conversations.id
+//	  (plus reported_by = the user),
+//	feedback.user_id
+func (h *AdminHandler) deleteUserCascade(w http.ResponseWriter, id string) {
+	const q = `
+DELETE FROM worker_embeddings      WHERE user_id = $1;
+DELETE FROM direct_message_reports WHERE reported_by = $1 OR conversation_id IN (SELECT id FROM direct_conversations WHERE user_a_id = $1 OR user_b_id = $1);
+DELETE FROM direct_messages        WHERE conversation_id IN (SELECT id FROM direct_conversations WHERE user_a_id = $1 OR user_b_id = $1);
+DELETE FROM direct_conversations   WHERE user_a_id = $1 OR user_b_id = $1;
+DELETE FROM messages               WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = $1);
+DELETE FROM conversations          WHERE user_id = $1;
+DELETE FROM feedback               WHERE user_id = $1;
+DELETE FROM worker_profiles        WHERE user_id = $1;
+DELETE FROM client_profiles        WHERE user_id = $1;
+DELETE FROM "user"                 WHERE id = $1;`
+
+	var affected int64
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		res := tx.Exec(q, id)
+		if res.Error != nil {
+			return res.Error
+		}
+		affected = res.RowsAffected // command tag of the last statement ("user")
+		return nil
+	})
+	if err != nil {
+		slog.Error("admin: user cascade delete failed", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal delete failed")
+		return
+	}
+
+	if affected == 0 {
+		slog.Warn("admin: user cascade delete found no matching row", "id", id)
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	slog.Info("admin: user cascade delete completed", "id", id)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "rows_affected": affected})
 }
