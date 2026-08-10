@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,10 @@ import (
 
 	"gorm.io/gorm"
 )
+
+// errUserNotFound is returned by deleteUserCascade when the target user row
+// does not exist — mapped to 404 before any child-table DELETE runs.
+var errUserNotFound = errors.New("user not found")
 
 func cleanCol(col string) string {
 	return strings.Trim(col, `"`)
@@ -197,27 +202,48 @@ func (h *AdminHandler) deleteRow(w http.ResponseWriter, meta entityMeta, id stri
 //	  (plus reported_by = the user),
 //	feedback.user_id
 func (h *AdminHandler) deleteUserCascade(w http.ResponseWriter, id string) {
-	const q = `
-DELETE FROM worker_embeddings      WHERE user_id = $1;
-DELETE FROM direct_message_reports WHERE reported_by = $1 OR conversation_id IN (SELECT id FROM direct_conversations WHERE user_a_id = $1 OR user_b_id = $1);
-DELETE FROM direct_messages        WHERE conversation_id IN (SELECT id FROM direct_conversations WHERE user_a_id = $1 OR user_b_id = $1);
-DELETE FROM direct_conversations   WHERE user_a_id = $1 OR user_b_id = $1;
-DELETE FROM messages               WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = $1);
-DELETE FROM conversations          WHERE user_id = $1;
-DELETE FROM feedback               WHERE user_id = $1;
-DELETE FROM worker_profiles        WHERE user_id = $1;
-DELETE FROM client_profiles        WHERE user_id = $1;
-DELETE FROM "user"                 WHERE id = $1;`
+	// Each statement is executed separately: PostgreSQL forbids multiple
+	// commands in a single prepared statement (SQLSTATE 42601), and GORM
+	// prepares Exec with args. The transaction still gives all-or-nothing.
+	stmts := []string{
+		`DELETE FROM worker_embeddings      WHERE user_id = $1`,
+		`DELETE FROM direct_message_reports WHERE reported_by = $1 OR conversation_id IN (SELECT id FROM direct_conversations WHERE user_a_id = $1 OR user_b_id = $1)`,
+		`DELETE FROM direct_messages        WHERE conversation_id IN (SELECT id FROM direct_conversations WHERE user_a_id = $1 OR user_b_id = $1)`,
+		`DELETE FROM direct_conversations   WHERE user_a_id = $1 OR user_b_id = $1`,
+		`DELETE FROM messages               WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = $1)`,
+		`DELETE FROM conversations          WHERE user_id = $1`,
+		`DELETE FROM feedback               WHERE user_id = $1`,
+		`DELETE FROM worker_profiles        WHERE user_id = $1`,
+		`DELETE FROM client_profiles        WHERE user_id = $1`,
+		`DELETE FROM "user"                 WHERE id = $1`,
+	}
 
 	var affected int64
 	err := h.db.Transaction(func(tx *gorm.DB) error {
-		res := tx.Exec(q, id)
-		if res.Error != nil {
-			return res.Error
+		// 404 before touching child tables: a missing user must not depend
+		// on the cascade schema being fully migrated (contract parity with
+		// the plain deleteRow path).
+		var exists int64
+		if err := tx.Raw(`SELECT count(*) FROM "user" WHERE id = $1`, id).Scan(&exists).Error; err != nil {
+			return err
 		}
-		affected = res.RowsAffected // command tag of the last statement ("user")
+		if exists == 0 {
+			return errUserNotFound
+		}
+		for _, stmt := range stmts {
+			res := tx.Exec(stmt, id)
+			if res.Error != nil {
+				return res.Error
+			}
+			affected = res.RowsAffected // command tag of the last statement ("user")
+		}
 		return nil
 	})
+	if errors.Is(err, errUserNotFound) {
+		slog.Warn("admin: user cascade delete found no matching row", "id", id)
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
 	if err != nil {
 		slog.Error("admin: user cascade delete failed", "id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "internal delete failed")

@@ -259,12 +259,22 @@ func TestSystemPromptGetOrCreate(t *testing.T) {
 	repo := repository.NewGormSystemPromptRepository(db)
 	ctx := context.Background()
 
-	// First Get should create defaults
+	// No row yet: Get returns the empty singleton (ID 0) — defaults are
+	// seeded by SeedService, not by Get (see internal/services/seed_service.go).
 	sp, err := repo.Get(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, sp)
-	assert.Equal(t, uint(1), sp.ID)
-	// Defaults may be empty or from migration
+	assert.Equal(t, uint(0), sp.ID)
+
+	// Update creates the singleton row (FirstOrCreate) and refreshes cache.
+	_, err = repo.Update(ctx, "worker_profile_prompt", "You are a worker intake assistant.")
+	require.NoError(t, err)
+
+	// Subsequent Get returns the persisted row with ID 1.
+	sp2, err := repo.Get(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, sp2)
+	assert.Equal(t, uint(1), sp2.ID)
 }
 
 func TestSystemPromptUpdate(t *testing.T) {
@@ -375,6 +385,7 @@ func TestDirectMessageFlow(t *testing.T) {
 	msg := &core.DirectMessage{
 		ConversationID: conv.ID,
 		SenderID:       "user-a-dm1",
+		SenderRole:     "user", // repo requires SenderRole (handler sets from conv.SenderRole)
 		Body:           "Hi!",
 		CreatedAt:      time.Now(),
 	}

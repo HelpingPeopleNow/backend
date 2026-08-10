@@ -46,6 +46,9 @@ func rawInt(m map[string]interface{}, key string) (int, bool) {
 	if f, ok := v.(float64); ok {
 		return int(f), true
 	}
+	if n, ok := v.(int); ok {
+		return n, true
+	}
 	if s, ok := v.(string); ok {
 		n, err := strconv.Atoi(s)
 		if err == nil {

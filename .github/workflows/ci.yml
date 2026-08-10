@@ -61,7 +61,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -93,7 +93,7 @@ jobs:
         run: go mod download
 
       - name: Create test database
-        run: docker exec $(docker ps -qf ancestor=postgres:16-alpine) createdb -U postgres helpingpeoplenow_backend_test
+        run: docker exec $(docker ps -qf "label=com.github.actions.service=postgres") createdb -U postgres helpingpeoplenow_backend_test
 
       - name: Run tests with coverage
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...

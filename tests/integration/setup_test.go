@@ -7,6 +7,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/HelpingPeopleNow/backend/database"
 	"github.com/HelpingPeopleNow/backend/internal/ports"
 	"github.com/HelpingPeopleNow/backend/internal/testingutil"
 	"gorm.io/driver/postgres"
@@ -67,8 +68,11 @@ func NewTestDB(t *testing.T) *gorm.DB {
 		rootDB.Exec(fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schemaName))
 	})
 
-	// Run migrations against the test schema
-	// We need to set search_path for the migration queries
+	// Run migrations against the test schema — same idempotent Migrate as
+	// production Connect() (pgvector ext, AutoMigrate, indexes, triggers).
+	// Previously this comment was aspirational: no migration ran, and every
+	// DB-backed integration test failed with "relation does not exist" once
+	// CI provisioned a real database.
 	_, err = rootDB.Exec(fmt.Sprintf("SET search_path TO %s", schemaName))
 	if err != nil {
 		t.Fatalf("failed to set search_path: %v", err)
@@ -89,6 +93,10 @@ func NewTestDB(t *testing.T) *gorm.DB {
 	_, err = sqlDB.Exec(fmt.Sprintf("SET search_path TO %s", schemaName))
 	if err != nil {
 		t.Fatalf("failed to set GORM search_path: %v", err)
+	}
+
+	if err := database.Migrate(gormDB); err != nil {
+		t.Fatalf("failed to migrate test schema: %v", err)
 	}
 
 	return gormDB

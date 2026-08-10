@@ -52,8 +52,24 @@ func Connect() (*gorm.DB, error) {
 		sqlDB.SetConnMaxIdleTime(10 * time.Minute)
 	}
 
+	// ── Schema migrations (idempotent; shared with tests via Migrate) ──
+	if err := Migrate(db); err != nil {
+		return nil, err
+	}
+
+	return db, nil
+}
+
+// Migrate applies all idempotent schema migrations: pgvector extension,
+// AutoMigrate of domain models, HNSW index, triggers, DM schema refactor,
+// slug backfill and geolocation index. Exported so tests can migrate a
+// per-test schema (tests/setup_test.go NewTestDB) — previously the test
+// helper created an empty schema and every DB-backed integration test
+// failed with "relation does not exist" once CI actually provisioned a DB.
+func Migrate(db *gorm.DB) error {
 	// ── pgvector extension (must precede AutoMigrate for the
-	//    worker_embeddings table to have vector(768) type available) ──
+	//
+	//	worker_embeddings table to have vector(768) type available) ──
 	if err := db.Exec(`CREATE EXTENSION IF NOT EXISTS vector`).Error; err != nil {
 		slog.Warn("migration: pgvector extension not available (vector search disabled)", "error", err)
 	}
@@ -61,11 +77,11 @@ func Connect() (*gorm.DB, error) {
 	// Feedback migration: user_id must be text to match Better Auth user IDs
 	// (not UUIDs) and is nullable so anonymous users can submit feedback.
 	if err := db.Exec(`
-		ALTER TABLE feedback
-			ALTER COLUMN user_id TYPE text,
-			ALTER COLUMN user_id DROP DEFAULT,
-			ALTER COLUMN user_id DROP NOT NULL
-	`).Error; err != nil {
+	ALTER TABLE feedback
+		ALTER COLUMN user_id TYPE text,
+		ALTER COLUMN user_id DROP DEFAULT,
+		ALTER COLUMN user_id DROP NOT NULL
+`).Error; err != nil {
 		slog.Warn("migration: failed to alter feedback.user_id to nullable text", "error", err)
 	}
 
@@ -82,7 +98,7 @@ func Connect() (*gorm.DB, error) {
 		&core.WorkerEmbedding{},
 		&core.Feedback{},
 	); err != nil {
-		return nil, fmt.Errorf("failed to migrate: %w", err)
+		return fmt.Errorf("failed to migrate: %w", err)
 	}
 
 	// Pin the embedding column to vector(768). AutoMigrate creates an
@@ -92,6 +108,7 @@ func Connect() (*gorm.DB, error) {
 	//   - green-field: takes the ACCESS EXCLUSIVE lock once, then no-ops
 	//     on every subsequent startup (no per-boot table lock).
 	//   - already pinned: the metadata check returns early, no ALTER.
+	//
 	// WITHOUT this guard, the ALTER fires on every container restart and
 	// blocks all reads/writes on a growing table.
 	if err := db.Exec(`
@@ -122,11 +139,11 @@ END $$;
 	// no-op once the index exists (post-PG 9.5 the existence check is
 	// non-transactional too).
 	if err := db.Exec(`
-		CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_worker_embeddings_hnsw
-			ON worker_embeddings
-			USING hnsw (embedding vector_cosine_ops)
-			WITH (m = 16, ef_construction = 64)
-	`).Error; err != nil {
+	CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_worker_embeddings_hnsw
+		ON worker_embeddings
+		USING hnsw (embedding vector_cosine_ops)
+		WITH (m = 16, ef_construction = 64)
+`).Error; err != nil {
 		slog.Warn("migration: failed to create HNSW index on worker_embeddings", "error", err)
 	}
 
@@ -142,27 +159,27 @@ END $$;
 	// `wp.updated_at > MAX(we.updated_at)` predicate). Idempotent
 	// (CREATE OR REPLACE).
 	if err := db.Exec(`
-		CREATE OR REPLACE FUNCTION update_worker_embedding_timestamp()
-		RETURNS TRIGGER AS $$
-		BEGIN
-			NEW.updated_at = NOW();
-			RETURN NEW;
-		END;
-		$$ LANGUAGE plpgsql
-	`).Error; err != nil {
+	CREATE OR REPLACE FUNCTION update_worker_embedding_timestamp()
+	RETURNS TRIGGER AS $$
+	BEGIN
+		NEW.updated_at = NOW();
+		RETURN NEW;
+	END;
+	$$ LANGUAGE plpgsql
+`).Error; err != nil {
 		slog.Warn("migration: failed to create update_worker_embedding_timestamp()", "error", err)
 	}
 	if err := db.Exec(`
-		DROP TRIGGER IF EXISTS trg_worker_embeddings_updated ON worker_embeddings
-	`).Error; err != nil {
+	DROP TRIGGER IF EXISTS trg_worker_embeddings_updated ON worker_embeddings
+`).Error; err != nil {
 		slog.Warn("migration: failed to drop existing trigger on worker_embeddings", "error", err)
 	}
 	if err := db.Exec(`
-		CREATE TRIGGER trg_worker_embeddings_updated
-			BEFORE UPDATE ON worker_embeddings
-			FOR EACH ROW
-			EXECUTE FUNCTION update_worker_embedding_timestamp()
-	`).Error; err != nil {
+	CREATE TRIGGER trg_worker_embeddings_updated
+		BEFORE UPDATE ON worker_embeddings
+		FOR EACH ROW
+		EXECUTE FUNCTION update_worker_embedding_timestamp()
+`).Error; err != nil {
 		slog.Warn("migration: failed to create trg_worker_embeddings_updated", "error", err)
 	}
 
@@ -196,12 +213,12 @@ END $$;
 	// All guards use IF [NOT] EXISTS so the block is a no-op on already-migrated DBs.
 	var hasOldClientID bool
 	if err := db.Raw(`
-		SELECT EXISTS (
-			SELECT 1 FROM information_schema.columns
-			WHERE table_name = 'direct_conversations'
-			AND column_name = 'client_id'
-		)
-	`).Scan(&hasOldClientID).Error; err != nil {
+	SELECT EXISTS (
+		SELECT 1 FROM information_schema.columns
+		WHERE table_name = 'direct_conversations'
+		AND column_name = 'client_id'
+	)
+`).Scan(&hasOldClientID).Error; err != nil {
 		slog.Warn("migration: failed to detect old DM schema", "error", err)
 	}
 
@@ -210,27 +227,27 @@ END $$;
 
 		// Add new columns NULLABLE — must be NULLABLE so existing rows don't violate NOT NULL.
 		if err := db.Exec(`
-			ALTER TABLE direct_conversations
-				ADD COLUMN IF NOT EXISTS user_a_id TEXT,
-				ADD COLUMN IF NOT EXISTS user_b_id TEXT,
-				ADD COLUMN IF NOT EXISTS user_a_unread_count BIGINT DEFAULT 0,
-				ADD COLUMN IF NOT EXISTS user_b_unread_count BIGINT DEFAULT 0
-		`).Error; err != nil {
+		ALTER TABLE direct_conversations
+			ADD COLUMN IF NOT EXISTS user_a_id TEXT,
+			ADD COLUMN IF NOT EXISTS user_b_id TEXT,
+			ADD COLUMN IF NOT EXISTS user_a_unread_count BIGINT DEFAULT 0,
+			ADD COLUMN IF NOT EXISTS user_b_unread_count BIGINT DEFAULT 0
+	`).Error; err != nil {
 			slog.Warn("migration: failed to add new user_a_id/user_b_id columns", "error", err)
 		}
 
 		// Backfill from old schema. JOIN on worker_profiles to resolve worker_profile_id → user_id.
 		if err := db.Exec(`
-			UPDATE direct_conversations dc
-			SET
-				user_a_id = dc.client_id,
-				user_b_id = wp.user_id,
-				user_a_unread_count = COALESCE(dc.client_unread_count, 0),
-				user_b_unread_count = COALESCE(dc.worker_unread_count, 0)
-			FROM worker_profiles wp
-			WHERE wp.id = dc.worker_profile_id
-			  AND (dc.user_a_id IS NULL OR dc.user_b_id IS NULL)
-		`).Error; err != nil {
+		UPDATE direct_conversations dc
+		SET
+			user_a_id = dc.client_id,
+			user_b_id = wp.user_id,
+			user_a_unread_count = COALESCE(dc.client_unread_count, 0),
+			user_b_unread_count = COALESCE(dc.worker_unread_count, 0)
+		FROM worker_profiles wp
+		WHERE wp.id = dc.worker_profile_id
+		  AND (dc.user_a_id IS NULL OR dc.user_b_id IS NULL)
+	`).Error; err != nil {
 			slog.Warn("migration: failed to backfill user_a_id/user_b_id", "error", err)
 		}
 
@@ -245,12 +262,12 @@ END $$;
 			slog.Warn("migration: failed to drop idx_direct_conv_worker", "error", err)
 		}
 		if err := db.Exec(`
-			ALTER TABLE direct_conversations
-				DROP COLUMN IF EXISTS client_id,
-				DROP COLUMN IF EXISTS worker_profile_id,
-				DROP COLUMN IF EXISTS client_unread_count,
-				DROP COLUMN IF EXISTS worker_unread_count
-		`).Error; err != nil {
+		ALTER TABLE direct_conversations
+			DROP COLUMN IF EXISTS client_id,
+			DROP COLUMN IF EXISTS worker_profile_id,
+			DROP COLUMN IF EXISTS client_unread_count,
+			DROP COLUMN IF EXISTS worker_unread_count
+	`).Error; err != nil {
 			slog.Warn("migration: failed to drop legacy columns", "error", err)
 		}
 
@@ -281,53 +298,53 @@ END $$;
 	// role = 'worker'; else if a client_profiles.user_id matches, role
 	// = 'client'; else fall back to 'user'. Same on the b side.
 	if err := db.Exec(`
-		ALTER TABLE direct_conversations
-			ADD COLUMN IF NOT EXISTS user_a_role VARCHAR(10) NOT NULL DEFAULT 'user';
-	`).Error; err != nil {
+	ALTER TABLE direct_conversations
+		ADD COLUMN IF NOT EXISTS user_a_role VARCHAR(10) NOT NULL DEFAULT 'user';
+`).Error; err != nil {
 		slog.Warn("migration: failed to add direct_conversations.user_a_role", "error", err)
 	}
 	if err := db.Exec(`
-		ALTER TABLE direct_conversations
-			ADD COLUMN IF NOT EXISTS user_b_role VARCHAR(10) NOT NULL DEFAULT 'user';
-	`).Error; err != nil {
+	ALTER TABLE direct_conversations
+		ADD COLUMN IF NOT EXISTS user_b_role VARCHAR(10) NOT NULL DEFAULT 'user';
+`).Error; err != nil {
 		slog.Warn("migration: failed to add direct_conversations.user_b_role", "error", err)
 	}
 	// Backfill user_a_role (idempotent — scoped to rows still at default).
 	if err := db.Exec(`
-		UPDATE direct_conversations dc
-		SET user_a_role = 'worker'
-		FROM worker_profiles wp
-		WHERE wp.user_id = dc.user_a_id
-		  AND dc.user_a_role = 'user'
-	`).Error; err != nil {
+	UPDATE direct_conversations dc
+	SET user_a_role = 'worker'
+	FROM worker_profiles wp
+	WHERE wp.user_id = dc.user_a_id
+	  AND dc.user_a_role = 'user'
+`).Error; err != nil {
 		slog.Warn("migration: failed to backfill user_a_role from worker_profiles", "error", err)
 	}
 	if err := db.Exec(`
-		UPDATE direct_conversations dc
-		SET user_a_role = 'client'
-		FROM client_profiles cp
-		WHERE cp.user_id = dc.user_a_id
-		  AND dc.user_a_role = 'user'
-	`).Error; err != nil {
+	UPDATE direct_conversations dc
+	SET user_a_role = 'client'
+	FROM client_profiles cp
+	WHERE cp.user_id = dc.user_a_id
+	  AND dc.user_a_role = 'user'
+`).Error; err != nil {
 		slog.Warn("migration: failed to backfill user_a_role from client_profiles", "error", err)
 	}
 	// Backfill user_b_role (same logic, mirrored).
 	if err := db.Exec(`
-		UPDATE direct_conversations dc
-		SET user_b_role = 'worker'
-		FROM worker_profiles wp
-		WHERE wp.user_id = dc.user_b_id
-		  AND dc.user_b_role = 'user'
-	`).Error; err != nil {
+	UPDATE direct_conversations dc
+	SET user_b_role = 'worker'
+	FROM worker_profiles wp
+	WHERE wp.user_id = dc.user_b_id
+	  AND dc.user_b_role = 'user'
+`).Error; err != nil {
 		slog.Warn("migration: failed to backfill user_b_role from worker_profiles", "error", err)
 	}
 	if err := db.Exec(`
-		UPDATE direct_conversations dc
-		SET user_b_role = 'client'
-		FROM client_profiles cp
-		WHERE cp.user_id = dc.user_b_id
-		  AND dc.user_b_role = 'user'
-	`).Error; err != nil {
+	UPDATE direct_conversations dc
+	SET user_b_role = 'client'
+	FROM client_profiles cp
+	WHERE cp.user_id = dc.user_b_id
+	  AND dc.user_b_role = 'user'
+`).Error; err != nil {
 		slog.Warn("migration: failed to backfill user_b_role from client_profiles", "error", err)
 	}
 
@@ -340,84 +357,84 @@ END $$;
 	// the duplicate so future ALTERs and write paths do not pay double
 	// constraint-check overhead and the schema stays clean.
 	if err := db.Exec(`
-		ALTER TABLE direct_messages DROP CONSTRAINT IF EXISTS fk_sender_user;
-	`).Error; err != nil {
+	ALTER TABLE direct_messages DROP CONSTRAINT IF EXISTS fk_sender_user;
+`).Error; err != nil {
 		slog.Warn("migration: failed to drop duplicate fk_sender_user constraint", "error", err)
 	}
 
 	// User-to-user indexes
 	if err := db.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_direct_conv_a
-			ON direct_conversations(user_a_id, last_message_at DESC)
-			WHERE status = 'active'
-	`).Error; err != nil {
+	CREATE INDEX IF NOT EXISTS idx_direct_conv_a
+		ON direct_conversations(user_a_id, last_message_at DESC)
+		WHERE status = 'active'
+`).Error; err != nil {
 		slog.Warn("migration: failed to create idx_direct_conv_a", "error", err)
 	}
 
 	if err := db.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_direct_conv_b
-			ON direct_conversations(user_b_id, last_message_at DESC)
-			WHERE status = 'active'
-	`).Error; err != nil {
+	CREATE INDEX IF NOT EXISTS idx_direct_conv_b
+		ON direct_conversations(user_b_id, last_message_at DESC)
+		WHERE status = 'active'
+`).Error; err != nil {
 		slog.Warn("migration: failed to create idx_direct_conv_b", "error", err)
 	}
 
 	if err := db.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_direct_msg_conv_created
-			ON direct_messages(conversation_id, created_at DESC)
-	`).Error; err != nil {
+	CREATE INDEX IF NOT EXISTS idx_direct_msg_conv_created
+		ON direct_messages(conversation_id, created_at DESC)
+`).Error; err != nil {
 		slog.Warn("migration: failed to create idx_direct_msg_conv_created", "error", err)
 	}
 
 	if err := db.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_direct_msg_unread
-			ON direct_messages(conversation_id, read_at)
-			WHERE read_at IS NULL
-	`).Error; err != nil {
+	CREATE INDEX IF NOT EXISTS idx_direct_msg_unread
+		ON direct_messages(conversation_id, read_at)
+		WHERE read_at IS NULL
+`).Error; err != nil {
 		slog.Warn("migration: failed to create idx_direct_msg_unread", "error", err)
 	}
 
 	if err := db.Exec(`
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_direct_conv_users
-			ON direct_conversations(user_a_id, user_b_id)
-	`).Error; err != nil {
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_direct_conv_users
+		ON direct_conversations(user_a_id, user_b_id)
+`).Error; err != nil {
 		slog.Warn("migration: failed to create idx_direct_conv_users", "error", err)
 	}
 
 	// Sentiment scoring eligibility index: covers never-scored active
 	// conversations so the scanner can find work without a seq-scan.
 	if err := db.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_direct_conv_sentiment_eligible
-			ON direct_conversations(last_message_at ASC)
-			WHERE status = 'active' AND sentiment_scored_at IS NULL
-	`).Error; err != nil {
+	CREATE INDEX IF NOT EXISTS idx_direct_conv_sentiment_eligible
+		ON direct_conversations(last_message_at ASC)
+		WHERE status = 'active' AND sentiment_scored_at IS NULL
+`).Error; err != nil {
 		slog.Warn("migration: failed to create idx_direct_conv_sentiment_eligible", "error", err)
 	}
 
 	if err := db.Exec(`
-		DO $$ BEGIN
-			IF NOT EXISTS (
-				SELECT 1 FROM pg_constraint WHERE conname = 'fk_dm_sender'
-			) THEN
-				ALTER TABLE direct_messages
-					ADD CONSTRAINT fk_dm_sender
-					FOREIGN KEY (sender_id) REFERENCES "user"(id) ON DELETE CASCADE;
-			END IF;
-		END $$;
-	`).Error; err != nil {
+	DO $$ BEGIN
+		IF NOT EXISTS (
+			SELECT 1 FROM pg_constraint WHERE conname = 'fk_dm_sender'
+		) THEN
+			ALTER TABLE direct_messages
+				ADD CONSTRAINT fk_dm_sender
+				FOREIGN KEY (sender_id) REFERENCES "user"(id) ON DELETE CASCADE;
+		END IF;
+	END $$;
+`).Error; err != nil {
 		slog.Warn("migration: failed to add fk_dm_sender constraint", "error", err)
 	}
 
 	if err := db.Exec(`DO $$ BEGIN
-		IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='system_prompts' AND column_name='id' AND data_type='uuid') THEN
-			ALTER TABLE system_prompts ADD COLUMN id_new integer DEFAULT 1;
-			UPDATE system_prompts SET id_new = 1;
-			ALTER TABLE system_prompts DROP CONSTRAINT IF EXISTS system_prompts_pkey;
-			ALTER TABLE system_prompts DROP COLUMN id;
-			ALTER TABLE system_prompts RENAME COLUMN id_new TO id;
-			ALTER TABLE system_prompts ADD PRIMARY KEY (id);
-		END IF;
-	END $$;`).Error; err != nil {
+	IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='system_prompts' AND column_name='id' AND data_type='uuid') THEN
+		ALTER TABLE system_prompts ADD COLUMN id_new integer DEFAULT 1;
+		UPDATE system_prompts SET id_new = 1;
+		ALTER TABLE system_prompts DROP CONSTRAINT IF EXISTS system_prompts_pkey;
+		ALTER TABLE system_prompts DROP COLUMN id;
+		ALTER TABLE system_prompts RENAME COLUMN id_new TO id;
+		ALTER TABLE system_prompts ADD PRIMARY KEY (id);
+	END IF;
+END $$;`).Error; err != nil {
 		slog.Warn("migration: uuid-to-integer migration failed (may be expected on fresh DB)", "error", err)
 	}
 
@@ -427,23 +444,23 @@ END $$;
 	// so collisions are structurally impossible.
 	slog.Info("migration: backfilling empty worker slugs")
 	if err := db.Exec(`
-		UPDATE worker_profiles
-		SET slug = LOWER(REGEXP_REPLACE(
-			COALESCE(NULLIF(business_name, ''), NULLIF(profession, ''), 'worker') || '-' ||
-			COALESCE(NULLIF(city, ''), 'unknown') || '-' ||
-			SUBSTRING(REPLACE(id::text, '-', ''), 1, 8),
-			'[^a-z0-9-]+', '-', 'gi'
-		))
-		WHERE slug IS NULL OR slug = ''
-	`).Error; err != nil {
+	UPDATE worker_profiles
+	SET slug = LOWER(REGEXP_REPLACE(
+		COALESCE(NULLIF(business_name, ''), NULLIF(profession, ''), 'worker') || '-' ||
+		COALESCE(NULLIF(city, ''), 'unknown') || '-' ||
+		SUBSTRING(REPLACE(id::text, '-', ''), 1, 8),
+		'[^a-z0-9-]+', '-', 'gi'
+	))
+	WHERE slug IS NULL OR slug = ''
+`).Error; err != nil {
 		slog.Warn("migration: failed to backfill worker slugs", "error", err)
 	}
 
 	// Unique partial index on slug — prevents future collision bugs at the DB level.
 	if err := db.Exec(`
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_profiles_slug_unique
-		ON worker_profiles(slug) WHERE slug IS NOT NULL AND slug != ''
-	`).Error; err != nil {
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_profiles_slug_unique
+	ON worker_profiles(slug) WHERE slug IS NOT NULL AND slug != ''
+`).Error; err != nil {
 		slog.Warn("migration: failed to create unique slug index", "error", err)
 	}
 
@@ -451,14 +468,14 @@ END $$;
 	// Partial index on (latitude, longitude) for distance-based search.
 	// Only indexed where coordinates are present — NULL rows are excluded.
 	if err := db.Exec(`
-		CREATE INDEX IF NOT EXISTS idx_worker_profiles_coords
-		ON worker_profiles (latitude, longitude)
-		WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-	`).Error; err != nil {
+	CREATE INDEX IF NOT EXISTS idx_worker_profiles_coords
+	ON worker_profiles (latitude, longitude)
+	WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+`).Error; err != nil {
 		slog.Warn("migration: failed to create geolocation index", "error", err)
 	}
 
-	return db, nil
+	return nil
 }
 
 func getEnv(key, fallback string) string {

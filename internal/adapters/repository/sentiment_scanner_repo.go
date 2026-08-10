@@ -40,7 +40,7 @@ func (r *GormSentimentScannerRepository) FindEligibleConversations(ctx context.C
 		Where("status = ?", "active").
 		Where("last_message_at < NOW() - INTERVAL '24 hours'").
 		Where("sentiment_scored_at IS NULL OR sentiment_scored_at < NOW() - (? * INTERVAL '1 second')", cooldown.Seconds()).
-		Where("last_message_at > sentiment_scored_at").
+		Where("sentiment_scored_at IS NULL OR last_message_at > sentiment_scored_at").
 		Order("last_message_at ASC").
 		Limit(limit).
 		Pluck("id", &ids).Error
