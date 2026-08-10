@@ -92,6 +92,9 @@ jobs:
       - name: Download modules
         run: go mod download
 
+      - name: Create test database
+        run: docker exec $(docker ps -qf ancestor=postgres:16-alpine) createdb -U postgres helpingpeoplenow_backend_test
+
       - name: Run tests with coverage
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
