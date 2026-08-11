@@ -1,0 +1,1236 @@
+# HelpingPeopleNow backend API — OpenAPI 3.0.3
+#
+# Hand-authored, spec-first contract (see infra/docs/SPEC.md §9).
+# Source of truth for paths: main.go buildMux + README.md route table.
+# When you add/change a route, update this file in the same commit —
+# CI (and the openapi_handler_test.go schema-lint gate) enforces it.
+openapi: 3.0.3
+info:
+  title: HelpingPeopleNow API
+  description: >
+    Backend REST API for the HelpingPeopleNow home-services platform.
+    Chat-driven worker/client intake, find-a-trader search, direct
+    messaging (SSE + polling), admin panel, and public worker profiles.
+  version: "1.0.0"
+  contact:
+    name: HelpingPeopleNow
+servers:
+  - url: https://helpingpeople.cloud
+    description: Production
+security:
+  - sessionCookie: []
+tags:
+  - name: Health
+  - name: Chat
+  - name: Profiles
+  - name: Search
+  - name: Conversations
+  - name: Direct Messaging
+  - name: Feedback
+  - name: Admin
+  - name: System Prompts
+  - name: API Docs
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      tags: [Health]
+      summary: Composite health check
+      description: >-
+        Returns 200 when Postgres and the helper gRPC service are ok,
+        503 otherwise. Dashboard target; the container healthcheck uses
+        /livez instead.
+      responses:
+        "200":
+          description: All dependencies ok
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthStatus" }
+        "503":
+          description: One or more dependencies down
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthStatus" }
+
+  /livez:
+    get:
+      operationId: getLivez
+      tags: [Health]
+      summary: Liveness probe
+      description: >-
+        Process-only liveness for the Docker container healthcheck.
+        Ignores helper/LLM degradation so a helper outage does not kill
+        the API.
+      responses:
+        "200":
+          description: Process is alive
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HealthStatus" }
+
+  /readyz:
+    get:
+      operationId: getReadyz
+      tags: [Health]
+      summary: Traefik load-balancer readiness
+      description: >-
+        200 {ready:true} once startup completes; 503 {ready:false}
+        during SIGTERM drain so Traefik stops routing before exit.
+      responses:
+        "200":
+          description: Ready to serve traffic
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadyzStatus" }
+        "503":
+          description: Draining / not yet ready
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReadyzStatus" }
+
+  /api/v1/chat:
+    post:
+      operationId: postChat
+      tags: [Chat]
+      summary: Unified chat endpoint
+      description: >-
+        One endpoint for all chat traffic. mode selects the flow:
+        worker_intake (build a worker profile), client_intake (build a
+        client profile), or search (find a trader).
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChatRequest" }
+      responses:
+        "200":
+          description: Chat completion
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatResponse" }
+        "400":
+          description: Invalid body or unknown mode
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Rate limited
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/worker/profile:
+    get:
+      operationId: getWorkerProfile
+      tags: [Profiles]
+      summary: Get the authenticated worker's profile
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Worker profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkerProfile" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No profile yet for this user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    put:
+      operationId: putWorkerProfile
+      tags: [Profiles]
+      summary: Update the authenticated worker's profile
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WorkerProfile" }
+      responses:
+        "200":
+          description: Updated worker profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkerProfile" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      operationId: deleteWorkerProfile
+      tags: [Profiles]
+      summary: Clear the authenticated worker's profile
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Profile cleared
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/client/profile:
+    get:
+      operationId: getClientProfile
+      tags: [Profiles]
+      summary: Get the authenticated client's profile
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Client profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientProfile" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No profile yet for this user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    put:
+      operationId: putClientProfile
+      tags: [Profiles]
+      summary: Update the authenticated client's profile
+      security:
+        - sessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ClientProfile" }
+      responses:
+        "200":
+          description: Updated client profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClientProfile" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      operationId: deleteClientProfile
+      tags: [Profiles]
+      summary: Clear the authenticated client's profile
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Profile cleared
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/workers/:
+    get:
+      operationId: searchWorkers
+      tags: [Search]
+      summary: Search workers (find-a-trader)
+      description: >-
+        Returns worker cards matching the query. When latitude and
+        longitude are provided, each card includes distance_km.
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: q
+          in: query
+          required: false
+          description: Free-text search query
+          schema: { type: string }
+        - name: profession
+          in: query
+          required: false
+          description: Filter by profession
+          schema: { type: string }
+        - name: city
+          in: query
+          required: false
+          schema: { type: string }
+        - name: latitude
+          in: query
+          required: false
+          schema: { type: number, format: double }
+        - name: longitude
+          in: query
+          required: false
+          schema: { type: number, format: double }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 20 }
+      responses:
+        "200":
+          description: Worker cards
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/FindTraderCard" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/workers/public/latest:
+    get:
+      operationId: getLatestPublicWorkers
+      tags: [Search]
+      summary: Latest public worker profiles
+      description: Public landing-page feed; no auth required.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 6 }
+      responses:
+        "200":
+          description: Latest public profiles
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/WorkerPublicProfile" }
+
+  /api/v1/workers/public/{slug}:
+    get:
+      operationId: getPublicWorkerBySlug
+      tags: [Search]
+      summary: Public worker profile by slug
+      description: Public profile page; private fields are stripped.
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Public worker profile
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkerPublicProfile" }
+        "404":
+          description: No worker with this slug
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/workers/{workerId}/contact:
+    get:
+      operationId: contactWorker
+      tags: [Direct Messaging]
+      summary: Create or resume a DM conversation with a worker
+      description: >-
+        Returns the conversation ID for a worker contact flow. Requires
+        a Cap CAPTCHA token when challenged (see README).
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: workerId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: captcha_token
+          in: query
+          required: false
+          description: Cap CAPTCHA token from the public profile CTA (required when CAP_SERVER_URL is set)
+          schema: { type: string }
+      responses:
+        "200":
+          description: Conversation created/resumed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ContactResult" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Worker not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/conversations:
+    get:
+      operationId: listConversations
+      tags: [Conversations]
+      summary: List saved chat conversations
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Conversation list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Conversation" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/conversations/{id}:
+    get:
+      operationId: getConversation
+      tags: [Conversations]
+      summary: Fetch a conversation with its messages
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Conversation with messages
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Conversation not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/direct-messages:
+    get:
+      operationId: listDirectConversations
+      tags: [Direct Messaging]
+      summary: DM thread list (inbox)
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: DM threads
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DirectConversation" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/direct-messages/since:
+    get:
+      operationId: pollDirectMessages
+      tags: [Direct Messaging]
+      summary: Poll for new DM messages (SSE fallback)
+      description: Returns messages created after the ts cursor (RFC3339).
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: ts
+          in: query
+          required: true
+          description: RFC3339 timestamp cursor
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: New messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DirectMessage" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/direct-messages/stream:
+    get:
+      operationId: streamDirectMessages
+      tags: [Direct Messaging]
+      summary: SSE stream for live DMs
+      description: Server-Sent Events stream; falls back to /since polling client-side.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: text/event-stream of DM events
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/direct-messages/{convId}/messages:
+    get:
+      operationId: listDirectMessages
+      tags: [Direct Messaging]
+      summary: List messages in a DM thread
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: convId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DirectMessage" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      operationId: sendDirectMessage
+      tags: [Direct Messaging]
+      summary: Send a message in a DM thread
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: convId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SendMessageRequest" }
+      responses:
+        "200":
+          description: Created message
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DirectMessage" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Rate limited
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/direct-messages/{convId}/read:
+    post:
+      operationId: markDirectMessagesRead
+      tags: [Direct Messaging]
+      summary: Mark thread messages as read
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: convId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Marked read
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DirectConversation" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/direct-messages/{convId}/archive:
+    post:
+      operationId: archiveDirectConversation
+      tags: [Direct Messaging]
+      summary: Archive a DM thread (per-user)
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: convId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Archived
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DirectConversation" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/direct-messages/{convId}/block:
+    post:
+      operationId: blockDirectConversation
+      tags: [Direct Messaging]
+      summary: Block a DM thread
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: convId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Blocked
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DirectConversation" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/direct-messages/{convId}/report:
+    post:
+      operationId: reportDirectConversation
+      tags: [Direct Messaging]
+      summary: Report a DM thread
+      security:
+        - sessionCookie: []
+      parameters:
+        - name: convId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReportRequest" }
+      responses:
+        "200":
+          description: Reported
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DirectConversation" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/feedback:
+    post:
+      operationId: submitFeedback
+      tags: [Feedback]
+      summary: Submit in-app feedback
+      description: Accepts logged-in and anonymous submissions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FeedbackRequest" }
+      responses:
+        "200":
+          description: Submitted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Feedback" }
+        "429":
+          description: Rate limited
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/system-prompts:
+    get:
+      operationId: getSystemPrompts
+      tags: [System Prompts]
+      summary: Read system prompts + LLM provider
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Prompt set
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SystemPrompt" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/system-prompts/{column}:
+    put:
+      operationId: putSystemPrompt
+      tags: [System Prompts]
+      summary: Update a single system prompt column (admin)
+      security:
+        - sessionCookie: []
+        - adminCookie: []
+      parameters:
+        - name: column
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [worker_profile, client_profile, find_trader_search, find_trader_presentation, provider]
+          description: Which prompt column to update
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string }
+      responses:
+        "200":
+          description: Updated prompt set
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SystemPrompt" }
+        "400":
+          description: Unknown column
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Not an admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/{entity}:
+    get:
+      operationId: adminListEntity
+      tags: [Admin]
+      summary: List admin entities (admin)
+      description: >-
+        Generic admin list endpoint. entity is one of exactly 9 slugs:
+        users, worker-profiles, client-profiles, conversations, messages,
+        direct-conversations, direct-messages, direct-message-reports,
+        feedback.
+      security:
+        - sessionCookie: []
+        - adminCookie: []
+      parameters:
+        - name: entity
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [users, worker-profiles, client-profiles, conversations, messages, direct-conversations, direct-messages, direct-message-reports, feedback]
+      responses:
+        "200":
+          description: Entity list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: object }
+        "400":
+          description: Unknown entity slug
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403":
+          description: Not an admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/{entity}/{id}:
+    get:
+      operationId: adminGetEntity
+      tags: [Admin]
+      summary: Get one admin entity by id (admin)
+      security:
+        - sessionCookie: []
+        - adminCookie: []
+      parameters:
+        - name: entity
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [users, worker-profiles, client-profiles, conversations, messages, direct-conversations, direct-messages, direct-message-reports, feedback]
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Entity
+          content:
+            application/json:
+              schema: { type: object }
+        "403":
+          description: Not an admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    patch:
+      operationId: adminUpdateEntity
+      tags: [Admin]
+      summary: Update one admin entity (admin)
+      security:
+        - sessionCookie: []
+        - adminCookie: []
+      parameters:
+        - name: entity
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [users, worker-profiles, client-profiles, conversations, messages, direct-conversations, direct-messages, direct-message-reports, feedback]
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: Updated entity
+          content:
+            application/json:
+              schema: { type: object }
+        "403":
+          description: Not an admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      operationId: adminDeleteEntity
+      tags: [Admin]
+      summary: Delete one admin entity (admin)
+      security:
+        - sessionCookie: []
+        - adminCookie: []
+      parameters:
+        - name: entity
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [users, worker-profiles, client-profiles, conversations, messages, direct-conversations, direct-messages, direct-message-reports, feedback]
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema: { type: object }
+        "403":
+          description: Not an admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/reembed:
+    post:
+      operationId: toggleReembed
+      tags: [Admin]
+      summary: Toggle vector re-embedding at runtime (admin)
+      security:
+        - sessionCookie: []
+        - adminCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: Toggled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: { type: boolean }
+        "403":
+          description: Not an admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/openapi.yaml:
+    get:
+      operationId: getOpenAPISpec
+      tags: [API Docs]
+      summary: Raw OpenAPI 3.0.3 spec (YAML)
+      description: This document, embedded in the binary via go:embed.
+      security:
+        - sessionCookie: []
+      responses:
+        "200":
+          description: OpenAPI YAML document
+          content:
+            application/yaml:
+              schema: { type: string }
+
+  /api/v1/docs:
+    get:
+      operationId: getOpenAPIDocs
+      tags: [API Docs]
+      summary: Redoc HTML documentation UI
+      description: Interactive API docs (Redoc standalone). Admin-only in production.
+      security:
+        - sessionCookie: []
+        - adminCookie: []
+      responses:
+        "200":
+          description: Redoc HTML page
+          content:
+            text/html:
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Secure-better-auth.session_token
+      description: >-
+        Better Auth session cookie set by the auth service. In non-HTTPS
+        environments the fallback name better-auth.session_token is also
+        accepted.
+    adminCookie:
+      type: apiKey
+      in: cookie
+      name: __Secure-better-auth.session_token
+      description: >-
+        Same session cookie, but the user must also have the is_admin
+        flag on their user record.
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        postgres: { type: string }
+        grpc_helper: { type: string }
+        details:
+          type: object
+          additionalProperties: { type: string }
+    ReadyzStatus:
+      type: object
+      properties:
+        ready: { type: boolean }
+    ChatRequest:
+      type: object
+      required: [mode, message]
+      properties:
+        mode:
+          type: string
+          enum: [worker_intake, client_intake, search]
+        message: { type: string }
+        history:
+          type: array
+          items:
+            type: object
+            properties:
+              role: { type: string }
+              content: { type: string }
+        conversation_id: { type: string }
+        lang: { type: string }
+        latitude: { type: number, format: double }
+        longitude: { type: number, format: double }
+    ChatResponse:
+      type: object
+      properties:
+        answer: { type: string }
+        detected_fields:
+          type: object
+          additionalProperties: true
+        conversation_id: { type: string }
+        workers:
+          type: array
+          items: { $ref: "#/components/schemas/FindTraderCard" }
+    SocialLink:
+      type: object
+      properties:
+        platform: { type: string }
+        url: { type: string }
+    WorkerProfile:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string }
+        business_name: { type: string }
+        slug: { type: string }
+        profession: { type: string }
+        description: { type: string }
+        bio: { type: string }
+        phone: { type: string }
+        city: { type: string }
+        address: { type: string }
+        latitude: { type: number, format: double }
+        longitude: { type: number, format: double }
+        service_radius_km: { type: integer }
+        hourly_rate: { type: number, format: double }
+        minimum_charge: { type: number, format: double }
+        free_estimate: { type: boolean }
+        years_experience: { type: integer }
+        certifications:
+          type: array
+          items: { type: string }
+        has_insurance: { type: boolean }
+        languages:
+          type: array
+          items: { type: string }
+        emergency_service: { type: boolean }
+        website: { type: string }
+        social_links:
+          type: array
+          items: { $ref: "#/components/schemas/SocialLink" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    WorkerPublicProfile:
+      type: object
+      description: Public worker profile with private fields stripped.
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        profession: { type: string }
+        business_name: { type: string }
+        bio: { type: string }
+        city: { type: string }
+        service_radius_km: { type: integer }
+        hourly_rate: { type: number, format: double }
+        minimum_charge: { type: number, format: double }
+        free_estimate: { type: boolean }
+        years_experience: { type: integer }
+        certifications:
+          type: array
+          items: { type: string }
+        has_insurance: { type: boolean }
+        languages:
+          type: array
+          items: { type: string }
+        emergency_service: { type: boolean }
+        website: { type: string }
+        social_links:
+          type: array
+          items: { $ref: "#/components/schemas/SocialLink" }
+        latitude: { type: number, format: double }
+        longitude: { type: number, format: double }
+        created_at: { type: string, format: date-time }
+    FindTraderCard:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        profession: { type: string }
+        business_name: { type: string }
+        slug: { type: string }
+        bio: { type: string }
+        city: { type: string }
+        phone: { type: string }
+        hourly_rate: { type: number, format: double }
+        free_estimate: { type: boolean }
+        years_experience: { type: integer }
+        certifications:
+          type: array
+          items: { type: string }
+        has_insurance: { type: boolean }
+        emergency_service: { type: boolean }
+        latitude: { type: number, format: double }
+        longitude: { type: number, format: double }
+        distance_km: { type: number, format: double }
+    ClientProfile:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string }
+        full_name: { type: string }
+        phone: { type: string }
+        city: { type: string }
+        address: { type: string }
+        bio: { type: string }
+        preferred_contact: { type: string }
+        property_type: { type: string }
+        notes: { type: string }
+        latitude: { type: number, format: double }
+        longitude: { type: number, format: double }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    Conversation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string }
+        type:
+          type: string
+          default: main
+        metadata:
+          type: object
+          additionalProperties: true
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/Message" }
+    Message:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        role: { type: string }
+        content: { type: string }
+        workers_json: { type: string }
+        created_at: { type: string, format: date-time }
+    DirectConversation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_a_id: { type: string }
+        user_a_role: { type: string }
+        user_b_id: { type: string }
+        user_b_role: { type: string }
+        status: { type: string }
+        user_a_archived_at: { type: string, format: date-time }
+        user_b_archived_at: { type: string, format: date-time }
+        user_a_unread_count: { type: integer }
+        user_b_unread_count: { type: integer }
+        last_message_at: { type: string, format: date-time }
+        last_message_preview: { type: string }
+        sentiment_score: { type: integer }
+        sentiment_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    DirectMessage:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        sender_id: { type: string }
+        sender_role: { type: string }
+        body: { type: string }
+        created_at: { type: string, format: date-time }
+        read_at: { type: string, format: date-time }
+    SendMessageRequest:
+      type: object
+      required: [body]
+      properties:
+        body: { type: string }
+    ReportRequest:
+      type: object
+      properties:
+        reason: { type: string }
+    ContactResult:
+      type: object
+      properties:
+        conversation_id: { type: string, format: uuid }
+    FeedbackRequest:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string }
+        page_url: { type: string }
+        category:
+          type: string
+          enum: [general, bug, suggestion]
+    Feedback:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string }
+        page_url: { type: string }
+        message: { type: string }
+        category: { type: string }
+        status: { type: string }
+        admin_note: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    SystemPrompt:
+      type: object
+      properties:
+        id: { type: integer }
+        worker_profile_prompt: { type: string }
+        client_profile_prompt: { type: string }
+        find_trader_search_prompt: { type: string }
+        find_trader_presentation_prompt: { type: string }
+        llm_provider: { type: string }
+    User:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string, format: email }
+        name: { type: string }
+        is_admin: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }

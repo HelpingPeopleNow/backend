@@ -249,6 +249,8 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | GET | `/api/v1/workers/public/latest` | No | Public worker profiles — paginated list (default limit 6, capped at 20). Returns `WorkerPublicDTO` (private fields stripped). |
 | GET | `/api/v1/workers/public/{slug}` | No | Public worker profile by URL-friendly slug. Returns `WorkerPublicDTO` (private fields stripped). 404 on missing/invalid slug. |
 | POST | `/api/v1/feedback` | Yes | Submit user feedback (message, page_url, category) via `POST /api/v1/feedback`; saved to `feedback` table with status `open`; async Telegram notification to admin channel; admin CRUD via `/api/v1/admin/feedback` |
+| GET | `/api/v1/openapi.yaml` | Yes | Raw OpenAPI 3.0.3 spec (YAML), embedded in the binary via `go:embed` (`openapi/openapi.yaml`). Session-auth'd. |
+| GET | `/api/v1/docs` | Yes (admin) | Interactive Redoc documentation UI, loads `/api/v1/openapi.yaml`. Admin-only so the contract stays internal. |
 | GET | `/admin/*` | Yes (admin) | Admin entity CRUD over exactly 9 entity slugs: `users`, `worker-profiles`, `client-profiles`, `conversations`, `messages`, `direct-conversations`, `direct-messages`, `direct-message-reports`, `feedback` |
 
 *Chat handler is wrapped by `AuthMiddleware` but does not require a session — anonymous users get chat, and only authenticated requests merge fields into the user's profile.

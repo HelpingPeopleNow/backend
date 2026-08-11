@@ -122,6 +122,12 @@ func buildMux(d appDeps) *http.ServeMux {
 	mux.Handle("/api/v1/workers/public/latest", http.HandlerFunc(publicProfileHandler.LatestProfiles))
 	mux.Handle("/api/v1/workers/public/", http.HandlerFunc(publicProfileHandler.ServeHTTP))
 
+	// OpenAPI docs (spec-first contract, see infra/docs/SPEC.md §9).
+	// Raw spec is session-auth'd; the interactive UI is admin-only so
+	// the API contract stays internal.
+	mux.Handle("/api/v1/openapi.yaml", middleware.CORS(d.Auth.Wrap(handler.OpenAPISpecHandler())))
+	mux.Handle("/api/v1/docs", middleware.CORS(d.Admin.Wrap(handler.OpenAPIDocsHandler())))
+
 	// P2-2 (audit / F9): protect /metrics behind METRICS_TOKEN. An empty
 	// token falls back to unauthenticated with a logged warning so an
 	// operator notices. Production must set METRICS_TOKEN.
