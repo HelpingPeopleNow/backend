@@ -2,7 +2,7 @@
 
 Go REST API with hexagonal architecture. Orchestrates the chat flow: receives messages from the frontend, combines them with system prompts and LLM provider config, sends them to the helper service via gRPC, and appends a language instruction based on the request's `lang` parameter.
 
-**Container:** `helpingpeoplenow-backend` | **Port:** `:8081`
+**Container:** `helpingpeoplenow-backend-1`, `…-2`, … (no fixed `container_name` since SPOF Phase 4; use `docker compose logs -f backend` for ops grep at any replica count) | **Port:** `:8081`
 
 ---
 
@@ -18,6 +18,7 @@ Go REST API with hexagonal architecture. Orchestrates the chat flow: receives me
 | **Concurrency** | `golang.org/x/sync` (errgroup for parallel Pass-1 + Embed) |
 | **Logging** | `log/slog` (structured, text to stdout) |
 | **Container** | golang:1.25 → alpine:3.20 (multi-stage, static binary) |
+| **SSE broker** | In-process pub/sub (`sseBroker`) wrapped by an optional Redis pub/sub layer (`redisBroker`, see SPOF GAP A below). The Redis layer is enabled when `REDIS_URL` is set; without it the broker is in-process only (single-replica safe). |
 
 ---
 
@@ -507,6 +508,7 @@ All handlers use Go's `log/slog` with structured key-value pairs:
 || `CAP_SERVER_URL` | — (optional) | Cap CAPTCHA verification server URL. When set (with `CAP_SITE_KEY` and `CAP_SECRET_KEY`), worker contact endpoint enforces CAPTCHA verification. |
 || `CAP_SITE_KEY` | — (optional) | Cap CAPTCHA site/public key. |
 || `CAP_SECRET_KEY` | — (optional) | Cap CAPTCHA secret key. |
+| `REDIS_URL` | — (optional) | Redis URL for cross-replica SSE pub/sub (SPOF GAP A). When set, `internal/adapters/realtime/redis_sse_broker.go` fans out DM realtime events to all backend replicas via Redis pub/sub on channel `sse:user:<userID>`. Leave empty for single-replica / dev (in-process broker only). A malformed URL is rejected at startup; a Redis ping failure at startup falls back to in-process with a `slog.Warn` so the backend still boots. The compose files hard-code `redis://helpingpeoplenow-cap-valkey:6379` (prod) / `redis://cap-valkey:6379` (dev) to reuse the existing Cap CAPTCHA Redis. |
 
 ---
 
@@ -607,7 +609,8 @@ backend/
     │   ├── llm/
     │   │   └── grpc_client.go         # GRPCLLMService — gRPC client to helper (Ask, Health, Embed)
     │   ├── realtime/
-    │   │   └── sse_broker.go          # In-process pub/sub for DM SSE
+    │   │   ├── sse_broker.go          # In-process pub/sub for DM SSE (single-replica)
+    │   │   └── redis_sse_broker.go    # Redis pub/sub wrapper for cross-replica SSE (GAP A)
     │   ├── middleware/
     │   │   ├── auth.go                # AuthMiddleware (auth-service → DB fallback)
     │   │   ├── admin.go               # AdminMiddleware (calls AUTH_SERVICE_URL)
