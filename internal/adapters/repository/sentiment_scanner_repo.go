@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/HelpingPeopleNow/backend/internal/core"
@@ -45,6 +46,7 @@ func (r *GormSentimentScannerRepository) FindEligibleConversations(ctx context.C
 		Limit(limit).
 		Pluck("id", &ids).Error
 	if err != nil {
+		slog.Error("sentiment-repo: find eligible conversations failed", "error", err)
 		return nil, fmt.Errorf("find eligible conversations: %w", err)
 	}
 	return ids, nil
@@ -63,6 +65,7 @@ func (r *GormSentimentScannerRepository) FetchMessages(ctx context.Context, conv
 		Limit(max).
 		Find(&msgs).Error
 	if err != nil {
+		slog.Error("sentiment-repo: fetch messages failed", "conv_id", conversationID, "error", err)
 		return nil, fmt.Errorf("fetch messages: %w", err)
 	}
 
@@ -84,6 +87,7 @@ func (r *GormSentimentScannerRepository) WriteScore(ctx context.Context, convers
 			"sentiment_scored_at": time.Now(),
 		}).Error
 	if err != nil {
+		slog.Error("sentiment-repo: write score failed", "conv_id", conversationID, "score", score, "error", err)
 		return fmt.Errorf("write score: %w", err)
 	}
 	return nil
@@ -100,6 +104,7 @@ func (r *GormSentimentScannerRepository) ClearScore(ctx context.Context, convers
 			"sentiment_scored_at": nil,
 		}).Error
 	if err != nil {
+		slog.Error("sentiment-repo: clear score failed", "conv_id", conversationID, "error", err)
 		return fmt.Errorf("clear score: %w", err)
 	}
 	return nil
@@ -112,6 +117,7 @@ func (r *GormSentimentScannerRepository) FetchParticipantEmails(ctx context.Cont
 		Select("user_a_id", "user_b_id").
 		Where("id = ?", conversationID).
 		First(&conv).Error; err != nil {
+		slog.Error("sentiment-repo: fetch conversation for emails failed", "conv_id", conversationID, "error", err)
 		return "", "", fmt.Errorf("fetch conversation: %w", err)
 	}
 
@@ -126,6 +132,7 @@ func (r *GormSentimentScannerRepository) FetchParticipantEmails(ctx context.Cont
 		Select("id", "email").
 		Where("id IN ?", []string{conv.UserAID, conv.UserBID}).
 		Find(&users).Error; err != nil {
+		slog.Error("sentiment-repo: fetch participant emails failed", "conv_id", conversationID, "error", err)
 		return "", "", fmt.Errorf("fetch emails: %w", err)
 	}
 
@@ -146,6 +153,7 @@ func (r *GormSentimentScannerRepository) FetchLastAlertSentAt(ctx context.Contex
 		Where("id = ?", conversationID).
 		Scan(&lastAlert).Error
 	if err != nil {
+		slog.Error("sentiment-repo: fetch last alert sent failed", "conv_id", conversationID, "error", err)
 		return nil, fmt.Errorf("fetch last alert sent: %w", err)
 	}
 	return lastAlert, nil
@@ -158,6 +166,7 @@ func (r *GormSentimentScannerRepository) MarkAlertSent(ctx context.Context, conv
 		Where("id = ?", conversationID).
 		Update("last_alert_sent_at", time.Now()).Error
 	if err != nil {
+		slog.Error("sentiment-repo: mark alert sent failed", "conv_id", conversationID, "error", err)
 		return fmt.Errorf("mark alert sent: %w", err)
 	}
 	return nil
@@ -187,6 +196,7 @@ func (r *GormSentimentScannerRepository) ClaimAlert(ctx context.Context, convers
 		Where("alert_claim_at IS NULL OR alert_claim_at < NOW() - (? * INTERVAL '1 second')", lease.Seconds()).
 		Update("alert_claim_at", time.Now())
 	if res.Error != nil {
+		slog.Error("sentiment-repo: claim alert failed", "conv_id", conversationID, "error", res.Error)
 		return false, fmt.Errorf("claim alert: %w", res.Error)
 	}
 	return res.RowsAffected == 1, nil
@@ -204,6 +214,7 @@ func (r *GormSentimentScannerRepository) ReleaseAlertClaim(ctx context.Context, 
 		Where("id = ?", conversationID).
 		Update("alert_claim_at", nil)
 	if res.Error != nil {
+		slog.Error("sentiment-repo: release alert claim failed", "conv_id", conversationID, "error", res.Error)
 		return fmt.Errorf("release alert claim: %w", res.Error)
 	}
 	return nil
