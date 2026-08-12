@@ -84,7 +84,19 @@ func buildDeps(db *gorm.DB) appDeps {
 	}
 }
 
-func buildMux(d appDeps) *http.ServeMux {
+// muxClosers aggregates the per-replica resources that need a Close on
+// SIGTERM. Returned by buildMux so main() can release them after the
+// sweeper drain completes. SPOF GAP A (broker) + GAP B (prompt
+// invalidator) + GAP D (rate limiters).
+type muxClosers struct {
+	broker            func() error
+	promptInvalidator func() error
+	dmLimiter         func() error
+	searchLimiter     func() error
+	feedbackLimiter   func() error
+}
+
+func buildMux(d appDeps) (*http.ServeMux, *muxClosers) {
 	mux := http.NewServeMux()
 
 	healthHandler := handler.NewHealthHandler(d.DB, d.LLM)
@@ -92,12 +104,84 @@ func buildMux(d appDeps) *http.ServeMux {
 	mux.Handle("/livez", http.HandlerFunc(healthHandler.Livez))
 	mux.Handle("/readyz", handler.NewReadyzHandler(handler.ReadyFlag()))
 
-	broker := realtime.NewSSEBroker()
-	dmRateLimiter := ratelimit.NewRateLimiter(30, time.Minute)
-	searchRateLimiter := ratelimit.NewRateLimiter(10, time.Minute)
-	feedbackRateLimiter := ratelimit.NewRateLimiter(5, time.Minute)
+	// SPOF GAP A (see infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md):
+	// when REDIS_URL is set, the SSE broker fans out events across
+	// replicas via Redis pub/sub so a /stream attached to replica B
+	// receives events published on replica A. With an empty REDIS_URL
+	// we fall back to the in-process broker (unchanged behaviour for
+	// single-replica or dev). The redis client is closed by the
+	// returned closer on SIGTERM.
+	var broker ports.Broker
+	closers := &muxClosers{}
+	localBroker := realtime.NewSSEBroker()
+	if rb, closer, err := realtime.NewRedisSSEBroker(os.Getenv("REDIS_URL"), localBroker); err != nil {
+		slog.Error("sse: failed to construct redis broker; falling back to in-process",
+			"error", err)
+		broker = localBroker
+		closers.broker = func() error { return nil }
+	} else {
+		broker = rb
+		closers.broker = closer
+	}
+
+	// SPOF GAP B (see infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md): cross-
+	// replica invalidation of system-prompt cache. The GORM repo already
+	// refreshes its in-memory cache on every Update; this invalidator
+	// publishes to Redis pub/sub on Update and starts a goroutine that
+	// reloads the cache on receipt. Empty REDIS_URL returns a no-op
+	// invalidator (single-replica / dev).
+	if gr, ok := d.PromptRepo.(*repository.GormSystemPromptRepository); ok {
+		inv, closer, err := realtime.NewPromptInvalidator(os.Getenv("REDIS_URL"), gr)
+		if err != nil {
+			slog.Error("prompt invalidator: failed to construct", "error", err)
+			closers.promptInvalidator = func() error { return nil }
+		} else {
+			closers.promptInvalidator = closer
+			gr.SetInvalidator(inv)
+		}
+	}
+
+	// SPOF GAP D (see infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md): per-user
+	// rate limiters live in Redis so N replicas share one quota. The
+	// pre-fix in-process limiter became N× the configured cap when the
+	// backend ran as 2+ replicas. Each limiter wraps an in-process
+	// fallback (the pre-fix RateLimiter) that takes over on any Redis
+	// error — graceful degradation so a Redis outage does not break the
+	// auth/flood-protection contract entirely, just weakens it.
+	redisURL := os.Getenv("REDIS_URL")
+	var dmRateLimiter, searchRateLimiter, feedbackRateLimiter ratelimit.Limiter
+	var err error
+	dmRateLimiter, closers.dmLimiter, err = newSharedLimiter(redisURL, "dm-send", 30, time.Minute)
+	if err != nil {
+		slog.Error("rate limiter: failed to build dm-send limiter", "error", err)
+		dmRateLimiter = ratelimit.NewRateLimiter(30, time.Minute)
+		closers.dmLimiter = func() error { return nil }
+	}
+	searchRateLimiter, closers.searchLimiter, err = newSharedLimiter(redisURL, "chat", 10, time.Minute)
+	if err != nil {
+		slog.Error("rate limiter: failed to build chat limiter", "error", err)
+		searchRateLimiter = ratelimit.NewRateLimiter(10, time.Minute)
+		closers.searchLimiter = func() error { return nil }
+	}
+	feedbackRateLimiter, closers.feedbackLimiter, err = newSharedLimiter(redisURL, "feedback", 5, time.Minute)
+	if err != nil {
+		slog.Error("rate limiter: failed to build feedback limiter", "error", err)
+		feedbackRateLimiter = ratelimit.NewRateLimiter(5, time.Minute)
+		closers.feedbackLimiter = func() error { return nil }
+	}
 	dmHandler := handler.NewDirectMessagingHandler(d.DMRepo, d.ProfileRepo, broker, dmRateLimiter)
 	mux.Handle("/api/v1/chat", middleware.CORS(d.Auth.Wrap(handler.NewChatHandler(d.Intake, d.Search, d.PromptRepo, searchRateLimiter))))
+	// Wire the rate-limit fallback counter on every shared limiter so
+	// each Redis error increments rate_limit_fallback_total{scope=...}.
+	if sl, ok := dmRateLimiter.(*ratelimit.SharedRateLimiter); ok {
+		sl.SetFallbackCounter(metrics.IncrRateLimitFallback)
+	}
+	if sl, ok := searchRateLimiter.(*ratelimit.SharedRateLimiter); ok {
+		sl.SetFallbackCounter(metrics.IncrRateLimitFallback)
+	}
+	if sl, ok := feedbackRateLimiter.(*ratelimit.SharedRateLimiter); ok {
+		sl.SetFallbackCounter(metrics.IncrRateLimitFallback)
+	}
 	mux.Handle("/api/v1/worker/profile", middleware.CORS(d.Auth.Wrap(handler.NewWorkerHandler(d.ProfileRepo))))
 	mux.Handle("/api/v1/client/profile", middleware.CORS(d.Auth.Wrap(handler.NewClientHandler(d.ProfileRepo))))
 	mux.Handle("/api/v1/conversations", middleware.CORS(d.Auth.Wrap(handler.NewConversationHandler(d.ChatRepo))))
@@ -138,7 +222,7 @@ func buildMux(d appDeps) *http.ServeMux {
 	// values from external state.
 	handler.RegisterMetricsRoutes(mux, os.Getenv("METRICS_TOKEN"))
 	wireGaugeScrapeSources(d.DB, d.Search, broker)
-	return mux
+	return mux, closers
 }
 
 // wireGaugeScrapeSources registers the dynamic gauges driven by external
@@ -367,7 +451,7 @@ func main() {
 		slog.Info("system prompts ready")
 	}
 
-	mux := buildMux(deps)
+	mux, closers := buildMux(deps)
 
 	// P0-follow-up: /readyz gate. Flip on the readiness flag once the
 	// startup critical path is complete (DB connected, system prompts
@@ -466,6 +550,56 @@ func main() {
 	case <-time.After(65 * time.Second):
 		slog.Warn("sweeper drain timed out after 65s; exiting anyway (in-flight ReembedWorker may have been killed)")
 	}
+
+	// SPOF GAP A: release the Redis pub/sub connection last so the
+	// in-process pump goroutines have already unwound. The close
+	// itself is non-blocking; failures are logged and ignored (we are
+	// already exiting).
+	if closers.broker != nil {
+		if err := closers.broker(); err != nil {
+			slog.Warn("sse: broker close error", "error", err)
+		}
+	}
+	// SPOF GAP B: stop the prompt-invalidator subscription goroutine.
+	// Same non-blocking close; failures are logged.
+	if closers.promptInvalidator != nil {
+		if err := closers.promptInvalidator(); err != nil {
+			slog.Warn("prompt invalidator close error", "error", err)
+		}
+	}
+	// SPOF GAP D: release the Redis-backed rate-limiter clients. Same
+	// non-blocking close; failures are logged.
+	for name, c := range map[string]func() error{
+		"dm-send":  closers.dmLimiter,
+		"chat":     closers.searchLimiter,
+		"feedback": closers.feedbackLimiter,
+	} {
+		if c == nil {
+			continue
+		}
+		if err := c(); err != nil {
+			slog.Warn("rate limiter close error", "scope", name, "error", err)
+		}
+	}
+}
+
+// newSharedLimiter builds a Redis-backed SharedRateLimiter that falls
+// back to an in-process RateLimiter on Redis errors. Returns the
+// concrete Limiter (one of *SharedRateLimiter or *RateLimiter) plus a
+// closer that releases the underlying Redis client on shutdown.
+//
+// An empty redisURL returns the in-process limiter with a no-op
+// closer — single-replica / dev behaviour, unchanged from pre-fix.
+func newSharedLimiter(redisURL, scope string, max int, period time.Duration) (ratelimit.Limiter, func() error, error) {
+	fallback := ratelimit.NewRateLimiter(max, period)
+	if redisURL == "" {
+		return fallback, func() error { return nil }, nil
+	}
+	sl, err := ratelimit.NewSharedRateLimiter(redisURL, scope, max, period, fallback)
+	if err != nil {
+		return fallback, func() error { return nil }, err
+	}
+	return sl, sl.Close, nil
 }
 
 func parseDurationEnv(key string, fallback time.Duration) time.Duration {

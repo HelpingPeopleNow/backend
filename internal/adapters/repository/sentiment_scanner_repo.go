@@ -162,3 +162,49 @@ func (r *GormSentimentScannerRepository) MarkAlertSent(ctx context.Context, conv
 	}
 	return nil
 }
+
+// ClaimAlert performs an atomic CAS on alert_claim_at so exactly one
+// concurrent caller wins the right to dispatch a sentiment alert for
+// this conversation. SPOF GAP C fix — see
+// infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md.
+//
+// The CAS predicate is "row is unclaimed OR its current claim is older
+// than `lease` ago" so a crashed replica's stale claim auto-recovers
+// after the lease window without operator intervention.
+//
+// IMPORTANT: This is the FIRST call in the dispatch path — callers must
+// dispatch only when claimed=true, then MarkAlertSent on success or
+// ReleaseAlertClaim on send failure. Reusing last_alert_sent_at as the
+// claim field was rejected because it would lose alerts on send
+// failure (see the GAP C note in FOLLOW_UP_SPOF_Backup_Replicas.md).
+func (r *GormSentimentScannerRepository) ClaimAlert(ctx context.Context, conversationID string, lease time.Duration) (bool, error) {
+	if lease <= 0 {
+		lease = 60 * time.Second
+	}
+	res := r.db.WithContext(ctx).
+		Model(&core.DirectConversation{}).
+		Where("id = ?", conversationID).
+		Where("alert_claim_at IS NULL OR alert_claim_at < NOW() - (? * INTERVAL '1 second')", lease.Seconds()).
+		Update("alert_claim_at", time.Now())
+	if res.Error != nil {
+		return false, fmt.Errorf("claim alert: %w", res.Error)
+	}
+	return res.RowsAffected == 1, nil
+}
+
+// ReleaseAlertClaim clears alert_claim_at for a conversation whose
+// dispatch failed. Called after a SendSentimentAlert error so the next
+// scanner tick can re-claim and retry the send (the long-form cooldown
+// in last_alert_sent_at still applies, so an infinitely-failing
+// conversation does NOT spam alerts at the SENTIMENT_SCANNER_INTERVAL
+// rate — it caps at one attempt per cooldown).
+func (r *GormSentimentScannerRepository) ReleaseAlertClaim(ctx context.Context, conversationID string) error {
+	res := r.db.WithContext(ctx).
+		Model(&core.DirectConversation{}).
+		Where("id = ?", conversationID).
+		Update("alert_claim_at", nil)
+	if res.Error != nil {
+		return fmt.Errorf("release alert claim: %w", res.Error)
+	}
+	return nil
+}

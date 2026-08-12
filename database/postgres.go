@@ -50,6 +50,26 @@ func Connect() (*gorm.DB, error) {
 		sqlDB.SetMaxIdleConns(intEnv("DB_MAX_IDLE_CONNS", 5))
 		sqlDB.SetConnMaxLifetime(time.Hour)
 		sqlDB.SetConnMaxIdleTime(10 * time.Minute)
+		// SPOF GAP F (see infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md):
+		// at N replicas each opens its own pool, so the cluster-wide
+		// ceiling is N × DB_MAX_OPEN_CONNS. Postgres defaults
+		// `max_connections` to 100; a 5-replica deployment with the
+		// default 20/replica would saturate the server. Warn at
+		// startup if the cluster ceiling exceeds 80 (well under PG's
+		// 100 default with room for helper / auth / Adminer / umami-db
+		// pools) so operators can either lower the per-replica cap or
+		// raise Postgres `max_connections` before traffic ramps.
+		if maxReplicas := intEnv("MAX_BACKEND_REPLICAS", 1); maxReplicas > 1 {
+			perReplica := intEnv("DB_MAX_OPEN_CONNS", 20)
+			clusterCeiling := perReplica * maxReplicas
+			if clusterCeiling > 80 {
+				slog.Warn("postgres: cluster-wide connection ceiling is high; PG max_connections may saturate",
+					"max_replicas", maxReplicas,
+					"per_replica_max_open", perReplica,
+					"cluster_ceiling", clusterCeiling,
+					"pg_max_connections_default", 100)
+			}
+		}
 	}
 
 	// ── Schema migrations (idempotent; shared with tests via Migrate) ──
@@ -473,6 +493,20 @@ END $$;`).Error; err != nil {
 	WHERE latitude IS NOT NULL AND longitude IS NOT NULL
 `).Error; err != nil {
 		slog.Warn("migration: failed to create geolocation index", "error", err)
+	}
+
+	// ── Sentiment alert claim (SPOF GAP C fix — see
+	// infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md) ──
+	// alert_claim_at is the atomic-CAS target that decides which
+	// backend replica gets to dispatch a sentiment alert for a given
+	// conversation when running as N>=2 concurrent instances. Added
+	// NULL-able so existing rows pass the ADD COLUMN; AutoMigrate
+	// already creates it on fresh DBs via the GORM struct tag.
+	if err := db.Exec(`
+	ALTER TABLE direct_conversations
+		ADD COLUMN IF NOT EXISTS alert_claim_at TIMESTAMPTZ
+`).Error; err != nil {
+		slog.Warn("migration: failed to add direct_conversations.alert_claim_at", "error", err)
 	}
 
 	return nil

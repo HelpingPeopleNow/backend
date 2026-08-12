@@ -11,13 +11,23 @@ import (
 )
 
 type GormSystemPromptRepository struct {
-	db    *gorm.DB
-	mu    sync.RWMutex
-	cache *core.SystemPrompt
+	db          *gorm.DB
+	mu          sync.RWMutex
+	cache       *core.SystemPrompt
+	invalidator ports.SystemPromptInvalidator
 }
 
 func NewGormSystemPromptRepository(db *gorm.DB) ports.SystemPromptRepository {
 	return &GormSystemPromptRepository{db: db}
+}
+
+// SetInvalidator wires the cross-replica invalidation publisher. Called
+// from main.buildMux after the Redis-backed invalidator is constructed.
+// nil is allowed (single-replica / dev): Update then skips the publish.
+func (r *GormSystemPromptRepository) SetInvalidator(inv ports.SystemPromptInvalidator) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.invalidator = inv
 }
 
 func (r *GormSystemPromptRepository) Get(ctx context.Context) (*core.SystemPrompt, error) {
@@ -72,5 +82,35 @@ func (r *GormSystemPromptRepository) Update(ctx context.Context, column string, 
 	}
 	r.cache = &refreshed
 	slog.Info("system-prompt: updated", "column", column)
+
+	// SPOF GAP B: notify sibling replicas so their in-memory caches
+	// reload. Failure here is non-fatal — the local cache is already
+	// current; a missed pub/sub event just leaves sibling caches stale
+	// until the next manual restart or a TTL fallback.
+	if r.invalidator != nil {
+		if err := r.invalidator.PublishInvalidation(ctx, column); err != nil {
+			slog.Warn("system-prompt: cross-replica invalidation publish failed", "column", column, "error", err)
+		}
+	}
 	return r.cache, nil
+}
+
+// InvalidateCache reloads the singleton row from the DB into the
+// in-memory cache. Called by the prompt-invalidator goroutine when it
+// receives a cross-replica invalidation event.
+func (r *GormSystemPromptRepository) InvalidateCache(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var refreshed core.SystemPrompt
+	if err := r.db.WithContext(ctx).First(&refreshed).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			r.cache = &core.SystemPrompt{}
+			return nil
+		}
+		return err
+	}
+	r.cache = &refreshed
+	slog.Info("system-prompt: cache invalidated by cross-replica event")
+	return nil
 }

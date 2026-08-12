@@ -27,8 +27,16 @@ type DirectConversation struct {
 	SentimentReason    *string    `gorm:"type:text;column:sentiment_reason" json:"sentiment_reason,omitempty"`
 	SentimentScoredAt  *time.Time `gorm:"column:sentiment_scored_at" json:"sentiment_scored_at,omitempty"`
 	LastAlertSentAt    *time.Time `gorm:"column:last_alert_sent_at" json:"last_alert_sent_at,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
+	// AlertClaimAt is the lease timestamp held by a single backend replica
+	// while it is sending a sentiment alert (SPOF GAP C fix — see
+	// infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md). The column is the
+	// atomic-CAS target that decides which replica gets to dispatch the
+	// alert, distinct from LastAlertSentAt (which records the cooldown).
+	// Set on ClaimAlert success, cleared on ReleaseAlertClaim, and
+	// overwritten by a new ClaimAlert after a 60s lease expiry.
+	AlertClaimAt *time.Time `gorm:"column:alert_claim_at" json:"alert_claim_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 func (DirectConversation) TableName() string { return "direct_conversations" }

@@ -55,7 +55,7 @@ type DirectMessagingHandler struct {
 	dm      ports.DirectMessageRepository
 	profs   ports.ProfileRepository
 	broker  ports.Broker
-	limiter *ratelimit.RateLimiter
+	limiter ratelimit.Limiter
 }
 
 // resolveRole returns the role used for DM purposes (audit: denormalized
@@ -80,7 +80,7 @@ func NewDirectMessagingHandler(
 	dm ports.DirectMessageRepository,
 	profs ports.ProfileRepository,
 	broker ports.Broker,
-	limiter *ratelimit.RateLimiter,
+	limiter ratelimit.Limiter,
 ) *DirectMessagingHandler {
 	return &DirectMessagingHandler{dm: dm, profs: profs, broker: broker, limiter: limiter}
 }

@@ -13,6 +13,20 @@ import (
 
 // LLMProvider is hardcoded to mistral for sentiment analysis.
 const LLMProvider = "mistral" // Scanner periodically scores direct-message conversations.
+
+// AlertClaimLease is the duration a replica's CAS on alert_claim_at is
+// considered valid. The SPOF GAP C fix — see
+// infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md — uses a CAS row that is
+// stamped at dispatch and cleared on success/failure. A 60s lease gives
+// the Telegram API call (long-tail latency in practice ~1–5s, but
+// defence-in-depth for cold starts) enough time to complete while
+// keeping the auto-recovery window short if a replica crashes mid-send.
+//
+// SENTIMENT_SCANNER_INTERVAL defaults to 5m so a 60s lease is ~5x
+// smaller than the typical retry gap; any replica that holds the lease
+// past 60s loses it on the next scan without operator intervention.
+const AlertClaimLease = 60 * time.Second
+
 type Scanner struct {
 	repo      ports.SentimentScannerRepository
 	llm       ports.LLMService
@@ -235,14 +249,43 @@ func (s *Scanner) scoreOne(ctx context.Context, convID string) {
 	}
 
 	if score <= s.cfg.AlertThreshold && s.notifier != nil {
-		// Check if we should send an alert (score <= threshold AND no recent alert).
-		lastAlert, err := s.repo.FetchLastAlertSentAt(ctx, convID)
+		// SPOF GAP C fix: atomic CAS BEFORE we fire the goroutine.
+		// Two replicas scanning the same conversation now race on a
+		// single SQL UPDATE that sets alert_claim_at iff the row is
+		// unclaimed (or its claim is older than AlertClaimLease).
+		// Exactly one replica's UPDATE affects 1 row; only that
+		// replica proceeds. The others see claimed=false and skip,
+		// closing the duplicate-alert TOCTOU that the pre-fix flow
+		// had (FetchLastAlertSentAt → send → MarkAlertSent was a
+		// non-atomic check-then-act).
+		claimed, err := s.repo.ClaimAlert(ctx, convID, AlertClaimLease)
 		if err != nil {
-			slog.Warn("sentiment: fetch last alert sent failed", "conv_id", convID, "error", err)
+			slog.Warn("sentiment: claim alert failed", "conv_id", convID, "error", err)
 		}
-		if lastAlert != nil && time.Since(*lastAlert) < s.cfg.Cooldown {
-			slog.Debug("sentiment: skipping duplicate alert", "conv_id", convID, "last_alert", *lastAlert)
-		} else {
+		switch {
+		case !claimed:
+			// Another replica is mid-dispatch. Skip the alert path
+			// entirely; scoring and metric updates below still run.
+			slog.Debug("sentiment: alert already claimed by another replica; skipping", "conv_id", convID)
+		default:
+			// Long-form cooldown check (default 24h). FetchLastAlertSentAt
+			// only runs on the claim winner — losers skip both this read
+			// and the alert entirely.
+			lastAlert, err := s.repo.FetchLastAlertSentAt(ctx, convID)
+			if err != nil {
+				slog.Warn("sentiment: fetch last alert sent failed", "conv_id", convID, "error", err)
+			}
+			if lastAlert != nil && time.Since(*lastAlert) < s.cfg.Cooldown {
+				// Another replica already alerted within cooldown — release
+				// the claim so we don't block future ticks. The cooldown
+				// still applies (a different replica's MarkAlertSent is
+				// already in last_alert_sent_at).
+				slog.Debug("sentiment: skipping duplicate alert (cooldown)", "conv_id", convID, "last_alert", *lastAlert)
+				if err := s.repo.ReleaseAlertClaim(ctx, convID); err != nil {
+					slog.Warn("sentiment: release alert claim failed", "conv_id", convID, "error", err)
+				}
+				break
+			}
 			emailA, emailB, err := s.repo.FetchParticipantEmails(ctx, convID)
 			if err != nil {
 				slog.Warn("sentiment: fetch participant emails failed", "conv_id", convID, "error", err)
@@ -252,12 +295,27 @@ func (s *Scanner) scoreOne(ctx context.Context, convID string) {
 			go func(id string, sc int16, r string, eA, eB string) {
 				defer s.alertWG.Done()
 				if err := s.notifier.SendSentimentAlert(id, sc, r, eA, eB); err != nil {
-					slog.Warn("sentiment: alert failed", "conv_id", id, "error", err)
+					// Send failed: release the claim so a subsequent tick
+					// can retry (within the long-form cooldown). Without
+					// this, the lease would block retries until it
+					// expired and the alert would be effectively lost.
+					slog.Warn("sentiment: alert failed; releasing claim for retry", "conv_id", id, "error", err)
+					metrics.IncrSentimentAlertFailure("send_error")
+					if relErr := s.repo.ReleaseAlertClaim(context.Background(), id); relErr != nil {
+						slog.Warn("sentiment: release alert claim after failure failed", "conv_id", id, "error", relErr)
+					}
+					return
+				}
+				// Success: persist the cooldown stamp AND clear the claim.
+				// Clearing keeps the row tidy — the lease would auto-expire
+				// anyway but a NULL column signals "no in-flight send".
+				if err := s.repo.MarkAlertSent(context.Background(), id); err != nil {
+					slog.Warn("sentiment: mark alert sent failed", "conv_id", id, "error", err)
+				}
+				if relErr := s.repo.ReleaseAlertClaim(context.Background(), id); relErr != nil {
+					slog.Warn("sentiment: release alert claim after success failed", "conv_id", id, "error", relErr)
 				}
 			}(convID, score, reason, emailA, emailB)
-			if err := s.repo.MarkAlertSent(ctx, convID); err != nil {
-				slog.Warn("sentiment: mark alert sent failed", "conv_id", convID, "error", err)
-			}
 		}
 	}
 

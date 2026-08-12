@@ -19,10 +19,10 @@ const maxFeedbackMessageLength = 2000
 type FeedbackHandler struct {
 	repo        ports.FeedbackRepository
 	notifier    ports.Notifier
-	rateLimiter *ratelimit.RateLimiter
+	rateLimiter ratelimit.Limiter
 }
 
-func NewFeedbackHandler(repo ports.FeedbackRepository, notifier ports.Notifier, rateLimiter *ratelimit.RateLimiter) *FeedbackHandler {
+func NewFeedbackHandler(repo ports.FeedbackRepository, notifier ports.Notifier, rateLimiter ratelimit.Limiter) *FeedbackHandler {
 	return &FeedbackHandler{repo: repo, notifier: notifier, rateLimiter: rateLimiter}
 }
 

@@ -222,6 +222,11 @@ func (m *MockPrompts) Update(_ context.Context, _, _ string) (*core.SystemPrompt
 	return m.SP, nil
 }
 
+// InvalidateCache is the no-op SPOF GAP B implementation. Real cache
+// invalidation is exercised by integration tests; unit tests don't need
+// to model it.
+func (m *MockPrompts) InvalidateCache(_ context.Context) error { return nil }
+
 // ── Broker fake (Strategy A) ────────────────────────────────────────
 // MockBroker records Publish calls and delivers to subscribers.
 // ActiveConnections tracks the live subscriber count and is decremented

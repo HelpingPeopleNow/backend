@@ -37,17 +37,27 @@ var registry = struct {
 	reembedCompleted map[string]*counter
 
 	// Sentiment metrics
-	sentimentEnabled map[string]*gauge
-	sentimentScored  map[string]*counter
-	sentimentLatency map[string]*histogram
+	sentimentEnabled   map[string]*gauge
+	sentimentScored    map[string]*counter
+	sentimentLatency   map[string]*histogram
+	sentimentAlertFail map[string]*counter
+
+	// Rate limiter metrics — incremented when a shared (Redis-backed)
+	// limiter falls back to its in-process replica-local bucket because
+	// the Redis call failed. SPOF GAP D — see
+	// infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md.
+	rateLimitFallback map[string]*counter
 }{
 	reembedEnabled:   make(map[string]*gauge),
 	reembedSkipped:   make(map[string]*counter),
 	reembedCompleted: make(map[string]*counter),
 
-	sentimentEnabled: make(map[string]*gauge),
-	sentimentScored:  make(map[string]*counter),
-	sentimentLatency: make(map[string]*histogram),
+	sentimentEnabled:   make(map[string]*gauge),
+	sentimentScored:    make(map[string]*counter),
+	sentimentLatency:   make(map[string]*histogram),
+	sentimentAlertFail: make(map[string]*counter),
+
+	rateLimitFallback: make(map[string]*counter),
 }
 
 // defaultBuckets for latency histograms (seconds).
@@ -150,6 +160,27 @@ func ObserveSentimentLatency(d time.Duration) {
 	observeValue(h, d.Seconds())
 }
 
+// IncrSentimentAlertFailure increments sentiment_alert_failures_total.
+// Reason values: "send_error" — the Telegram API call returned an error
+// and the alert_claim_at lease was released so the next scanner tick
+// can retry (SPOF GAP C fix).
+func IncrSentimentAlertFailure(reason string) {
+	registry.Lock()
+	defer registry.Unlock()
+	getCounter(registry.sentimentAlertFail, reason).value++
+}
+
+// IncrRateLimitFallback increments rate_limit_fallback_total when a
+// shared (Redis-backed) limiter falls back to its in-process bucket
+// because of a Redis error (SPOF GAP D — see
+// infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md). Reason values:
+// "redis_error" — script eval / ping failure.
+func IncrRateLimitFallback(reason string) {
+	registry.Lock()
+	defer registry.Unlock()
+	getCounter(registry.rateLimitFallback, reason).value++
+}
+
 // Render returns Prometheus text-format lines for all metrics in this package.
 // Called by the main metricsHandler so Grafana can scrape them.
 func Render() string {
@@ -202,6 +233,22 @@ func Render() string {
 		metricType: "histogram",
 		keys:       []string{"dummy"},
 		histograms: registry.sentimentLatency,
+	}))
+
+	write(renderFamily(family{
+		name:       "sentiment_alert_failures_total",
+		help:       "Total sentiment alert send failures by reason (claim released for retry).",
+		metricType: "counter",
+		keys:       []string{"reason"},
+		counters:   registry.sentimentAlertFail,
+	}))
+
+	write(renderFamily(family{
+		name:       "rate_limit_fallback_total",
+		help:       "Total rate-limit Allow() calls that fell back to in-process bucket due to Redis error (SPOF GAP D).",
+		metricType: "counter",
+		keys:       []string{"reason"},
+		counters:   registry.rateLimitFallback,
 	}))
 
 	return sb.String()
