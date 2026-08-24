@@ -232,8 +232,30 @@ func (s *SearchService) Search(
 	}
 
 	filters := searchFiltersFromJSON(searchParams)
+	filters.City = strings.TrimSpace(filters.City)
+	cityFromMessage := filters.City != ""
 	if filters.City == "" {
-		filters.City = clientCity
+		filters.City = strings.TrimSpace(clientCity)
+	}
+	if filters.City == "" {
+		answer := missingCityAnswer(lang)
+		convID := ""
+		if userID != "" {
+			id, err := s.chats.SaveMessages(ctx, userID, "client-find", message, answer, conversationID, nil, nil, "")
+			if err != nil {
+				slog.Warn("search: save conversation failed (missing city)", "error", err)
+			} else {
+				convID = id
+			}
+		}
+		return &SearchResult{Answer: answer, ConversationID: convID, Branch: "ilike"}, nil
+	}
+	// A city extracted from the user's search message becomes the user's
+	// saved client city so the next search can use it as the default.
+	if cityFromMessage && userID != "" {
+		if err := s.profiles.UpsertClientProfile(ctx, userID, map[string]interface{}{"city": filters.City}); err != nil {
+			slog.Warn("search: save client city failed", "user_id", userID, "city", filters.City, "error", err)
+		}
 	}
 	// VECTOR_SEARCH_PLAN Phase 1: explicit GPS precedence.
 	// 1. request coords (browser geolocation, most current)
@@ -407,6 +429,13 @@ func (s *SearchService) Search(
 	)
 
 	return result, nil
+}
+
+func missingCityAnswer(lang string) string {
+	if lang == "en" {
+		return "Which city should I search in?"
+	}
+	return "¿En qué ciudad debo buscar?"
 }
 
 // SearchCacheSize returns the current size of the search-cache. Surfaced

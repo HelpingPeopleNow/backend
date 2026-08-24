@@ -146,6 +146,28 @@ func TestSearchConversationalNoFilters(t *testing.T) {
 	assert.Equal(t, "s2", result.ConversationID)
 }
 
+func TestSearchMissingCityAsksBeforeQuery(t *testing.T) {
+	llm := &testingutil.MockLLM{Answer: `[SEARCH]{"profession":"plumber","city":""}[/SEARCH]`}
+	profiles := &testingutil.MockProfiles{Workers: []core.WorkerProfile{{ID: "w1"}}}
+	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+
+	result, err := svc.Search(t.Context(), "user-1", "I need a plumber", nil, "", "en", "", nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "Which city should I search in?", result.Answer)
+	assert.Nil(t, result.Workers)
+}
+
+func TestSearchSavesCityFromUserMessage(t *testing.T) {
+	llm := &testingutil.MockLLM{Answer: `[SEARCH]{"profession":"plumber","city":"Madrid"}[/SEARCH]`}
+	profiles := &testingutil.MockProfiles{}
+	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
+
+	_, err := svc.Search(t.Context(), "user-1", "I need a plumber in Madrid", nil, "", "en", "", nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "user-1", profiles.UpsertedClientID)
+	assert.Equal(t, "Madrid", profiles.UpsertedClientMap["city"])
+}
+
 func TestSearchLLMError(t *testing.T) {
 	llm := &testingutil.MockLLM{AskErr: assert.AnError}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})

@@ -53,7 +53,7 @@ func TestSearchConversationalNoUserID(t *testing.T) {
 // ── Search cache behavior ────────────────────────────────────────────
 
 func TestSearchCacheHit(t *testing.T) {
-	llm := &testingutil.MockLLM{Answer: "[SEARCH]{\"profession\":\"plumber\"}[/SEARCH]"}
+	llm := &testingutil.MockLLM{Answer: "[SEARCH]{\"profession\":\"plumber\",\"city\":\"Madrid\"}[/SEARCH]"}
 	chatRepo := &testingutil.MockChatRepo{ReturnID: "s1"}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
 
