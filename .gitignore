@@ -5,3 +5,11 @@ server
 cov.out
 coverage.out
 fmt.out
+
+# Environment files — the live env file is `.env` (never tracked); only `*.example` templates are tracked
+.env
+.env.*
+*.env
+secrets/
+!.env.example
+!.env.*.example
