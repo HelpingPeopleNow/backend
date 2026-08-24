@@ -3,6 +3,7 @@ package metrics
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSetReembedEnabledTrue(t *testing.T) {
@@ -78,5 +79,28 @@ func TestRenderIncludesHelpAndType(t *testing.T) {
 	}
 	if !strings.Contains(out, "# TYPE reembed_completed_total counter") {
 		t.Fatal("expected TYPE line for reembed_completed_total")
+	}
+}
+
+func TestSentimentAndRateLimitMetrics(t *testing.T) {
+	SetSentimentEnabled(true)
+	SetSentimentEnabled(false)
+	IncrSentimentScored("ok")
+	IncrSentimentScored("error")
+	ObserveSentimentLatency(250 * time.Millisecond)
+	IncrSentimentAlertFailure("send_error")
+	IncrRateLimitFallback("redis_error")
+
+	out := Render()
+	for _, name := range []string{
+		"sentiment_enabled",
+		"sentiment_scored_total",
+		"sentiment_latency_seconds",
+		"sentiment_alert_failures_total",
+		"rate_limit_fallback_total",
+	} {
+		if !strings.Contains(out, name) {
+			t.Fatalf("expected %s in render output", name)
+		}
 	}
 }
