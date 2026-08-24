@@ -219,6 +219,13 @@ END $$;
 		slog.Warn("migration: failed to drop system_prompts.helper_prompt", "error", err)
 	}
 
+	// Drop vestigial client_profiles.preferred_contact column. The field was
+	// never wired into the Go model (ClientProfile.MergeFields drops it), so
+	// collected values were silently discarded. See core/client.go.
+	if err := db.Exec(`ALTER TABLE client_profiles DROP COLUMN IF EXISTS preferred_contact`).Error; err != nil {
+		slog.Warn("migration: failed to drop client_profiles.preferred_contact", "error", err)
+	}
+
 	// Direct messaging migration — AutoMigrate creates tables if they don't exist
 	// and adds missing columns/indexes on existing ones. No DROP so data persists
 	// across restarts. The old role-based schema (client_id/worker_profile_id) was

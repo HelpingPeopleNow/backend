@@ -216,7 +216,6 @@ POST /api/v1/chat { mode: "client_intake" } ──► ChatHandler.ServeHTTP
 | City | `city` | string |
 | Address | `address` | string |
 | Bio | `bio` | string |
-| Preferred Contact | `preferred_contact` | string |
 | Property Type | `property_type` | string |
 | Notes | `notes` | string |
 | Latitude | `latitude` | number (float64) — GPS coordinate for distance-based search |

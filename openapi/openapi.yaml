@@ -1121,7 +1121,6 @@ components:
         city: { type: string }
         address: { type: string }
         bio: { type: string }
-        preferred_contact: { type: string }
         property_type: { type: string }
         notes: { type: string }
         latitude: { type: number, format: double }
