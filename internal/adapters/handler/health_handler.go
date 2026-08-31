@@ -19,15 +19,26 @@ type llmHealthChecker interface {
 	Health(ctx context.Context) error
 }
 
+// deepProbeChecker is an optional capability (OBSERVABILITY_AUDIT_REPORT.md
+// §3.2/§4 roadmap item 5): implemented by *llm.GRPCLLMService but checked via
+// type assertion rather than added to llmHealthChecker/ports.LLMService so
+// the many ports.LLMService test fakes across internal/services and
+// internal/testingutil don't all need a new method.
+type deepProbeChecker interface {
+	DeepProbeStatus(ctx context.Context) (string, map[string]string, error)
+}
+
 func NewHealthHandler(db *gorm.DB, llm llmHealthChecker) *HealthHandler {
 	return &HealthHandler{db: db, llm: llm}
 }
 
 type healthResponse struct {
-	Status     string            `json:"status"`
-	Postgres   string            `json:"postgres"`
-	GRPCHelper string            `json:"grpc_helper"`
-	Details    map[string]string `json:"details,omitempty"`
+	Status           string            `json:"status"`
+	Postgres         string            `json:"postgres"`
+	GRPCHelper       string            `json:"grpc_helper"`
+	DeepProbe        string            `json:"deep_probe,omitempty"`
+	DeepProbeResults map[string]string `json:"deep_probe_results,omitempty"`
+	Details          map[string]string `json:"details,omitempty"`
 }
 
 func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -56,6 +67,21 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := h.llm.Health(ctx); err != nil {
 		resp.GRPCHelper = "down"
 		slog.Error("health: helper gRPC degraded", "error", err)
+	}
+
+	// OBSERVABILITY_AUDIT_REPORT.md §3.2/§4 roadmap item 5: surface the
+	// helper's synthetic deep-probe result. Informational only — a deep
+	// probe failure does NOT flip resp.Status, mirroring the helper's own
+	// /health (the ChatLLMErrorsCritical / HelperDeepProbeFailed
+	// Prometheus rules already page on this signal directly via the
+	// helper_deep_probe_success gauge).
+	if dp, ok := h.llm.(deepProbeChecker); ok {
+		if status, results, err := dp.DeepProbeStatus(ctx); err != nil {
+			slog.Warn("health: deep probe status unavailable", "error", err)
+		} else {
+			resp.DeepProbe = status
+			resp.DeepProbeResults = results
+		}
 	}
 
 	if resp.Postgres == "ok" && resp.GRPCHelper == "ok" {

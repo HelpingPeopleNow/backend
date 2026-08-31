@@ -261,11 +261,13 @@ Composite health check — no auth required. Pings PostgreSQL and the helper gRP
 
 ```bash
 curl http://localhost:8081/health
-# → 200 {"status":"ok","postgres":"ok","grpc_helper":"ok","details":{}}
+# → 200 {"status":"ok","postgres":"ok","grpc_helper":"ok","deep_probe":"ok","deep_probe_results":{"opencode0":"ok","ollama":"ok"}}
 # → 503 {"status":"degraded","postgres":"ok","grpc_helper":"down","details":{"grpc_helper_err":"<msg>"}}
 ```
 
 Returns `200 OK` when both PostgreSQL and the helper gRPC endpoint are reachable. Returns `503 Service Unavailable` when either is `down`; the `details` object (`map[string]string`, omitted from JSON when empty) carries `postgres_err` / `grpc_helper_err` keys with the per-component error message. `Content-Type: application/json`. Note: a storage or gRPC outage is reflected here even though `:8081` itself can still respond.
+
+`deep_probe` / `deep_probe_results` (both `omitempty`) surface the helper's synthetic 1-token `Ask()` probe per LLM provider (OBSERVABILITY_AUDIT_REPORT.md §3.2/§4 roadmap item 5) — catches Cloudflare/WAF-class blocks on the real inference path that a shallow `/models` check would miss. **Informational only**: a `deep_probe: "degraded"` value does NOT flip `status`/the HTTP code, mirroring the helper's own `/health`. Alerting on this signal is via the `HelperDeepProbeFailed` Prometheus rule (reads `helper_deep_probe_success` directly), not via this endpoint's status code. Omitted entirely if the helper `/health` endpoint is unreachable or doesn't report deep-probe data.
 
 ### Worker Profile Intake Chat
 

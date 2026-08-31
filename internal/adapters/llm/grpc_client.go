@@ -313,6 +313,45 @@ func (s *GRPCLLMService) AdapterNames(ctx context.Context) ([]string, error) {
 	return payload.LoadedAdapters, nil
 }
 
+// DeepProbeStatus returns the helper's synthetic deep-probe status
+// (OBSERVABILITY_AUDIT_REPORT.md §3.2) as reported by the "deep_probe" /
+// "deep_probe_results" fields of the helper's /health endpoint. Unlike
+// Health/AdapterNames it is surfaced as informational-only by callers —
+// mirroring the helper's own /health, which never lets a deep-probe
+// failure flip its own overall status/HTTP code.
+func (s *GRPCLLMService) DeepProbeStatus(ctx context.Context) (string, map[string]string, error) {
+	slog.Info("llm: DeepProbeStatus")
+	if s.healthURL == "" {
+		return "", nil, fmt.Errorf("no health URL configured")
+	}
+
+	healthCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(healthCtx, http.MethodGet, s.healthURL, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable {
+		return "", nil, fmt.Errorf("helper health returned %s", http.StatusText(resp.StatusCode))
+	}
+
+	var payload struct {
+		DeepProbe        string            `json:"deep_probe"`
+		DeepProbeResults map[string]string `json:"deep_probe_results"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", nil, fmt.Errorf("decode helper health response: %w", err)
+	}
+	return payload.DeepProbe, payload.DeepProbeResults, nil
+}
+
 // attachOutgoingRequestID returns a derived context that carries the
 // per-request correlation ID as gRPC metadata on the outbound call. Logs
 // on the helper side can then grep for the same ID across both services.

@@ -19,7 +19,7 @@ func TestHandleLLMErrorRateLimit(t *testing.T) {
 		"Rate Limit exceeded",
 	} {
 		rec := httptest.NewRecorder()
-		handleLLMError(rec, errors.New(msg))
+		handleLLMError(rec, errors.New(msg), "opencode0")
 		assert.Equal(t, http.StatusOK, rec.Code, "msg: %s", msg)
 
 		var resp map[string]string
@@ -33,7 +33,7 @@ func TestHandleLLMErrorRateLimit(t *testing.T) {
 // the full error via slog.
 func TestHandleLLMErrorGeneric(t *testing.T) {
 	rec := httptest.NewRecorder()
-	handleLLMError(rec, errors.New("something broke"))
+	handleLLMError(rec, errors.New("something broke"), "opencode0")
 	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
 
 	var resp map[string]string

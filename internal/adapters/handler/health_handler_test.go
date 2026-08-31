@@ -23,6 +23,19 @@ type fakeLLMHealth struct {
 
 func (f *fakeLLMHealth) Health(_ context.Context) error { return f.err }
 
+// fakeLLMHealthWithDeepProbe additionally implements deepProbeChecker, so
+// the /health handler's type assertion picks it up (roadmap item 5).
+type fakeLLMHealthWithDeepProbe struct {
+	fakeLLMHealth
+	deepProbeStatus  string
+	deepProbeResults map[string]string
+	deepProbeErr     error
+}
+
+func (f *fakeLLMHealthWithDeepProbe) DeepProbeStatus(_ context.Context) (string, map[string]string, error) {
+	return f.deepProbeStatus, f.deepProbeResults, f.deepProbeErr
+}
+
 // --- fake sql driver for unit tests ---
 
 type fakeDriver struct{}
@@ -190,4 +203,66 @@ func TestHealthJSONShapeOnOk(t *testing.T) {
 	}
 	assert.False(t, strings.Contains(body, `"details":{`),
 		"on ok path, details object must be omitted, not empty")
+}
+
+// TestHealthSurfacesDeepProbeWhenSupported (roadmap item 5): when the LLM
+// dependency also implements deepProbeChecker, /health surfaces deep_probe
+// and deep_probe_results in the JSON body.
+func TestHealthSurfacesDeepProbeWhenSupported(t *testing.T) {
+	gdb := openFakeGorm(t)
+	llm := &fakeLLMHealthWithDeepProbe{
+		deepProbeStatus:  "degraded",
+		deepProbeResults: map[string]string{"opencode0": "ok", "ollama": "down"},
+	}
+	h := NewHealthHandler(gdb, llm)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	// Deep probe is informational-only: it must NOT flip the overall
+	// status/HTTP code (mirrors the helper's own /health behaviour).
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp healthResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.Equal(t, "ok", resp.Status)
+	assert.Equal(t, "degraded", resp.DeepProbe)
+	assert.Equal(t, map[string]string{"opencode0": "ok", "ollama": "down"}, resp.DeepProbeResults)
+}
+
+// TestHealthOmitsDeepProbeWhenUnsupported: a plain llmHealthChecker (no
+// DeepProbeStatus method) must not break /health — the fields are simply
+// omitted (`omitempty`).
+func TestHealthOmitsDeepProbeWhenUnsupported(t *testing.T) {
+	gdb := openFakeGorm(t)
+	llm := &fakeLLMHealth{err: nil}
+	h := NewHealthHandler(gdb, llm)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body := rec.Body.String()
+	assert.False(t, strings.Contains(body, "deep_probe"),
+		"deep_probe fields must be omitted when the LLM dependency doesn't support DeepProbeStatus")
+}
+
+// TestHealthDeepProbeErrorDoesNotFailRequest: an error fetching deep-probe
+// status is logged (not asserted here) but must not degrade /health.
+func TestHealthDeepProbeErrorDoesNotFailRequest(t *testing.T) {
+	gdb := openFakeGorm(t)
+	llm := &fakeLLMHealthWithDeepProbe{deepProbeErr: assert.AnError}
+	h := NewHealthHandler(gdb, llm)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp healthResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.Equal(t, "ok", resp.Status)
+	assert.Empty(t, resp.DeepProbe)
 }

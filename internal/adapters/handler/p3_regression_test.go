@@ -2,12 +2,15 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"regexp"
 	"testing"
 
+	"github.com/HelpingPeopleNow/backend/internal/services"
+	"github.com/HelpingPeopleNow/backend/internal/testingutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -99,6 +102,43 @@ func TestChatLLMDurationObservedOnClientIntake(t *testing.T) {
 	text := mrec.Body.String()
 	assert.Contains(t, text, `mode="client_intake"`,
 		"chat_llm_duration_seconds must include the client_intake series — got: %s", text)
+}
+
+// =============================================================================
+// Observability audit — chat_llm_errors_total wiring (previously dead code).
+// =============================================================================
+//
+// Strategy: force ProcessIntake/Search to fail via MockLLM.AskErr and verify
+// the resulting 503 response also increments chat_llm_errors_total with the
+// expected error_type label. See infra/docs/OBSERVABILITY_AUDIT_REPORT.md §1.4.
+
+func TestChatLLMErrorsIncrementedOnFailure(t *testing.T) {
+	mockLLM := &testingutil.MockLLM{AskErr: errors.New("helper unreachable: connection refused")}
+	profiles := &testingutil.MockProfiles{}
+	chats := &testingutil.MockChatRepo{ReturnID: "conv-err"}
+	prompts := &testingutil.MockPrompts{}
+	intakeSvc := services.NewIntakeService(mockLLM, profiles, chats, prompts)
+	searchSvc := services.NewSearchService(mockLLM, profiles, chats, prompts)
+	h := NewChatHandler(intakeSvc, searchSvc, prompts, nil)
+
+	body := mustJSON(t, map[string]interface{}{
+		"mode":    "worker_intake",
+		"message": "hello",
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, authReq(http.MethodPost, "/api/v1/chat", body))
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+
+	mux := http.NewServeMux()
+	RegisterMetricsRoutes(mux, "")
+	mrec := httptest.NewRecorder()
+	mux.ServeHTTP(mrec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	text := mrec.Body.String()
+
+	assert.Contains(t, text, "chat_llm_errors_total",
+		"metrics output must include chat_llm_errors_total (dead-metric wiring fix)")
+	assert.Contains(t, text, `error_type="unreachable"`,
+		"chat_llm_errors_total must classify a connection-refused error as unreachable — got: %s", text)
 }
 
 // =============================================================================

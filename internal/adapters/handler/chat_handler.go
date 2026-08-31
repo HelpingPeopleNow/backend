@@ -149,7 +149,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "worker_intake":
 		result, err := h.intakeService.ProcessIntake(r.Context(), userID, services.IntakeModeWorker, req.Message, history, provider, req.Lang, req.ConversationID, req.Latitude, req.Longitude)
 		if err != nil {
-			handleLLMError(w, err)
+			handleLLMError(w, err, provider)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -161,7 +161,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "client_intake":
 		result, err := h.intakeService.ProcessIntake(r.Context(), userID, services.IntakeModeClient, req.Message, history, provider, req.Lang, req.ConversationID, req.Latitude, req.Longitude)
 		if err != nil {
-			handleLLMError(w, err)
+			handleLLMError(w, err, provider)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -180,7 +180,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// covers intake + search uniformly (P1-1 audit fix).
 		result, err := h.searchService.Search(r.Context(), userID, req.Message, history, provider, req.Lang, req.ConversationID, req.Latitude, req.Longitude)
 		if err != nil {
-			handleLLMError(w, err)
+			handleLLMError(w, err, provider)
 			return
 		}
 		// VECTOR_SEARCH_PLAN §12.3 / Idea C — wire the orphaned vector

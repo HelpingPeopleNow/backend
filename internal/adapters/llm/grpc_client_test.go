@@ -63,6 +63,70 @@ func TestHealthTimeout(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// --- DeepProbeStatus tests (OBSERVABILITY_AUDIT_REPORT.md roadmap item 5) ---
+
+func TestDeepProbeStatusNoURL(t *testing.T) {
+	svc := NewGRPCLLMService("localhost:50051", "").(*GRPCLLMService)
+	status, results, err := svc.DeepProbeStatus(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no health URL")
+	assert.Empty(t, status)
+	assert.Nil(t, results)
+}
+
+func TestDeepProbeStatusOK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"deep_probe":"ok","deep_probe_results":{"opencode0":"ok","ollama":"ok"}}`))
+	}))
+	defer srv.Close()
+
+	svc := NewGRPCLLMService("localhost:50051", srv.URL).(*GRPCLLMService)
+	status, results, err := svc.DeepProbeStatus(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "ok", status)
+	assert.Equal(t, map[string]string{"opencode0": "ok", "ollama": "ok"}, results)
+}
+
+// TestDeepProbeStatusOn503 mirrors the helper's own behaviour: /health can
+// return 503 (e.g. no healthy shallow adapter) while still carrying a valid
+// deep_probe payload in the body. DeepProbeStatus must still parse it.
+func TestDeepProbeStatusOn503(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"deep_probe":"degraded","deep_probe_results":{"opencode0":"down"}}`))
+	}))
+	defer srv.Close()
+
+	svc := NewGRPCLLMService("localhost:50051", srv.URL).(*GRPCLLMService)
+	status, results, err := svc.DeepProbeStatus(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "degraded", status)
+	assert.Equal(t, map[string]string{"opencode0": "down"}, results)
+}
+
+func TestDeepProbeStatusUnreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close()
+
+	svc := NewGRPCLLMService("localhost:50051", srv.URL).(*GRPCLLMService)
+	_, _, err := svc.DeepProbeStatus(context.Background())
+	assert.Error(t, err)
+}
+
+func TestDeepProbeStatusBadJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`not json`))
+	}))
+	defer srv.Close()
+
+	svc := NewGRPCLLMService("localhost:50051", srv.URL).(*GRPCLLMService)
+	_, _, err := svc.DeepProbeStatus(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decode helper health response")
+}
+
 func TestNewGRPCLLMServiceDefaultTimeout(t *testing.T) {
 	os.Unsetenv("HELPER_TIMEOUT_SECONDS")
 	svc := NewGRPCLLMService("localhost:50051", "http://localhost:8080/health")
