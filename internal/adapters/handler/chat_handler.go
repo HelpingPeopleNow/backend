@@ -123,9 +123,9 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	slog.Info("chat request", "mode", mode, "msg_len", len(req.Message), "history_len", len(req.History), "conv_id", req.ConversationID)
 	IncrChatRequests(mode)
 
-	provider := ""
+	var providers []string
 	if sp, err := h.prompts.Get(r.Context()); err == nil {
-		provider = sp.LLMProvider
+		providers = sp.ParsedProviders()
 	}
 	history := convertHistory(req.History)
 
@@ -137,19 +137,22 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Search mode measures both Pass 1 + Pass 2 wall-clock; that's the
 	// user-visible latency and the right thing to alert on.
 	//
-	// The deferred closure takes provider+mode as explicit args (snapshot
-	// at registration time) so a future edit that reassigns either inside
-	// the switch cannot leak a post-assignment value into the histogram.
+	// The deferred closure takes a snapshot of the first provider (or "")
+	// for the histogram label, and mode, at registration time.
+	providerSnap := ""
+	if len(providers) > 0 {
+		providerSnap = providers[0]
+	}
 	llmStart := time.Now()
-	defer func(providerSnap, modeSnap string, start time.Time) {
-		ObserveChatLLMDuration(providerSnap, modeSnap, time.Since(start).Seconds())
-	}(provider, mode, llmStart)
+	defer func(pSnap, modeSnap string, start time.Time) {
+		ObserveChatLLMDuration(pSnap, modeSnap, time.Since(start).Seconds())
+	}(providerSnap, mode, llmStart)
 
 	switch mode {
 	case "worker_intake":
-		result, err := h.intakeService.ProcessIntake(r.Context(), userID, services.IntakeModeWorker, req.Message, history, provider, req.Lang, req.ConversationID, req.Latitude, req.Longitude)
+		result, err := h.intakeService.ProcessIntake(r.Context(), userID, services.IntakeModeWorker, req.Message, history, providers, req.Lang, req.ConversationID, req.Latitude, req.Longitude)
 		if err != nil {
-			handleLLMError(w, err, provider)
+			handleLLMError(w, err, providerSnap)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -159,9 +162,9 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case "client_intake":
-		result, err := h.intakeService.ProcessIntake(r.Context(), userID, services.IntakeModeClient, req.Message, history, provider, req.Lang, req.ConversationID, req.Latitude, req.Longitude)
+		result, err := h.intakeService.ProcessIntake(r.Context(), userID, services.IntakeModeClient, req.Message, history, providers, req.Lang, req.ConversationID, req.Latitude, req.Longitude)
 		if err != nil {
-			handleLLMError(w, err, provider)
+			handleLLMError(w, err, providerSnap)
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -178,9 +181,9 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// Per-user rate limit is enforced upstream in ServeHTTP so it
 		// covers intake + search uniformly (P1-1 audit fix).
-		result, err := h.searchService.Search(r.Context(), userID, req.Message, history, provider, req.Lang, req.ConversationID, req.Latitude, req.Longitude)
+		result, err := h.searchService.Search(r.Context(), userID, req.Message, history, providers, req.Lang, req.ConversationID, req.Latitude, req.Longitude)
 		if err != nil {
-			handleLLMError(w, err, provider)
+			handleLLMError(w, err, providerSnap)
 			return
 		}
 		// VECTOR_SEARCH_PLAN §12.3 / Idea C — wire the orphaned vector

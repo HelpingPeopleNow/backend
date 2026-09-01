@@ -19,12 +19,12 @@ func NewSystemPromptHandler(prompts ports.SystemPromptRepository) *SystemPromptH
 }
 
 type systemPromptsDTO struct {
-	WorkerProfilePrompt          string `json:"worker_profile_prompt"`
-	ClientProfilePrompt          string `json:"client_profile_prompt"`
-	FindTraderSearchPrompt       string `json:"find_trader_search_prompt"`
-	FindTraderPresentationPrompt string `json:"find_trader_presentation_prompt"`
-	LLMProvider                  string `json:"llm_provider"`
-	UpdatedAt                    string `json:"updated_at"`
+	WorkerProfilePrompt          string   `json:"worker_profile_prompt"`
+	ClientProfilePrompt          string   `json:"client_profile_prompt"`
+	FindTraderSearchPrompt       string   `json:"find_trader_search_prompt"`
+	FindTraderPresentationPrompt string   `json:"find_trader_presentation_prompt"`
+	LLMProviders                 []string `json:"llm_providers"`
+	UpdatedAt                    string   `json:"updated_at"`
 }
 
 func toSystemDTO(sp *core.SystemPrompt) systemPromptsDTO {
@@ -33,7 +33,7 @@ func toSystemDTO(sp *core.SystemPrompt) systemPromptsDTO {
 		ClientProfilePrompt:          sp.ClientProfilePrompt,
 		FindTraderSearchPrompt:       sp.FindTraderSearchPrompt,
 		FindTraderPresentationPrompt: sp.FindTraderPresentationPrompt,
-		LLMProvider:                  sp.LLMProvider,
+		LLMProviders:                 sp.ParsedProviders(),
 		UpdatedAt:                    sp.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	}
 }
@@ -47,7 +47,8 @@ var validColumns = map[string]string{
 }
 
 type updateSystemReq struct {
-	Content string `json:"content"`
+	Content   string   `json:"content,omitempty"`
+	Providers []string `json:"providers,omitempty"`
 }
 
 func (h *SystemPromptHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -82,21 +83,27 @@ func (h *SystemPromptHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 
 		var req updateSystemReq
-		// P2-4 (audit): reject unknown fields. The system prompts admin
-		// UI sends exactly one field (`content`); anything else is a
-		// probe or client bug and we surface it as 400.
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
-		if col != "provider" && req.Content == "" {
-			writeError(w, http.StatusBadRequest, "content cannot be empty")
-			return
+
+		var value string
+		if col == "provider" {
+			// Join the providers list to a comma-separated string.
+			// Empty slice or nil → "" (use helper default fallback chain).
+			value = strings.Join(req.Providers, ",")
+		} else {
+			if req.Content == "" {
+				writeError(w, http.StatusBadRequest, "content cannot be empty")
+				return
+			}
+			value = req.Content
 		}
 
-		sp, err := h.prompts.Update(r.Context(), columnName, req.Content)
+		sp, err := h.prompts.Update(r.Context(), columnName, value)
 		if err != nil {
 			slog.Error("system-prompt: update failed", "col", columnName, "error", err)
 			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())

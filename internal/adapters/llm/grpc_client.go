@@ -168,9 +168,9 @@ func (s *GRPCLLMService) Ask(
 	systemPrompt string,
 	userMessage string,
 	history []ports.MessagePair,
-	provider string,
+	providers []string,
 ) (*ports.LLMResponse, error) {
-	slog.Info("llm: Ask", "msg_len", len(userMessage), "history_len", len(history), "provider", provider)
+	slog.Info("llm: Ask", "msg_len", len(userMessage), "history_len", len(history), "providers", providers)
 	// F3: circuit breaker — fail fast when helper is unhealthy
 	if !s.breakerAllow() {
 		return nil, fmt.Errorf("helper circuit breaker open — search degraded")
@@ -196,7 +196,7 @@ func (s *GRPCLLMService) Ask(
 		Question:          userMessage,
 		History:           protoHistory,
 		SystemPrompt:      systemPrompt,
-		LlmProvider:       provider,
+		EnabledProviders:  providers,
 		SkipRoleDetection: true,
 	}
 

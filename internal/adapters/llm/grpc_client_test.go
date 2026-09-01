@@ -193,7 +193,7 @@ func TestAskEnsureClientFails(t *testing.T) {
 	// 2s deadline so RPC fails within test timeout, not the 20s default.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := svc.Ask(ctx, "sys", "msg", nil, "")
+	_, err := svc.Ask(ctx, "sys", "msg", nil, nil)
 	require.Error(t, err, "Ask should fail at RPC time when destination is unreachable")
 }
 
@@ -236,7 +236,7 @@ func TestBreakerOpenRejectsAsk(t *testing.T) {
 	require.Equal(t, "open", gsvc.BreakerState())
 
 	// Ask should fail immediately with breaker error, no gRPC dial attempt.
-	_, err := svc.Ask(context.Background(), "sys", "msg", nil, "")
+	_, err := svc.Ask(context.Background(), "sys", "msg", nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "breaker")
 }
@@ -278,7 +278,7 @@ func TestBreakerHalfOpenAfterCooldown(t *testing.T) {
 	// from ensureClient; error text no longer contains "gRPC dial".
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_, err := svc.Ask(ctx, "sys", "msg", nil, "")
+	_, err := svc.Ask(ctx, "sys", "msg", nil, nil)
 	require.Error(t, err, "Ask should fail at RPC time when helper is unreachable in half-open probe")
 
 	// After RPC failure in half-open, breaker goes back to open.

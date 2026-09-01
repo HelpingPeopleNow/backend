@@ -15,7 +15,7 @@ type LLMResponse struct {
 // LLMService is the outbound port for everything the backend needs from the
 // helper's LLM adapter layer. Embed is added per VECTOR_SEARCH_PLAN §8.3.
 type LLMService interface {
-	Ask(ctx context.Context, systemPrompt string, userMessage string, history []MessagePair, provider string) (*LLMResponse, error)
+	Ask(ctx context.Context, systemPrompt string, userMessage string, history []MessagePair, providers []string) (*LLMResponse, error)
 	Health(ctx context.Context) error
 
 	// AdapterNames returns the list of LLM adapters registered in the

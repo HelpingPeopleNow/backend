@@ -228,7 +228,7 @@ func (s *Scanner) scoreOne(ctx context.Context, convID string) {
 	transcript := FormatTranscript(msgs)
 	userMsg := FormatUserMessage(transcript)
 
-	resp, err := s.llm.Ask(ctx, SystemPrompt, userMsg, nil, LLMProvider)
+	resp, err := s.llm.Ask(ctx, SystemPrompt, userMsg, nil, []string{LLMProvider})
 	if err != nil {
 		slog.Warn("sentiment: llm ask failed", "conv_id", convID, "error", err)
 		metrics.IncrSentimentScored("error")

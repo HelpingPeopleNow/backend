@@ -78,7 +78,7 @@ type AskRequest struct {
 	Question          string                 `protobuf:"bytes,1,opt,name=question,proto3" json:"question,omitempty"`
 	History           []*Message             `protobuf:"bytes,2,rep,name=history,proto3" json:"history,omitempty"`
 	SystemPrompt      string                 `protobuf:"bytes,3,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`                   // loaded by backend, provided on every call
-	LlmProvider       string                 `protobuf:"bytes,4,opt,name=llm_provider,json=llmProvider,proto3" json:"llm_provider,omitempty"`                      // "ollama" | "opencode" | "" (= use env default, set by admin)
+	EnabledProviders  []string               `protobuf:"bytes,4,rep,name=enabled_providers,json=enabledProviders,proto3" json:"enabled_providers,omitempty"`       // empty = use env default fallback chain; non-empty = exact chain
 	SkipRoleDetection bool                   `protobuf:"varint,5,opt,name=skip_role_detection,json=skipRoleDetection,proto3" json:"skip_role_detection,omitempty"` // if true, don't append JSON role-detection instructions
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
@@ -135,11 +135,11 @@ func (x *AskRequest) GetSystemPrompt() string {
 	return ""
 }
 
-func (x *AskRequest) GetLlmProvider() string {
+func (x *AskRequest) GetEnabledProviders() []string {
 	if x != nil {
-		return x.LlmProvider
+		return x.EnabledProviders
 	}
-	return ""
+	return nil
 }
 
 func (x *AskRequest) GetSkipRoleDetection() bool {
@@ -416,13 +416,13 @@ const file_proto_helper_helper_proto_rawDesc = "" +
 	"\x19proto/helper/helper.proto\x12\x06helper\"7\n" +
 	"\aMessage\x12\x12\n" +
 	"\x04role\x18\x01 \x01(\tR\x04role\x12\x18\n" +
-	"\acontent\x18\x02 \x01(\tR\acontent\"\xcb\x01\n" +
+	"\acontent\x18\x02 \x01(\tR\acontent\"\xd5\x01\n" +
 	"\n" +
 	"AskRequest\x12\x1a\n" +
 	"\bquestion\x18\x01 \x01(\tR\bquestion\x12)\n" +
 	"\ahistory\x18\x02 \x03(\v2\x0f.helper.MessageR\ahistory\x12#\n" +
-	"\rsystem_prompt\x18\x03 \x01(\tR\fsystemPrompt\x12!\n" +
-	"\fllm_provider\x18\x04 \x01(\tR\vllmProvider\x12.\n" +
+	"\rsystem_prompt\x18\x03 \x01(\tR\fsystemPrompt\x12+\n" +
+	"\x11enabled_providers\x18\x04 \x03(\tR\x10enabledProviders\x12.\n" +
 	"\x13skip_role_detection\x18\x05 \x01(\bR\x11skipRoleDetection\"J\n" +
 	"\vAskResponse\x12\x16\n" +
 	"\x06answer\x18\x01 \x01(\tR\x06answer\x12#\n" +

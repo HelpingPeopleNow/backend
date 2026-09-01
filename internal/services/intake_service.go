@@ -107,7 +107,7 @@ func (s *IntakeService) ProcessIntake(
 	mode IntakeMode,
 	message string,
 	history []ports.MessagePair,
-	provider string,
+	providers []string,
 	lang string,
 	conversationID string,
 	latitude *float64,
@@ -122,7 +122,7 @@ func (s *IntakeService) ProcessIntake(
 	systemPrompt := s.selectPrompt(sp, mode)
 	systemPrompt = applyLanguage(systemPrompt, lang)
 
-	llmResp, err := s.llm.Ask(ctx, systemPrompt, message, history, provider)
+	llmResp, err := s.llm.Ask(ctx, systemPrompt, message, history, providers)
 	if err != nil {
 		return nil, fmt.Errorf("llm call: %w", err)
 	}

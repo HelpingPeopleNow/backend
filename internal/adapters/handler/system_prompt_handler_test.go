@@ -37,7 +37,7 @@ func TestSystemPromptHandlerGet(t *testing.T) {
 	var resp map[string]interface{}
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
 	assert.Equal(t, "WP", resp["worker_profile_prompt"])
-	assert.Equal(t, "ollama", resp["llm_provider"])
+	assert.Equal(t, []interface{}{"ollama"}, resp["llm_providers"])
 }
 
 func TestSystemPromptHandlerPutValidColumn(t *testing.T) {

@@ -128,7 +128,7 @@ func TestSearchTwoPassWithFilters(t *testing.T) {
 	chatRepo := &testingutil.MockChatRepo{ReturnID: "s1"}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
 
-	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, nil, "", "", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	// Two-pass: SearchResult has Workers, not DetectedFields
@@ -140,7 +140,7 @@ func TestSearchConversationalNoFilters(t *testing.T) {
 	chatRepo := &testingutil.MockChatRepo{ReturnID: "s2"}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
 
-	result, err := svc.Search(t.Context(), "user-1", "hi", nil, "", "", "", nil, nil)
+	result, err := svc.Search(t.Context(), "user-1", "hi", nil, nil, "", "", nil, nil)
 	require.NoError(t, err)
 	assert.Nil(t, result.Workers)
 	assert.Equal(t, "s2", result.ConversationID)
@@ -151,7 +151,7 @@ func TestSearchMissingCityAsksBeforeQuery(t *testing.T) {
 	profiles := &testingutil.MockProfiles{Workers: []core.WorkerProfile{{ID: "w1"}}}
 	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	result, err := svc.Search(t.Context(), "user-1", "I need a plumber", nil, "", "en", "", nil, nil)
+	result, err := svc.Search(t.Context(), "user-1", "I need a plumber", nil, nil, "en", "", nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "Which city should I search in?", result.Answer)
 	assert.Nil(t, result.Workers)
@@ -162,7 +162,7 @@ func TestSearchSavesCityFromUserMessage(t *testing.T) {
 	profiles := &testingutil.MockProfiles{}
 	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	_, err := svc.Search(t.Context(), "user-1", "I need a plumber in Madrid", nil, "", "en", "", nil, nil)
+	_, err := svc.Search(t.Context(), "user-1", "I need a plumber in Madrid", nil, nil, "en", "", nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "user-1", profiles.UpsertedClientID)
 	assert.Equal(t, "Madrid", profiles.UpsertedClientMap["city"])
@@ -172,7 +172,7 @@ func TestSearchLLMError(t *testing.T) {
 	llm := &testingutil.MockLLM{AskErr: assert.AnError}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	_, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "", nil, nil)
+	_, err := svc.Search(t.Context(), "user-1", "plumber", nil, nil, "", "", nil, nil)
 	assert.Error(t, err)
 }
 
@@ -181,7 +181,7 @@ func TestSearchPromptLoadError(t *testing.T) {
 	prompts := &testingutil.MockPrompts{GetErr: assert.AnError}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, prompts)
 
-	_, err := svc.Search(t.Context(), "user-1", "plumber", nil, "", "", "", nil, nil)
+	_, err := svc.Search(t.Context(), "user-1", "plumber", nil, nil, "", "", nil, nil)
 	assert.Error(t, err)
 }
 
@@ -192,7 +192,7 @@ func TestSearchGPSInjectionFromRequest(t *testing.T) {
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
 	lat, lng := 40.4168, -3.7038
-	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", &lat, &lng)
+	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, nil, "", "", &lat, &lng)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	// Two-pass flow executed with GPS coords injected
@@ -211,7 +211,7 @@ func TestSearchGPSInjectionFromClientProfile(t *testing.T) {
 	}
 	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, nil, "", "", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, "ilike", result.Branch)
@@ -226,7 +226,7 @@ func TestSearchEmbedFailureFallback(t *testing.T) {
 	}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	result, err := svc.Search(t.Context(), "", "need a plumber", nil, "", "", "", nil, nil)
+	result, err := svc.Search(t.Context(), "", "need a plumber", nil, nil, "", "", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, "ilike", result.Branch)
@@ -239,7 +239,7 @@ func TestSearchFindWorkersError(t *testing.T) {
 	profiles := &testingutil.MockProfiles{WorkersErr: assert.AnError}
 	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	_, err := svc.Search(t.Context(), "", "need a plumber", nil, "", "", "", nil, nil)
+	_, err := svc.Search(t.Context(), "", "need a plumber", nil, nil, "", "", nil, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "find workers")
 }
@@ -254,7 +254,7 @@ func TestSearchPass2LLMError(t *testing.T) {
 	}
 	svc := NewSearchService(llm2, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	_, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	_, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, nil, "", "", nil, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "pass 2")
 }
@@ -265,7 +265,7 @@ type pass2ErrorLLM struct {
 	callCount   int
 }
 
-func (l *pass2ErrorLLM) Ask(_ context.Context, _, _ string, _ []ports.MessagePair, _ string) (*ports.LLMResponse, error) {
+func (l *pass2ErrorLLM) Ask(_ context.Context, _, _ string, _ []ports.MessagePair, _ []string) (*ports.LLMResponse, error) {
 	l.callCount++
 	if l.callCount == 1 {
 		return &ports.LLMResponse{Answer: l.pass1Answer}, nil
@@ -285,7 +285,7 @@ func TestSearchSaveConversationError(t *testing.T) {
 	chatRepo := &testingutil.MockChatRepo{SaveErr: assert.AnError}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, chatRepo, &testingutil.MockPrompts{})
 
-	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, nil, "", "", nil, nil)
 	require.NoError(t, err)
 	// Save failed but search still returns result with empty ConversationID
 	assert.Equal(t, "", result.ConversationID)
@@ -436,7 +436,7 @@ type capturingLLM struct {
 	EmbedFn     func(ctx context.Context, text string) ([]float32, error)
 }
 
-func (l *capturingLLM) Ask(_ context.Context, _ string, message string, _ []ports.MessagePair, _ string) (*ports.LLMResponse, error) {
+func (l *capturingLLM) Ask(_ context.Context, _ string, message string, _ []ports.MessagePair, _ []string) (*ports.LLMResponse, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.messages = append(l.messages, message)
@@ -464,7 +464,7 @@ type countingLLM struct {
 	EmbedFn     func(ctx context.Context, text string) ([]float32, error)
 }
 
-func (l *countingLLM) Ask(_ context.Context, _ string, _ string, _ []ports.MessagePair, _ string) (*ports.LLMResponse, error) {
+func (l *countingLLM) Ask(_ context.Context, _ string, _ string, _ []ports.MessagePair, _ []string) (*ports.LLMResponse, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.callCount++
@@ -490,7 +490,7 @@ type dynamicLLM struct {
 	EmbedFn  func(ctx context.Context, text string) ([]float32, error)
 }
 
-func (l *dynamicLLM) Ask(_ context.Context, _ string, _ string, _ []ports.MessagePair, _ string) (*ports.LLMResponse, error) {
+func (l *dynamicLLM) Ask(_ context.Context, _ string, _ string, _ []ports.MessagePair, _ []string) (*ports.LLMResponse, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.callNum++
@@ -515,7 +515,7 @@ func TestSearchInputTruncation(t *testing.T) {
 	}
 	svc := NewSearchService(llm, &testingutil.MockProfiles{}, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	_, err := svc.Search(t.Context(), "user-1", longMsg, nil, "", "", "", nil, nil)
+	_, err := svc.Search(t.Context(), "user-1", longMsg, nil, nil, "", "", nil, nil)
 	require.NoError(t, err)
 
 	// The message passed to the LLM should be truncated + note appended.
@@ -546,7 +546,7 @@ func TestSearchFullFilterCacheHit(t *testing.T) {
 	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
 	// First search — should call LLM twice (Pass-1 + Pass-2).
-	result1, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	result1, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, nil, "", "", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result1)
 
@@ -556,7 +556,7 @@ func TestSearchFullFilterCacheHit(t *testing.T) {
 
 	// Second identical search — Pass-1 still runs (cache key needs filters),
 	// but FindWorkers and Pass-2 are skipped by the full-filter cache.
-	result2, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	result2, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, nil, "", "", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result2)
 
@@ -583,7 +583,7 @@ func TestSearchZeroResultsTemplatedMessage(t *testing.T) {
 	}
 	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
-	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	result, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, nil, "", "", nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -617,12 +617,12 @@ func TestSearchCacheKeyIncludesLang(t *testing.T) {
 	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
 	// First search in English.
-	_, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "en", "", nil, nil)
+	_, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, nil, "en", "", nil, nil)
 	require.NoError(t, err)
 
 	// Second search in Spanish with identical filters — should NOT hit the
 	// English cache; Pass-2 must run again to produce a Spanish answer.
-	_, err = svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "es", "", nil, nil)
+	_, err = svc.Search(t.Context(), "user-1", "need a plumber", nil, nil, "es", "", nil, nil)
 	require.NoError(t, err)
 
 	llm.mu.Lock()
@@ -655,7 +655,7 @@ func TestSearchCacheEviction(t *testing.T) {
 	// Searches 201–210 trigger lazy eviction of the oldest entry before each insert.
 	for i := 0; i < 210; i++ {
 		msg := fmt.Sprintf("find worker %d in city %d", i, i)
-		_, err := svc.Search(t.Context(), "user-1", msg, nil, "", "", "", nil, nil)
+		_, err := svc.Search(t.Context(), "user-1", msg, nil, nil, "", "", nil, nil)
 		require.NoError(t, err, "search %d should not fail", i)
 	}
 
@@ -689,7 +689,7 @@ type embedCountingLLM struct {
 	pass2Answer string
 }
 
-func (l *embedCountingLLM) Ask(_ context.Context, _ string, _ string, _ []ports.MessagePair, _ string) (*ports.LLMResponse, error) {
+func (l *embedCountingLLM) Ask(_ context.Context, _ string, _ string, _ []ports.MessagePair, _ []string) (*ports.LLMResponse, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.askCount++
@@ -722,7 +722,7 @@ func TestSearchEmbedResultCacheHit(t *testing.T) {
 	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
 	// First search — Embed is called exactly once (cache miss → fetch).
-	_, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	_, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, nil, "", "", nil, nil)
 	require.NoError(t, err)
 
 	llm.mu.Lock()
@@ -732,7 +732,7 @@ func TestSearchEmbedResultCacheHit(t *testing.T) {
 
 	// Second search with the SAME message — cache hit on sha256(message).
 	// Ask still runs (Pass-1 needed for cache key), but Embed MUST NOT run.
-	_, err = svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	_, err = svc.Search(t.Context(), "user-1", "need a plumber", nil, nil, "", "", nil, nil)
 	require.NoError(t, err)
 
 	llm.mu.Lock()
@@ -756,9 +756,9 @@ func TestSearchEmbedResultCacheKeyDiffersForDifferentMessages(t *testing.T) {
 	svc := NewSearchService(llm, profiles, &testingutil.MockChatRepo{}, &testingutil.MockPrompts{})
 
 	// Two searches with DIFFERENT messages → different sha256 keys → Embed called for each.
-	_, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, "", "", "", nil, nil)
+	_, err := svc.Search(t.Context(), "user-1", "need a plumber", nil, nil, "", "", nil, nil)
 	require.NoError(t, err)
-	_, err = svc.Search(t.Context(), "user-1", "need an electrician", nil, "", "", "", nil, nil)
+	_, err = svc.Search(t.Context(), "user-1", "need an electrician", nil, nil, "", "", nil, nil)
 	require.NoError(t, err)
 
 	llm.mu.Lock()

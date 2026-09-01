@@ -114,7 +114,7 @@ func (s *SearchService) Search(
 	userID string,
 	message string,
 	history []ports.MessagePair,
-	provider string,
+	providers []string,
 	lang string,
 	conversationID string,
 	requestLat *float64,
@@ -179,7 +179,7 @@ func (s *SearchService) Search(
 
 	// Pass-1: LLM extracts search filters.
 	g.Go(func() error {
-		pass1Resp, pass1Err = s.llm.Ask(gctx, searchPrompt, message, history, provider)
+		pass1Resp, pass1Err = s.llm.Ask(gctx, searchPrompt, message, history, providers)
 		return pass1Err
 	})
 
@@ -368,7 +368,7 @@ func (s *SearchService) Search(
 	presentationPrompt = applyLanguage(presentationPrompt, lang)
 
 	pass2Question := buildWorkerSummaries(workers, message)
-	pass2Resp, err := s.llm.Ask(ctx, presentationPrompt, pass2Question, nil, provider)
+	pass2Resp, err := s.llm.Ask(ctx, presentationPrompt, pass2Question, nil, providers)
 	if err != nil {
 		return nil, fmt.Errorf("pass 2: %w", err)
 	}

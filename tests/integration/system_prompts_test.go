@@ -35,7 +35,7 @@ func TestSystemPromptsGET(t *testing.T) {
 	assert.Contains(t, resp, "client_profile_prompt")
 	assert.Contains(t, resp, "find_trader_search_prompt")
 	assert.Contains(t, resp, "find_trader_presentation_prompt")
-	assert.Contains(t, resp, "llm_provider")
+	assert.Contains(t, resp, "llm_providers")
 }
 
 func TestSystemPromptsPUT(t *testing.T) {
@@ -110,9 +110,9 @@ func TestSystemPromptsPUTProvider(t *testing.T) {
 	llm := newFakeLLM("irrelevant")
 	mux := buildIntegrationMux(t, db, llm)
 
-	// PUT to update provider — empty content is allowed for provider
+	// PUT to update provider — sends a providers array
 	body, _ := json.Marshal(map[string]interface{}{
-		"content": "openai",
+		"providers": []string{"opencode0", "mistral"},
 	})
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/system-prompts/provider", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -122,5 +122,7 @@ func TestSystemPromptsPUTProvider(t *testing.T) {
 
 	var resp map[string]interface{}
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "openai", resp["llm_provider"])
+	providers, ok := resp["llm_providers"].([]interface{})
+	require.True(t, ok, "llm_providers should be an array")
+	assert.Equal(t, []interface{}{"opencode0", "mistral"}, providers)
 }

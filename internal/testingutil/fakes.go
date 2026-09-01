@@ -25,7 +25,7 @@ type MockLLM struct {
 	EmbedFn         func(ctx context.Context, text string) ([]float32, error)
 }
 
-func (m *MockLLM) Ask(_ context.Context, _, _ string, _ []ports.MessagePair, _ string) (*ports.LLMResponse, error) {
+func (m *MockLLM) Ask(_ context.Context, _, _ string, _ []ports.MessagePair, _ []string) (*ports.LLMResponse, error) {
 	if m.AskErr != nil {
 		return nil, m.AskErr
 	}
