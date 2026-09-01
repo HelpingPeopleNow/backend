@@ -56,6 +56,9 @@ func TestRedisBrokerPublishDeliversLocally(t *testing.T) {
 		cancels:    make(map[string]map[int]context.CancelFunc),
 		subscribed: make(map[string]struct{}),
 	}
+	// Ensure broker is properly closed to clean up subscription goroutines
+	// before the Redis client is cleaned up by t.Cleanup(rdb.Close()).
+	t.Cleanup(func() { _ = broker.Close() })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -91,6 +94,11 @@ func TestRedisBrokerCrossReplica(t *testing.T) {
 		cancels:    make(map[string]map[int]context.CancelFunc),
 		subscribed: make(map[string]struct{}),
 	}
+	// Ensure both brokers are properly closed before Redis client cleanup.
+	t.Cleanup(func() {
+		_ = replicaA.Close()
+		_ = replicaB.Close()
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
