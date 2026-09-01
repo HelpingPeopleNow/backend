@@ -103,6 +103,7 @@ func buildMux(d appDeps) (*http.ServeMux, *muxClosers) {
 	mux.Handle("/health", healthHandler)
 	mux.Handle("/livez", http.HandlerFunc(healthHandler.Livez))
 	mux.Handle("/readyz", handler.NewReadyzHandler(handler.ReadyFlag()))
+	mux.Handle("/internal/llm-providers", handler.NewLLMProvidersInternalHandler(d.PromptRepo))
 
 	// SPOF GAP A (see infra/docs/FOLLOW_UP_SPOF_Backup_Replicas.md):
 	// when REDIS_URL is set, the SSE broker fans out events across
